@@ -38,9 +38,17 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.match(app, /const posts = \[/);
   assert.match(app, /function AdminLayout/);
   assert.match(app, /function FriendsPage/);
+  assert.match(app, /問おう。貴方が私のマスターか？/);
+  assert.match(app, /试问。你是我的御主吗？/);
+  assert.match(app, /召喚に応じ参上した。貴様が私のマスターという奴か？/);
+  assert.match(app, /应召唤前来。你这家伙就是我的御主吗？/);
+  assert.match(app, /\/storage\/voice\/login\/blue-saber\.mp3/);
+  assert.match(app, /\/storage\/voice\/login\/alter-saber\.mp3/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.match(viteConfig, /127\.0\.0\.1:3001/);
   assert.match(viteConfig, /"\/api"/);
+  assert.match(viteConfig, /127\.0\.0\.1:8080/);
+  assert.match(viteConfig, /"\/storage"/);
 });
 
 test("server-renders the admin login design and real authentication form", async () => {
@@ -50,6 +58,10 @@ test("server-renders the admin login design and real authentication form", async
   assert.match(html, /令咒认证/);
   assert.match(html, /契 约 · 登 录/);
   assert.match(html, /通行密钥 Passkey 登录/);
+  assert.match(html, /语音放送/);
+  assert.match(html, /問おう。貴方が私のマスターか？|召喚に応じ参上した。貴様が私のマスターという奴か？/);
+  assert.match(html, /试问。你是我的御主吗？|应召唤前来。你这家伙就是我的御主吗？/);
+  assert.match(html, /\/storage\/voice\/login\/(?:blue-saber|alter-saber)\.mp3/);
   assert.match(html, /name="username"/);
   assert.match(html, /name="password"/);
   assert.doesNotMatch(html, /value="excalibur"/);

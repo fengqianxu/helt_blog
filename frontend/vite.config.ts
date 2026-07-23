@@ -44,6 +44,8 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
   const backendProxyTarget =
     process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3001";
+  const storageProxyTarget =
+    process.env.STORAGE_PROXY_TARGET ?? "http://127.0.0.1:8080";
 
   return {
     server: {
@@ -57,6 +59,10 @@ export default defineConfig(async () => {
         },
         "/health": {
           target: backendProxyTarget,
+          changeOrigin: true,
+        },
+        "/storage": {
+          target: storageProxyTarget,
           changeOrigin: true,
         },
       },

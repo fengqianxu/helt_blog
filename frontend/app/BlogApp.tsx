@@ -500,6 +500,34 @@ function AdminSessionGate({ children }: { children: React.ReactNode }) {
   return children;
 }
 
+const loginScenes = {
+  day: {
+    character: "SABER",
+    mode: "DAY CONTRACT",
+    Japanese: "問おう。貴方が私のマスターか？",
+    Chinese: "试问。你是我的御主吗？",
+    voice: "/storage/voice/login/blue-saber.mp3",
+  },
+  night: {
+    character: "SABER ALTER",
+    mode: "NIGHT CONTRACT",
+    Japanese: "召喚に応じ参上した。貴様が私のマスターという奴か？",
+    Chinese: "应召唤前来。你这家伙就是我的御主吗？",
+    voice: "/storage/voice/login/alter-saber.mp3",
+  },
+} as const satisfies Record<Theme, {
+  character: string;
+  mode: string;
+  Japanese: string;
+  Chinese: string;
+  voice: string;
+}>;
+
+function loginThemeForCurrentTime(date = new Date()): Theme {
+  const hour = date.getHours();
+  return hour >= 7 && hour < 19 ? "day" : "night";
+}
+
 function AdminLogin() {
   const [show, setShow] = useState(false);
   const [username, setUsername] = useState("helt");
@@ -507,6 +535,64 @@ function AdminLogin() {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState<"password" | "passkey" | "forgot" | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "error" | "success"; message: string } | null>(null);
+  const [loginTheme, setLoginTheme] = useState<Theme>(() => loginThemeForCurrentTime());
+  const [themeMode, setThemeMode] = useState<"auto" | "manual">("auto");
+  const [playingVoice, setPlayingVoice] = useState<Theme | null>(null);
+  const [voiceError, setVoiceError] = useState<{ theme: Theme; message: string } | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const scene = loginScenes[loginTheme];
+  const voicePlaying = playingVoice === loginTheme;
+  const activeVoiceError = voiceError?.theme === loginTheme ? voiceError.message : "";
+
+  useEffect(() => {
+    if (themeMode !== "auto") return;
+    const syncThemeWithTime = () => setLoginTheme(loginThemeForCurrentTime());
+    syncThemeWithTime();
+    const timer = window.setInterval(syncThemeWithTime, 60_000);
+    return () => window.clearInterval(timer);
+  }, [themeMode]);
+
+  const stopLoginVoice = () => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+    setPlayingVoice(null);
+    setVoiceError(null);
+  };
+
+  const toggleLoginTheme = () => {
+    stopLoginVoice();
+    setThemeMode("manual");
+    setLoginTheme((current) => current === "day" ? "night" : "day");
+  };
+
+  const restoreAutomaticTheme = () => {
+    stopLoginVoice();
+    setThemeMode("auto");
+    setLoginTheme(loginThemeForCurrentTime());
+  };
+
+  const toggleVoice = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    setVoiceError(null);
+    if (!audio.paused) {
+      audio.pause();
+      audio.currentTime = 0;
+      setPlayingVoice(null);
+      return;
+    }
+    audio.currentTime = 0;
+    try {
+      await audio.play();
+      setPlayingVoice(loginTheme);
+    } catch {
+      setPlayingVoice(null);
+      setVoiceError({ theme: loginTheme, message: "语音暂时无法播放，请确认本地 MinIO 已启动。" });
+    }
+  };
 
   const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -626,13 +712,15 @@ function AdminLogin() {
   };
 
   return (
-    <main className="admin-login">
+    <main className={`admin-login login-theme-${loginTheme}`}>
+      <div className="admin-login-cover login-cover-day" aria-hidden="true" />
+      <div className="admin-login-cover login-cover-night" aria-hidden="true" />
       <div className="admin-login-shade" aria-hidden="true" />
       <form onSubmit={submitLogin} aria-busy={busy !== null}>
         <span className="auth-tag">令咒认证</span>
         <div className="login-brand">
           <Link href="/" className="brand" aria-label="返回 helt 博客首页">helt<span>.</span> <small>ADMIN</small></Link>
-          <p lang="ja">証明せよ。貴方が私のマスターであることを。</p>
+          <p>MASTER AUTHENTICATION · CHALDEA TERMINAL</p>
         </div>
         <label htmlFor="admin-username">账号
           <input id="admin-username" name="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} disabled={busy !== null} />
@@ -657,6 +745,48 @@ function AdminLogin() {
         <button className="passkey-button" type="button" onClick={loginWithPasskey} disabled={busy !== null}>{busy === "passkey" ? "正在唤起通行密钥…" : "通行密钥 Passkey 登录"}</button>
         <small className="login-security">SECURE ADMIN GATEWAY · TLS / HTTPONLY SESSION</small>
       </form>
+      <section className="login-scene-copy" aria-live="polite">
+        <div className="login-scene-meta">
+          <span>{scene.character}</span>
+          <small>{scene.mode}</small>
+        </div>
+        <blockquote>
+          <p lang="ja">{scene.Japanese}</p>
+          <p lang="zh-CN">{scene.Chinese}</p>
+        </blockquote>
+        <div className="login-scene-actions">
+          <button
+            className={`login-voice-button${voicePlaying ? " is-playing" : ""}`}
+            type="button"
+            onClick={toggleVoice}
+            aria-pressed={voicePlaying}
+          >
+            <span className="login-voice-glyph" aria-hidden="true"><i /><i /><i /><i /></span>
+            {voicePlaying ? "停止放送" : "语音放送"}
+          </button>
+          <button className="login-theme-switch" type="button" onClick={toggleLoginTheme} aria-label={`切换至${loginTheme === "day" ? "夜间" : "日间"}模式`}>
+            <span aria-hidden="true">{loginTheme === "day" ? "☀" : "☾"}</span>
+            {loginTheme === "day" ? "日间" : "夜间"}
+          </button>
+          {themeMode === "manual" && <button className="login-theme-auto" type="button" onClick={restoreAutomaticTheme}>恢复自动</button>}
+        </div>
+        <div className="login-scene-status">
+          <span aria-hidden="true" />
+          {themeMode === "auto" ? "SYSTEM TIME · 07:00—19:00 DAY" : "MANUAL PREVIEW · 点击恢复自动"}
+        </div>
+        {activeVoiceError && <small className="login-voice-error" role="alert">{activeVoiceError}</small>}
+        <audio
+          key={scene.voice}
+          ref={audioRef}
+          src={scene.voice}
+          preload="metadata"
+          onEnded={() => setPlayingVoice(null)}
+          onError={() => {
+            setPlayingVoice(null);
+            setVoiceError({ theme: loginTheme, message: "语音暂时无法播放，请确认本地 MinIO 已启动。" });
+          }}
+        />
+      </section>
     </main>
   );
 }
@@ -738,7 +868,7 @@ function MediaSettings({ notify }: { notify: Notify }) {
   const [tracks, setTracks] = useState(["THIS ILLUSION", "to the beginning", "oath sign", "花の唄"]);
   const [preview, setPreview] = useState("");
   const move = (index: number, delta: number) => { const next = index + delta; if (next < 0 || next >= tracks.length) return; setTracks((items) => { const copy = [...items]; [copy[index], copy[next]] = [copy[next], copy[index]]; return copy; }); };
-  return <><AdminTitle title="音乐与语音" sub={`AUDIO LIBRARY · ${tracks.length} TRACKS`} action={<button className="admin-primary" onClick={() => notify("上传入口已打开（Mock）")}>＋ 上传音频</button>} /><div className="settings-grid media-settings"><section className="admin-panel"><h2>BGM 播放列表</h2>{tracks.map((t, i) => <div className="track" key={t}><span>0{i + 1}</span><div><b>{t}</b><small>Fate Series · Audio Track</small></div><button onClick={() => move(i, -1)} disabled={i === 0}>↑</button><button onClick={() => move(i, 1)} disabled={i === tracks.length - 1}>↓</button><button onClick={() => { setTracks((items) => items.filter((item) => item !== t)); notify(`已移除 ${t}`, "danger"); }}>×</button></div>)}</section><section className="admin-panel voice-cards"><h2>开屏语音</h2>{[["day", "日间 Saber", "voice_saber_01.mp3 · 12s"], ["night", "夜间 Alter", "voice_alter_01.mp3 · 10s"]].map(([kind, name, file]) => <div key={kind}><i className={kind} /><b>{name}</b><span>{file}</span><button className={preview === kind ? "active" : ""} onClick={() => { setPreview(preview === kind ? "" : kind); notify(preview === kind ? "试听已暂停" : `正在试听 ${name}`); }}>{preview === kind ? "Ⅱ 暂停" : "▶ 试听"}</button></div>)}</section></div></>;
+  return <><AdminTitle title="音乐与语音" sub={`AUDIO LIBRARY · ${tracks.length} BGM · 2 LOCKED VOICES`} action={<button className="admin-primary" onClick={() => notify("BGM 上传入口已打开（Mock）")}>＋ 上传 BGM</button>} /><div className="settings-grid media-settings"><section className="admin-panel"><h2>BGM 播放列表</h2>{tracks.map((t, i) => <div className="track" key={t}><span>0{i + 1}</span><div><b>{t}</b><small>Fate Series · Audio Track</small></div><button onClick={() => move(i, -1)} disabled={i === 0}>↑</button><button onClick={() => move(i, 1)} disabled={i === tracks.length - 1}>↓</button><button onClick={() => { setTracks((items) => items.filter((item) => item !== t)); notify(`已移除 ${t}`, "danger"); }}>×</button></div>)}</section><section className="admin-panel voice-cards"><h2>登录语音 <small>FIXED · MINIO</small></h2>{[["day", "日间 Saber", "blue-saber.mp3 · 固定资源"], ["night", "夜间 Alter", "alter-saber.mp3 · 固定资源"]].map(([kind, name, file]) => <div key={kind}><i className={kind} /><b>{name}</b><span>{file}</span><button className={preview === kind ? "active" : ""} onClick={() => { setPreview(preview === kind ? "" : kind); notify(preview === kind ? "试听已暂停" : `正在试听 ${name}`); }}>{preview === kind ? "Ⅱ 暂停" : "▶ 试听"}</button></div>)}</section></div></>;
 }
 
 function AppearanceSettings({ notify }: { notify: Notify }) {
