@@ -426,13 +426,6 @@ function AdminRouter({ pathname, theme, toggleTheme, notify }: { pathname: strin
 }
 
 type ApiErrorPayload = { error?: { code?: string; message?: string }; message?: string };
-type PasskeyRequestOptions = {
-  challenge: string;
-  rp_id?: string;
-  timeout?: number;
-  user_verification?: UserVerificationRequirement;
-  allow_credentials?: Array<{ id: string; type?: PublicKeyCredentialType; transports?: AuthenticatorTransport[] }>;
-};
 
 async function responseMessage(response: Response, fallback: string) {
   const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
@@ -441,20 +434,6 @@ async function responseMessage(response: Response, fallback: string) {
 
 function isJsonResponse(response: Response) {
   return response.headers.get("content-type")?.includes("application/json") ?? false;
-}
-
-function decodeBase64Url(value: string) {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer;
-}
-
-function encodeBase64Url(value: ArrayBuffer) {
-  const bytes = new Uint8Array(value);
-  let binary = "";
-  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function AdminSessionGate({ children }: { children: React.ReactNode }) {
@@ -505,16 +484,19 @@ const loginScenes = {
     Japanese: "問おう。貴方が私のマスターか？",
     Chinese: "试问。你是我的御主吗？",
     voice: "/storage/voice/login/blue-saber.mp3",
+    successVoice: "/storage/voice/login/blue-saber-success.mp3",
   },
   night: {
     Japanese: "召喚に応じ参上した。貴様が私のマスターという奴か？",
     Chinese: "应召唤前来。你这家伙就是我的御主吗？",
     voice: "/storage/voice/login/alter-saber.mp3",
+    successVoice: "/storage/voice/login/alter-saber-success.mp3",
   },
 } as const satisfies Record<Theme, {
   Japanese: string;
   Chinese: string;
   voice: string;
+  successVoice: string;
 }>;
 
 function loginThemeForCurrentTime(date = new Date()): Theme {
@@ -527,7 +509,7 @@ function AdminLogin() {
   const [username, setUsername] = useState("helt");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
-  const [busy, setBusy] = useState<"password" | "passkey" | "forgot" | null>(null);
+  const [busy, setBusy] = useState<"password" | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "error" | "success"; message: string } | null>(null);
   const [loginTheme, setLoginTheme] = useState<Theme>(() => loginThemeForCurrentTime());
   const [voicePlaying, setVoicePlaying] = useState(false);
@@ -594,6 +576,39 @@ function AdminLogin() {
     await playLoginVoice(audio);
   };
 
+  const playLoginSuccessVoice = () => new Promise<void>((resolve) => {
+    const audio = audioRef.current;
+    if (!audio) {
+      resolve();
+      return;
+    }
+    audio.pause();
+    audio.currentTime = 0;
+    let settled = false;
+    let timeout = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      audio.removeEventListener("ended", finish);
+      audio.removeEventListener("error", finish);
+      audio.removeEventListener("pause", finish);
+      setVoicePlaying(false);
+      resolve();
+    };
+    audio.addEventListener("ended", finish, { once: true });
+    audio.addEventListener("error", finish, { once: true });
+    audio.src = scene.successVoice;
+    audio.load();
+    timeout = window.setTimeout(finish, 15_000);
+    void audio.play()
+      .then(() => {
+        setVoicePlaying(true);
+        audio.addEventListener("pause", finish, { once: true });
+      })
+      .catch(finish);
+  });
+
   const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!username.trim() || !password) {
@@ -615,97 +630,11 @@ function AdminLogin() {
       if (!isJsonResponse(response)) {
         throw new Error("认证接口尚未连接，请确认本地后端正在运行。");
       }
-      setFeedback({ tone: "success", message: "认证通过，正在进入控制室…" });
-      window.setTimeout(() => { window.location.href = "/admin"; }, 260);
+      setFeedback({ tone: "success", message: "契约成立。" });
+      await playLoginSuccessVoice();
+      window.location.href = "/admin";
     } catch (error) {
       setFeedback({ tone: "error", message: error instanceof Error ? error.message : "认证失败，请稍后重试。" });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const requestPasswordReset = async () => {
-    if (!username.trim()) {
-      setFeedback({ tone: "error", message: "请先填写需要重置的账号。" });
-      return;
-    }
-    setBusy("forgot");
-    setFeedback(null);
-    try {
-      const response = await fetch("/api/v1/admin/auth/forgot-password", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: username.trim() }),
-      });
-      const message = await responseMessage(response, "请联系服务器管理员重置密码。");
-      if (!response.ok) throw new Error(message);
-      if (!isJsonResponse(response)) throw new Error("密码重置接口尚未连接。");
-      setFeedback({ tone: "success", message });
-    } catch (error) {
-      setFeedback({ tone: "error", message: error instanceof Error ? error.message : "暂时无法提交重置请求。" });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const loginWithPasskey = async () => {
-    if (!window.PublicKeyCredential || !navigator.credentials) {
-      setFeedback({ tone: "error", message: "当前浏览器不支持通行密钥 Passkey。" });
-      return;
-    }
-    setBusy("passkey");
-    setFeedback(null);
-    try {
-      const optionsResponse = await fetch("/api/v1/admin/auth/passkey/options", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-      });
-      if (!optionsResponse.ok) {
-        const payload = await optionsResponse.json().catch(() => null) as ApiErrorPayload | null;
-        if (payload?.error?.code === "not_implemented") throw new Error("通行密钥尚未配置，请使用账号密码登录。");
-        throw new Error(payload?.error?.message || "无法获取通行密钥认证请求。");
-      }
-      if (!isJsonResponse(optionsResponse)) throw new Error("通行密钥接口尚未连接。");
-      const options = await optionsResponse.json() as PasskeyRequestOptions;
-      const credential = await navigator.credentials.get({
-        publicKey: {
-          challenge: decodeBase64Url(options.challenge),
-          rpId: options.rp_id,
-          timeout: options.timeout ?? 60_000,
-          userVerification: options.user_verification ?? "preferred",
-          allowCredentials: options.allow_credentials?.map((item) => ({
-            id: decodeBase64Url(item.id),
-            type: item.type ?? "public-key",
-            transports: item.transports,
-          })),
-        },
-      }) as PublicKeyCredential | null;
-      if (!credential) throw new Error("未选择通行密钥。");
-      const assertion = credential.response as AuthenticatorAssertionResponse;
-      const verifyResponse = await fetch("/api/v1/admin/auth/passkey/verify", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          id: credential.id,
-          raw_id: encodeBase64Url(credential.rawId),
-          type: credential.type,
-          response: {
-            authenticator_data: encodeBase64Url(assertion.authenticatorData),
-            client_data_json: encodeBase64Url(assertion.clientDataJSON),
-            signature: encodeBase64Url(assertion.signature),
-            user_handle: assertion.userHandle ? encodeBase64Url(assertion.userHandle) : null,
-          },
-        }),
-      });
-      if (!verifyResponse.ok) throw new Error(await responseMessage(verifyResponse, "通行密钥认证失败。"));
-      setFeedback({ tone: "success", message: "通行密钥认证通过，正在进入控制室…" });
-      window.setTimeout(() => { window.location.href = "/admin"; }, 260);
-    } catch (error) {
-      const cancelled = error instanceof DOMException && error.name === "NotAllowedError";
-      setFeedback({ tone: "error", message: cancelled ? "通行密钥认证已取消。" : error instanceof Error ? error.message : "通行密钥认证失败。" });
     } finally {
       setBusy(null);
     }
@@ -734,18 +663,13 @@ function AdminLogin() {
             <button type="button" aria-label={show ? "隐藏密码" : "显示密码"} aria-pressed={show} onClick={() => setShow(!show)} disabled={busy !== null}>{show ? "◉" : "◎"}</button>
           </span>
         </label>
-        <div className="login-options">
-          <label className="remember">
-            <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy !== null} />
-            <span aria-hidden="true">{remember ? "✓" : ""}</span>
-            七日内免认证
-          </label>
-          <button className="forgot-link" type="button" onClick={requestPasswordReset} disabled={busy !== null}>{busy === "forgot" ? "提交中…" : "忘记密码？"}</button>
-        </div>
+        <label className="remember">
+          <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy !== null} />
+          <span aria-hidden="true">{remember ? "✓" : ""}</span>
+          七日内免认证
+        </label>
         {feedback && <div className={`login-feedback ${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}><span aria-hidden="true">{feedback.tone === "error" ? "!" : "✓"}</span>{feedback.message}</div>}
         <button className="login-submit" disabled={busy !== null}>{busy === "password" ? "仪 式 进 行 中…" : "契 约 · 成 立"}</button>
-        <div className="login-divider" aria-hidden="true"><span /></div>
-        <button className="passkey-button" type="button" onClick={loginWithPasskey} disabled={busy !== null}>{busy === "passkey" ? "正在唤起通行密钥…" : "通行密钥 Passkey 登录"}</button>
       </form>
       <section className="login-scene-copy" aria-live="polite">
         <blockquote>
@@ -852,7 +776,13 @@ function MediaSettings({ notify }: { notify: Notify }) {
   const [tracks, setTracks] = useState(["THIS ILLUSION", "to the beginning", "oath sign", "花の唄"]);
   const [preview, setPreview] = useState("");
   const move = (index: number, delta: number) => { const next = index + delta; if (next < 0 || next >= tracks.length) return; setTracks((items) => { const copy = [...items]; [copy[index], copy[next]] = [copy[next], copy[index]]; return copy; }); };
-  return <><AdminTitle title="音乐与语音" sub={`AUDIO LIBRARY · ${tracks.length} BGM · 2 LOCKED VOICES`} action={<button className="admin-primary" onClick={() => notify("BGM 上传入口已打开（Mock）")}>＋ 上传 BGM</button>} /><div className="settings-grid media-settings"><section className="admin-panel"><h2>BGM 播放列表</h2>{tracks.map((t, i) => <div className="track" key={t}><span>0{i + 1}</span><div><b>{t}</b><small>Fate Series · Audio Track</small></div><button onClick={() => move(i, -1)} disabled={i === 0}>↑</button><button onClick={() => move(i, 1)} disabled={i === tracks.length - 1}>↓</button><button onClick={() => { setTracks((items) => items.filter((item) => item !== t)); notify(`已移除 ${t}`, "danger"); }}>×</button></div>)}</section><section className="admin-panel voice-cards"><h2>登录语音 <small>FIXED · MINIO</small></h2>{[["day", "日间 Saber", "blue-saber.mp3 · 固定资源"], ["night", "夜间 Alter", "alter-saber.mp3 · 固定资源"]].map(([kind, name, file]) => <div key={kind}><i className={kind} /><b>{name}</b><span>{file}</span><button className={preview === kind ? "active" : ""} onClick={() => { setPreview(preview === kind ? "" : kind); notify(preview === kind ? "试听已暂停" : `正在试听 ${name}`); }}>{preview === kind ? "Ⅱ 暂停" : "▶ 试听"}</button></div>)}</section></div></>;
+  const voices = [
+    { id: "day-intro", kind: "day", name: "日间 Saber · 登录前", file: "blue-saber.mp3 · 固定资源" },
+    { id: "day-success", kind: "day", name: "日间 Saber · 契约成立", file: "blue-saber-success.mp3 · 固定资源" },
+    { id: "night-intro", kind: "night", name: "夜间 Alter · 登录前", file: "alter-saber.mp3 · 固定资源" },
+    { id: "night-success", kind: "night", name: "夜间 Alter · 契约成立", file: "alter-saber-success.mp3 · 固定资源" },
+  ];
+  return <><AdminTitle title="音乐与语音" sub={`AUDIO LIBRARY · ${tracks.length} BGM · 4 LOCKED VOICES`} action={<button className="admin-primary" onClick={() => notify("BGM 上传入口已打开（Mock）")}>＋ 上传 BGM</button>} /><div className="settings-grid media-settings"><section className="admin-panel"><h2>BGM 播放列表</h2>{tracks.map((t, i) => <div className="track" key={t}><span>0{i + 1}</span><div><b>{t}</b><small>Fate Series · Audio Track</small></div><button onClick={() => move(i, -1)} disabled={i === 0}>↑</button><button onClick={() => move(i, 1)} disabled={i === tracks.length - 1}>↓</button><button onClick={() => { setTracks((items) => items.filter((item) => item !== t)); notify(`已移除 ${t}`, "danger"); }}>×</button></div>)}</section><section className="admin-panel voice-cards"><h2>登录语音 <small>FIXED · MINIO</small></h2>{voices.map(({ id, kind, name, file }) => <div key={id}><i className={kind} /><b>{name}</b><span>{file}</span><button className={preview === id ? "active" : ""} onClick={() => { setPreview(preview === id ? "" : id); notify(preview === id ? "试听已暂停" : `正在试听 ${name}`); }}>{preview === id ? "Ⅱ 暂停" : "▶ 试听"}</button></div>)}</section></div></>;
 }
 
 function AppearanceSettings({ notify }: { notify: Notify }) {

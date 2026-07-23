@@ -45,6 +45,9 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.match(app, /应召唤前来。你这家伙就是我的御主吗？/);
   assert.match(app, /\/storage\/voice\/login\/blue-saber\.mp3/);
   assert.match(app, /\/storage\/voice\/login\/alter-saber\.mp3/);
+  assert.match(app, /\/storage\/voice\/login\/blue-saber-success\.mp3/);
+  assert.match(app, /\/storage\/voice\/login\/alter-saber-success\.mp3/);
+  assert.match(app, /await playLoginSuccessVoice\(\)/);
   assert.match(app, /停止播放/);
   assert.match(app, /requestAnimationFrame\(syncVoiceState\)/);
   assert.match(app, /!audio\.paused && !audio\.ended/);
@@ -66,7 +69,6 @@ test("server-renders the admin login design and real authentication form", async
   const html = await response.text();
   assert.match(html, /契约仪式/);
   assert.match(html, /契 约 · 成 立/);
-  assert.match(html, /通行密钥 Passkey 登录/);
   assert.match(html, /语音放送/);
   assert.match(html, /灵衣切换/);
   assert.doesNotMatch(html, /☀|☾/);
@@ -76,7 +78,7 @@ test("server-renders the admin login design and real authentication form", async
   assert.match(html, /autoplay|autoPlay/);
   assert.match(html, /name="username"/);
   assert.match(html, /name="password"/);
-  assert.doesNotMatch(html, /MASTER AUTHENTICATION|SECURE ADMIN GATEWAY|NIGHT CONTRACT|SYSTEM TIME|恢复自动/);
+  assert.doesNotMatch(html, /忘记密码|通行密钥|Passkey|MASTER AUTHENTICATION|SECURE ADMIN GATEWAY|NIGHT CONTRACT|SYSTEM TIME|恢复自动/);
   assert.doesNotMatch(html, /value="excalibur"/);
 });
 

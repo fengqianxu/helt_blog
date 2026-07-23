@@ -302,8 +302,8 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   font-size: 17px;
 }
 .password-control:focus-within button { color: var(--login-gold); background: var(--login-field-focus); }
-.login-options { min-height: 19px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .admin-login label.remember {
+  align-self: flex-start;
   display: inline-flex;
   flex-direction: row;
   align-items: center;
@@ -331,15 +331,6 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
 }
 .admin-login label.remember input:checked + span { border-color: var(--login-accent); background: var(--login-accent); }
 .admin-login label.remember input:focus-visible + span { outline: 2px solid var(--login-gold); outline-offset: 3px; }
-.forgot-link {
-  border: 0;
-  padding: 2px 0;
-  color: var(--login-faint);
-  background: transparent;
-  font-size: 12px;
-  font-family: inherit;
-}
-.forgot-link:hover, .forgot-link:focus-visible { color: var(--login-gold); }
 .login-feedback {
   display: flex;
   gap: 9px;
@@ -371,21 +362,6 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
 }
 .login-submit:hover:not(:disabled) { filter: brightness(1.12); box-shadow: 0 10px 30px color-mix(in srgb, var(--login-accent) 48%, transparent); transform: translateY(-1px); }
 .login-submit:active:not(:disabled) { transform: translateY(1px); }
-.login-divider { display: flex; align-items: center; }
-.login-divider span { flex: 1; height: 1px; background: color-mix(in srgb, var(--login-gold) 24%, transparent); }
-.passkey-button {
-  min-height: 43px;
-  border: 1px solid color-mix(in srgb, var(--login-gold) 36%, transparent);
-  border-radius: 10px;
-  padding: 11px 14px;
-  color: var(--login-gold);
-  background: color-mix(in srgb, var(--login-gold) 2%, transparent);
-  font-size: 13px;
-  font-family: inherit;
-  font-weight: 500;
-  transition: border-color .2s, background .2s, color .2s;
-}
-.passkey-button:hover:not(:disabled) { border-color: var(--login-gold); color: var(--login-text); background: color-mix(in srgb, var(--login-gold) 9%, transparent); }
 .login-scene-copy {
   position: absolute;
   z-index: 2;
