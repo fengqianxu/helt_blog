@@ -55,15 +55,17 @@ test("server-renders the admin login design and real authentication form", async
   const response = await render("/admin/login");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /令咒认证/);
-  assert.match(html, /契 约 · 登 录/);
+  assert.match(html, /契约仪式/);
+  assert.match(html, /契 约 · 成 立/);
   assert.match(html, /通行密钥 Passkey 登录/);
   assert.match(html, /语音放送/);
   assert.match(html, /問おう。貴方が私のマスターか？|召喚に応じ参上した。貴様が私のマスターという奴か？/);
   assert.match(html, /试问。你是我的御主吗？|应召唤前来。你这家伙就是我的御主吗？/);
   assert.match(html, /\/storage\/voice\/login\/(?:blue-saber|alter-saber)\.mp3/);
+  assert.match(html, /autoplay|autoPlay/);
   assert.match(html, /name="username"/);
   assert.match(html, /name="password"/);
+  assert.doesNotMatch(html, /MASTER AUTHENTICATION|SECURE ADMIN GATEWAY|NIGHT CONTRACT|SYSTEM TIME|恢复自动/);
   assert.doesNotMatch(html, /value="excalibur"/);
 });
 

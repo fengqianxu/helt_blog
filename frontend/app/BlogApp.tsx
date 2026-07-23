@@ -502,22 +502,16 @@ function AdminSessionGate({ children }: { children: React.ReactNode }) {
 
 const loginScenes = {
   day: {
-    character: "SABER",
-    mode: "DAY CONTRACT",
     Japanese: "問おう。貴方が私のマスターか？",
     Chinese: "试问。你是我的御主吗？",
     voice: "/storage/voice/login/blue-saber.mp3",
   },
   night: {
-    character: "SABER ALTER",
-    mode: "NIGHT CONTRACT",
     Japanese: "召喚に応じ参上した。貴様が私のマスターという奴か？",
     Chinese: "应召唤前来。你这家伙就是我的御主吗？",
     voice: "/storage/voice/login/alter-saber.mp3",
   },
 } as const satisfies Record<Theme, {
-  character: string;
-  mode: string;
   Japanese: string;
   Chinese: string;
   voice: string;
@@ -536,21 +530,12 @@ function AdminLogin() {
   const [busy, setBusy] = useState<"password" | "passkey" | "forgot" | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "error" | "success"; message: string } | null>(null);
   const [loginTheme, setLoginTheme] = useState<Theme>(() => loginThemeForCurrentTime());
-  const [themeMode, setThemeMode] = useState<"auto" | "manual">("auto");
   const [playingVoice, setPlayingVoice] = useState<Theme | null>(null);
   const [voiceError, setVoiceError] = useState<{ theme: Theme; message: string } | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const scene = loginScenes[loginTheme];
   const voicePlaying = playingVoice === loginTheme;
   const activeVoiceError = voiceError?.theme === loginTheme ? voiceError.message : "";
-
-  useEffect(() => {
-    if (themeMode !== "auto") return;
-    const syncThemeWithTime = () => setLoginTheme(loginThemeForCurrentTime());
-    syncThemeWithTime();
-    const timer = window.setInterval(syncThemeWithTime, 60_000);
-    return () => window.clearInterval(timer);
-  }, [themeMode]);
 
   const stopLoginVoice = () => {
     const audio = audioRef.current;
@@ -562,36 +547,41 @@ function AdminLogin() {
     setVoiceError(null);
   };
 
-  const toggleLoginTheme = () => {
-    stopLoginVoice();
-    setThemeMode("manual");
-    setLoginTheme((current) => current === "day" ? "night" : "day");
+  const playLoginVoice = async (theme: Theme, audio = audioRef.current) => {
+    if (!audio) return;
+    setVoiceError(null);
+    audio.currentTime = 0;
+    try {
+      await audio.play();
+      setPlayingVoice(theme);
+    } catch (error) {
+      setPlayingVoice(null);
+      if (!(error instanceof DOMException && error.name === "NotAllowedError")) {
+        setVoiceError({ theme, message: "语音暂时无法播放，请确认本地 MinIO 已启动。" });
+      }
+    }
   };
 
-  const restoreAutomaticTheme = () => {
+  const toggleLoginTheme = () => {
+    const nextTheme = loginTheme === "day" ? "night" : "day";
     stopLoginVoice();
-    setThemeMode("auto");
-    setLoginTheme(loginThemeForCurrentTime());
+    setLoginTheme(nextTheme);
+    const audio = audioRef.current;
+    if (audio) {
+      audio.src = loginScenes[nextTheme].voice;
+      audio.load();
+      void playLoginVoice(nextTheme, audio);
+    }
   };
 
   const toggleVoice = async () => {
     const audio = audioRef.current;
     if (!audio) return;
-    setVoiceError(null);
     if (!audio.paused) {
-      audio.pause();
-      audio.currentTime = 0;
-      setPlayingVoice(null);
+      stopLoginVoice();
       return;
     }
-    audio.currentTime = 0;
-    try {
-      await audio.play();
-      setPlayingVoice(loginTheme);
-    } catch {
-      setPlayingVoice(null);
-      setVoiceError({ theme: loginTheme, message: "语音暂时无法播放，请确认本地 MinIO 已启动。" });
-    }
+    await playLoginVoice(loginTheme, audio);
   };
 
   const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
@@ -717,10 +707,9 @@ function AdminLogin() {
       <div className="admin-login-cover login-cover-night" aria-hidden="true" />
       <div className="admin-login-shade" aria-hidden="true" />
       <form onSubmit={submitLogin} aria-busy={busy !== null}>
-        <span className="auth-tag">令咒认证</span>
+        <span className="auth-tag">契约仪式</span>
         <div className="login-brand">
           <Link href="/" className="brand" aria-label="返回 helt 博客首页">helt<span>.</span> <small>ADMIN</small></Link>
-          <p>MASTER AUTHENTICATION · CHALDEA TERMINAL</p>
         </div>
         <label htmlFor="admin-username">账号
           <input id="admin-username" name="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} disabled={busy !== null} />
@@ -740,16 +729,11 @@ function AdminLogin() {
           <button className="forgot-link" type="button" onClick={requestPasswordReset} disabled={busy !== null}>{busy === "forgot" ? "提交中…" : "忘记密码？"}</button>
         </div>
         {feedback && <div className={`login-feedback ${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}><span aria-hidden="true">{feedback.tone === "error" ? "!" : "✓"}</span>{feedback.message}</div>}
-        <button className="login-submit" disabled={busy !== null}>{busy === "password" ? "认 证 中…" : "契 约 · 登 录"}</button>
-        <div className="login-divider" aria-hidden="true"><span /><small>OR</small><span /></div>
+        <button className="login-submit" disabled={busy !== null}>{busy === "password" ? "仪 式 进 行 中…" : "契 约 · 成 立"}</button>
+        <div className="login-divider" aria-hidden="true"><span /></div>
         <button className="passkey-button" type="button" onClick={loginWithPasskey} disabled={busy !== null}>{busy === "passkey" ? "正在唤起通行密钥…" : "通行密钥 Passkey 登录"}</button>
-        <small className="login-security">SECURE ADMIN GATEWAY · TLS / HTTPONLY SESSION</small>
       </form>
       <section className="login-scene-copy" aria-live="polite">
-        <div className="login-scene-meta">
-          <span>{scene.character}</span>
-          <small>{scene.mode}</small>
-        </div>
         <blockquote>
           <p lang="ja">{scene.Japanese}</p>
           <p lang="zh-CN">{scene.Chinese}</p>
@@ -768,18 +752,17 @@ function AdminLogin() {
             <span aria-hidden="true">{loginTheme === "day" ? "☀" : "☾"}</span>
             {loginTheme === "day" ? "日间" : "夜间"}
           </button>
-          {themeMode === "manual" && <button className="login-theme-auto" type="button" onClick={restoreAutomaticTheme}>恢复自动</button>}
-        </div>
-        <div className="login-scene-status">
-          <span aria-hidden="true" />
-          {themeMode === "auto" ? "SYSTEM TIME · 07:00—19:00 DAY" : "MANUAL PREVIEW · 点击恢复自动"}
         </div>
         {activeVoiceError && <small className="login-voice-error" role="alert">{activeVoiceError}</small>}
         <audio
-          key={scene.voice}
           ref={audioRef}
           src={scene.voice}
-          preload="metadata"
+          autoPlay
+          preload="auto"
+          onCanPlay={(event) => {
+            if (event.currentTarget.paused) void playLoginVoice(loginTheme, event.currentTarget);
+          }}
+          onPlay={() => setPlayingVoice(loginTheme)}
           onEnded={() => setPlayingVoice(null)}
           onError={() => {
             setPlayingVoice(null);
