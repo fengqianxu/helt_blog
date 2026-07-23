@@ -717,7 +717,8 @@ function AdminLogin() {
       <div className="admin-login-cover login-cover-night" aria-hidden="true" />
       <div className="admin-login-shade" aria-hidden="true" />
       <button className="login-theme-switch" type="button" onClick={toggleLoginTheme} aria-label={`切换至${loginTheme === "day" ? "夜间" : "日间"}灵衣`}>
-        灵衣切换
+        <i aria-hidden="true" />
+        <span>灵衣切换</span>
       </button>
       <form onSubmit={submitLogin} aria-busy={busy !== null}>
         <span className="auth-tag">契约仪式</span>

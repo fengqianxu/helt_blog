@@ -27,10 +27,11 @@ test("server-renders the finished blog", async () => {
 });
 
 test("keeps project assets and mock front-end routes in place", async () => {
-  const [app, packageJson, viteConfig] = await Promise.all([
+  const [app, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL("vite.config.ts", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
     access(new URL("public/saber-day.png", root)),
     access(new URL("public/saber-night.png", root)),
     access(new URL("public/og.png", root)),
@@ -53,6 +54,8 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.match(viteConfig, /"\/api"/);
   assert.match(viteConfig, /127\.0\.0\.1:8080/);
   assert.match(viteConfig, /"\/storage"/);
+  assert.match(styles, /\.login-theme-switch\s*\{[\s\S]*?right:\s*32px/);
+  assert.match(styles, /\.login-theme-switch i\s*\{/);
 });
 
 test("server-renders the admin login design and real authentication form", async () => {
