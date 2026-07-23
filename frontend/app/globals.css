@@ -432,7 +432,6 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
 .login-theme-switch { display: inline-flex; align-items: center; gap: 7px; padding: 9px 15px; font-size: 11px; }
 .login-theme-switch span { color: var(--login-gold); font-size: 15px; }
 .login-theme-switch:hover { border-color: color-mix(in srgb, var(--login-gold) 72%, transparent); background: rgba(8,12,21,.5); }
-.login-voice-error { display: block; margin-top: 10px; color: #ffb2bd; font-size: 10px; }
 .login-scene-copy audio { display: none; }
 .admin-session-loading { min-height: 100svh; display: grid; place-content: center; justify-items: center; gap: 12px; color: #9a94ad; background: #0e0b16; }
 .admin-session-loading span { color: #d84358; font-size: 20px; animation: session-pulse 1.2s ease-in-out infinite; }

@@ -530,12 +530,9 @@ function AdminLogin() {
   const [busy, setBusy] = useState<"password" | "passkey" | "forgot" | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "error" | "success"; message: string } | null>(null);
   const [loginTheme, setLoginTheme] = useState<Theme>(() => loginThemeForCurrentTime());
-  const [playingVoice, setPlayingVoice] = useState<Theme | null>(null);
-  const [voiceError, setVoiceError] = useState<{ theme: Theme; message: string } | null>(null);
+  const [voicePlaying, setVoicePlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const scene = loginScenes[loginTheme];
-  const voicePlaying = playingVoice === loginTheme;
-  const activeVoiceError = voiceError?.theme === loginTheme ? voiceError.message : "";
 
   const stopLoginVoice = () => {
     const audio = audioRef.current;
@@ -543,22 +540,17 @@ function AdminLogin() {
       audio.pause();
       audio.currentTime = 0;
     }
-    setPlayingVoice(null);
-    setVoiceError(null);
+    setVoicePlaying(false);
   };
 
-  const playLoginVoice = async (theme: Theme, audio = audioRef.current) => {
+  const playLoginVoice = async (audio = audioRef.current) => {
     if (!audio) return;
-    setVoiceError(null);
     audio.currentTime = 0;
     try {
       await audio.play();
-      setPlayingVoice(theme);
-    } catch (error) {
-      setPlayingVoice(null);
-      if (!(error instanceof DOMException && error.name === "NotAllowedError")) {
-        setVoiceError({ theme, message: "语音暂时无法播放，请确认本地 MinIO 已启动。" });
-      }
+      setVoicePlaying(true);
+    } catch {
+      setVoicePlaying(false);
     }
   };
 
@@ -570,18 +562,18 @@ function AdminLogin() {
     if (audio) {
       audio.src = loginScenes[nextTheme].voice;
       audio.load();
-      void playLoginVoice(nextTheme, audio);
+      void playLoginVoice(audio);
     }
   };
 
   const toggleVoice = async () => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (!audio.paused) {
+    if (voicePlaying || !audio.paused) {
       stopLoginVoice();
       return;
     }
-    await playLoginVoice(loginTheme, audio);
+    await playLoginVoice(audio);
   };
 
   const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
@@ -746,28 +738,22 @@ function AdminLogin() {
             aria-pressed={voicePlaying}
           >
             <span className="login-voice-glyph" aria-hidden="true"><i /><i /><i /><i /></span>
-            {voicePlaying ? "停止放送" : "语音放送"}
+            {voicePlaying ? "停止播放" : "语音放送"}
           </button>
           <button className="login-theme-switch" type="button" onClick={toggleLoginTheme} aria-label={`切换至${loginTheme === "day" ? "夜间" : "日间"}模式`}>
             <span aria-hidden="true">{loginTheme === "day" ? "☀" : "☾"}</span>
             {loginTheme === "day" ? "日间" : "夜间"}
           </button>
         </div>
-        {activeVoiceError && <small className="login-voice-error" role="alert">{activeVoiceError}</small>}
         <audio
           ref={audioRef}
           src={scene.voice}
           autoPlay
           preload="auto"
-          onCanPlay={(event) => {
-            if (event.currentTarget.paused) void playLoginVoice(loginTheme, event.currentTarget);
-          }}
-          onPlay={() => setPlayingVoice(loginTheme)}
-          onEnded={() => setPlayingVoice(null)}
-          onError={() => {
-            setPlayingVoice(null);
-            setVoiceError({ theme: loginTheme, message: "语音暂时无法播放，请确认本地 MinIO 已启动。" });
-          }}
+          onPlay={() => setVoicePlaying(true)}
+          onPause={() => setVoicePlaying(false)}
+          onEnded={() => setVoicePlaying(false)}
+          onError={() => setVoicePlaying(false)}
         />
       </section>
     </main>
