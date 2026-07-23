@@ -141,6 +141,13 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   --login-muted: #9a94ad;
   --login-faint: #6f6a80;
   --login-shadow: rgba(0,0,0,.36);
+  --login-switch-text: rgba(255,246,250,.84);
+  --login-switch-bg: rgba(24,10,28,.34);
+  --login-switch-bg-hover: rgba(24,10,28,.54);
+  --login-switch-shadow: 0 2px 12px rgba(0,0,0,.64);
+  --login-switch-line: rgba(240,113,138,.78);
+  --login-switch-mark: rgba(255,215,223,.82);
+  --login-switch-core: #f0718a;
   position: relative;
   min-height: 100svh;
   display: flex;
@@ -164,6 +171,13 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   --login-muted: #64728a;
   --login-faint: #8290a6;
   --login-shadow: rgba(25,54,94,.22);
+  --login-switch-text: rgba(21,55,96,.88);
+  --login-switch-bg: rgba(255,247,220,.5);
+  --login-switch-bg-hover: rgba(255,247,220,.7);
+  --login-switch-shadow: 0 1px 11px rgba(255,245,207,.92);
+  --login-switch-line: rgba(167,134,50,.82);
+  --login-switch-mark: rgba(43,95,184,.78);
+  --login-switch-core: #a78632;
   background: #d8e4f3;
 }
 .admin-login-cover {
@@ -441,9 +455,9 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   min-height: 38px;
   border: 0;
   padding: 8px 15px 9px 19px;
-  color: rgba(255,255,255,.82);
-  background: linear-gradient(90deg, transparent, rgba(7,11,20,.28));
-  text-shadow: 0 2px 12px rgba(0,0,0,.6);
+  color: var(--login-switch-text);
+  background: linear-gradient(90deg, transparent, var(--login-switch-bg));
+  text-shadow: var(--login-switch-shadow);
   backdrop-filter: blur(5px);
   font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
   font-size: 12px;
@@ -457,7 +471,7 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   bottom: 2px;
   left: 20px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--login-gold) 72%, transparent));
+  background: linear-gradient(90deg, transparent, var(--login-switch-line));
   transform: scaleX(.55);
   transform-origin: right;
   opacity: .62;
@@ -468,17 +482,17 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--login-gold) 82%, transparent);
+  border: 1px solid var(--login-switch-mark);
   transform: rotate(45deg);
 }
 .login-theme-switch i::after {
   content: "";
   position: absolute;
   inset: 2px;
-  background: var(--login-accent-bright);
+  background: var(--login-switch-core);
   opacity: .62;
 }
-.login-theme-switch:hover { color: #fff; background: linear-gradient(90deg, transparent, rgba(7,11,20,.46)); }
+.login-theme-switch:hover { color: var(--login-switch-text); background: linear-gradient(90deg, transparent, var(--login-switch-bg-hover)); }
 .login-theme-switch:hover::after { transform: scaleX(1); opacity: 1; }
 .login-scene-copy audio { display: none; }
 .admin-session-loading { min-height: 100svh; display: grid; place-content: center; justify-items: center; gap: 12px; color: #9a94ad; background: #0e0b16; }

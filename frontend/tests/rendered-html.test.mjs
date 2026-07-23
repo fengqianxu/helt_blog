@@ -56,6 +56,8 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.match(viteConfig, /"\/storage"/);
   assert.match(styles, /\.login-theme-switch\s*\{[\s\S]*?right:\s*32px/);
   assert.match(styles, /\.login-theme-switch i\s*\{/);
+  assert.match(styles, /--login-switch-text:\s*rgba\(255,246,250,\.84\)/);
+  assert.match(styles, /--login-switch-text:\s*rgba\(21,55,96,\.88\)/);
 });
 
 test("server-renders the admin login design and real authentication form", async () => {
