@@ -74,6 +74,12 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     security_opt:
       - no-new-privileges:true
 
@@ -83,7 +89,7 @@ services:
     exclude_from_hc: true
     depends_on:
       minio:
-        condition: service_started
+        condition: service_healthy
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-helt_minio}
       MINIO_ROOT_PASSWORD: ${SERVICE_PASSWORD_64_MINIO}
