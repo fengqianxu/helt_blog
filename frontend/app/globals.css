@@ -429,8 +429,18 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
 .login-voice-glyph i:nth-child(4) { height: 8px; animation-delay: -.18s; }
 .login-voice-button:not(.is-playing) .login-voice-glyph i { animation-play-state: paused; opacity: .65; }
 @keyframes login-voice-wave { to { height: 4px; opacity: .55; } }
-.login-theme-switch { display: inline-flex; align-items: center; gap: 7px; padding: 9px 15px; font-size: 11px; }
-.login-theme-switch span { color: var(--login-gold); font-size: 15px; }
+.login-theme-switch {
+  position: absolute;
+  z-index: 3;
+  top: 28px;
+  left: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 18px;
+  font-size: 12px;
+  letter-spacing: .08em;
+}
 .login-theme-switch:hover { border-color: color-mix(in srgb, var(--login-gold) 72%, transparent); background: rgba(8,12,21,.5); }
 .login-scene-copy audio { display: none; }
 .admin-session-loading { min-height: 100svh; display: grid; place-content: center; justify-items: center; gap: 12px; color: #9a94ad; background: #0e0b16; }
@@ -509,6 +519,7 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 
 @media (max-width: 768px) {
   .admin-login { min-height: 100svh; align-items: center; flex-direction: column; overflow-x: hidden; overflow-y: auto; padding: 64px 14px 18px; }
+  .login-theme-switch { top: 18px; left: 18px; }
   .login-cover-day { background-position: 59% center; }
   .login-cover-night { background-position: 58% center; }
   .admin-login-shade { background: linear-gradient(180deg, rgba(15,10,22,.38) 0%, rgba(15,10,22,.72) 34%, rgba(15,10,22,.95) 68%, #0f0a16 100%); }
@@ -541,7 +552,6 @@ button:disabled { cursor: not-allowed; opacity: .35; }
   .login-scene-copy { padding-inline: 18px; }
   .login-scene-actions { align-items: stretch; }
   .login-voice-button { flex: 1 1 100%; }
-  .login-theme-switch { flex: 1; justify-content: center; }
   .hero-copy { top: 18%; }.hero h1 { font-size: 32px; }.voice-button .wave { display: none; }.post-stats { gap: 12px; }.article-card { border-left: 0; border-right: 0; }.media-grid article { grid-template-columns: 92px 1fr; }.admin-stats { grid-template-columns: 1fr; }.quick > div { grid-template-columns: 1fr; }
 }
 

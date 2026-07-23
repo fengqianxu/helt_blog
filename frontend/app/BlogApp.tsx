@@ -716,6 +716,9 @@ function AdminLogin() {
       <div className="admin-login-cover login-cover-day" aria-hidden="true" />
       <div className="admin-login-cover login-cover-night" aria-hidden="true" />
       <div className="admin-login-shade" aria-hidden="true" />
+      <button className="login-theme-switch" type="button" onClick={toggleLoginTheme} aria-label={`切换至${loginTheme === "day" ? "夜间" : "日间"}灵衣`}>
+        灵衣切换
+      </button>
       <form onSubmit={submitLogin} aria-busy={busy !== null}>
         <span className="auth-tag">契约仪式</span>
         <div className="login-brand">
@@ -757,10 +760,6 @@ function AdminLogin() {
           >
             <span className="login-voice-glyph" aria-hidden="true"><i /><i /><i /><i /></span>
             {voicePlaying ? "停止播放" : "语音放送"}
-          </button>
-          <button className="login-theme-switch" type="button" onClick={toggleLoginTheme} aria-label={`切换至${loginTheme === "day" ? "夜间" : "日间"}模式`}>
-            <span aria-hidden="true">{loginTheme === "day" ? "☀" : "☾"}</span>
-            {loginTheme === "day" ? "日间" : "夜间"}
           </button>
         </div>
         <audio

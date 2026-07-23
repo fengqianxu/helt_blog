@@ -63,6 +63,8 @@ test("server-renders the admin login design and real authentication form", async
   assert.match(html, /契 约 · 成 立/);
   assert.match(html, /通行密钥 Passkey 登录/);
   assert.match(html, /语音放送/);
+  assert.match(html, /灵衣切换/);
+  assert.doesNotMatch(html, /☀|☾/);
   assert.match(html, /問おう。貴方が私のマスターか？|召喚に応じ参上した。貴様が私のマスターという奴か？/);
   assert.match(html, /试问。你是我的御主吗？|应召唤前来。你这家伙就是我的御主吗？/);
   assert.match(html, /\/storage\/voice\/login\/(?:blue-saber|alter-saber)\.mp3/);
