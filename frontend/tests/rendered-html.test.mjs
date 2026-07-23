@@ -45,6 +45,8 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.match(app, /\/storage\/voice\/login\/blue-saber\.mp3/);
   assert.match(app, /\/storage\/voice\/login\/alter-saber\.mp3/);
   assert.match(app, /停止播放/);
+  assert.match(app, /requestAnimationFrame\(syncVoiceState\)/);
+  assert.match(app, /!audio\.paused && !audio\.ended/);
   assert.doesNotMatch(app, /语音暂时无法播放|onCanPlay/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.match(viteConfig, /127\.0\.0\.1:3001/);

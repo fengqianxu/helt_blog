@@ -534,6 +534,24 @@ function AdminLogin() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const scene = loginScenes[loginTheme];
 
+  useEffect(() => {
+    const audio = document.querySelector<HTMLAudioElement>("#admin-login-voice");
+    if (!audio) return;
+    const syncVoiceState = () => setVoicePlaying(!audio.paused && !audio.ended);
+    const frame = window.requestAnimationFrame(syncVoiceState);
+    audio.addEventListener("play", syncVoiceState);
+    audio.addEventListener("pause", syncVoiceState);
+    audio.addEventListener("ended", syncVoiceState);
+    audio.addEventListener("error", syncVoiceState);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      audio.removeEventListener("play", syncVoiceState);
+      audio.removeEventListener("pause", syncVoiceState);
+      audio.removeEventListener("ended", syncVoiceState);
+      audio.removeEventListener("error", syncVoiceState);
+    };
+  }, []);
+
   const stopLoginVoice = () => {
     const audio = audioRef.current;
     if (audio) {
@@ -746,14 +764,11 @@ function AdminLogin() {
           </button>
         </div>
         <audio
+          id="admin-login-voice"
           ref={audioRef}
           src={scene.voice}
           autoPlay
           preload="auto"
-          onPlay={() => setVoicePlaying(true)}
-          onPause={() => setVoicePlaying(false)}
-          onEnded={() => setVoicePlaying(false)}
-          onError={() => setVoicePlaying(false)}
         />
       </section>
     </main>
