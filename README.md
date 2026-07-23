@@ -23,6 +23,7 @@ Coolify 请直接选择仓库根目录的 `docker-compose.coolify.yml`，只需�
 访问地址：
 
 - 网站：<http://localhost:8080/>
+- 前端开发服务：在 `frontend` 目录运行 `npm run dev -- --host localhost --port 3000` 后访问 <http://localhost:3000/>；`/api` 会自动代理到本地后端的 `3001` 端口
 - API：<http://localhost:8080/api/v1>
 - 就绪检查：<http://localhost:8080/health/ready>
 - MinIO 控制台：<http://localhost:9001/>

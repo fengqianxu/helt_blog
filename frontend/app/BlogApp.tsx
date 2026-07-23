@@ -439,6 +439,10 @@ async function responseMessage(response: Response, fallback: string) {
   return payload?.error?.message || payload?.message || fallback;
 }
 
+function isJsonResponse(response: Response) {
+  return response.headers.get("content-type")?.includes("application/json") ?? false;
+}
+
 function decodeBase64Url(value: string) {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
@@ -465,7 +469,7 @@ function AdminSessionGate({ children }: { children: React.ReactNode }) {
           headers: { accept: "application/json" },
           signal: controller.signal,
         });
-        if (session.ok && session.headers.get("content-type")?.includes("application/json")) {
+        if (session.ok && isJsonResponse(session)) {
           setAuthenticated(true);
           return;
         }
@@ -475,7 +479,7 @@ function AdminSessionGate({ children }: { children: React.ReactNode }) {
           headers: { accept: "application/json" },
           signal: controller.signal,
         });
-        if (refreshed.ok) {
+        if (refreshed.ok && isJsonResponse(refreshed)) {
           setAuthenticated(true);
           return;
         }
@@ -522,6 +526,9 @@ function AdminLogin() {
       if (!response.ok) {
         throw new Error(await responseMessage(response, "认证失败，请稍后重试。"));
       }
+      if (!isJsonResponse(response)) {
+        throw new Error("认证接口尚未连接，请确认本地后端正在运行。");
+      }
       setFeedback({ tone: "success", message: "认证通过，正在进入控制室…" });
       window.setTimeout(() => { window.location.href = "/admin"; }, 260);
     } catch (error) {
@@ -547,6 +554,7 @@ function AdminLogin() {
       });
       const message = await responseMessage(response, "请联系服务器管理员重置密码。");
       if (!response.ok) throw new Error(message);
+      if (!isJsonResponse(response)) throw new Error("密码重置接口尚未连接。");
       setFeedback({ tone: "success", message });
     } catch (error) {
       setFeedback({ tone: "error", message: error instanceof Error ? error.message : "暂时无法提交重置请求。" });
@@ -573,6 +581,7 @@ function AdminLogin() {
         if (payload?.error?.code === "not_implemented") throw new Error("通行密钥尚未配置，请使用账号密码登录。");
         throw new Error(payload?.error?.message || "无法获取通行密钥认证请求。");
       }
+      if (!isJsonResponse(optionsResponse)) throw new Error("通行密钥接口尚未连接。");
       const options = await optionsResponse.json() as PasskeyRequestOptions;
       const credential = await navigator.credentials.get({
         publicKey: {

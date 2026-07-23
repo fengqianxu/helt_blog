@@ -42,11 +42,25 @@ export default defineConfig(async () => {
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
+  const backendProxyTarget =
+    process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3001";
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+      proxy: {
+        "/api": {
+          target: backendProxyTarget,
+          changeOrigin: true,
+        },
+        "/health": {
+          target: backendProxyTarget,
+          changeOrigin: true,
+        },
+      },
+    },
     plugins: [
       vinext(),
       sites(),
