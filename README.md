@@ -61,7 +61,7 @@ docker build --target test -t helt-blog-frontend-test ./frontend
 docker build --target test -t helt-blog-backend-test ./backend
 ```
 
-后端当前处于接口契约阶段：72 个产品端点均已登记，尚未实现的处理器返回标准 JSON `501 Not Implemented`。可执行契约位于 `backend/src/routes/contract.rs`，全局标准、业务边界和逐接口 TDD 用例见 [技术文档/05-后端接口标准与TDD.md](技术文档/05-后端接口标准与TDD.md)。
+后端当前处于接口契约阶段：101 个产品端点均已登记，尚未实现的处理器返回标准 JSON `501 Not Implemented`。其中包括完整素材库，以及分类/标签、说说、游戏和友链的后台维护接口。可执行契约位于 `backend/src/routes/contract.rs`，全局标准、业务边界和逐接口 TDD 用例见 [技术文档/05-后端接口标准与TDD.md](技术文档/05-后端接口标准与TDD.md)。
 
 ## 常用命令
 

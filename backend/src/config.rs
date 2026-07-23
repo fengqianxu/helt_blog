@@ -18,6 +18,7 @@ pub struct Config {
     pub minio_private_bucket: String,
     pub admin_username: String,
     pub admin_initial_password: Option<String>,
+    pub auth_jwt_secret: String,
     pub public_origin: String,
     pub cors_allowed_origins: Vec<String>,
     pub request_timeout_secs: u64,
@@ -31,6 +32,8 @@ pub enum ConfigError {
     Invalid { name: &'static str, value: String },
     #[error("DB_MIN_CONNECTIONS cannot be greater than DB_MAX_CONNECTIONS")]
     InvalidPoolSize,
+    #[error("AUTH_JWT_SECRET must contain at least 32 characters")]
+    WeakAuthSecret,
 }
 
 impl Config {
@@ -56,6 +59,11 @@ impl Config {
             });
         }
 
+        let auth_jwt_secret = required("AUTH_JWT_SECRET")?;
+        if auth_jwt_secret.chars().count() < 32 {
+            return Err(ConfigError::WeakAuthSecret);
+        }
+
         Ok(Self {
             environment: env::var("APP_ENV").unwrap_or_else(|_| "development".to_owned()),
             host: parse_or("APP_HOST", IpAddr::from_str("0.0.0.0").unwrap())?,
@@ -75,6 +83,7 @@ impl Config {
             admin_initial_password: env::var("ADMIN_INITIAL_PASSWORD")
                 .ok()
                 .filter(|password| !password.trim().is_empty()),
+            auth_jwt_secret,
             public_origin: env::var("PUBLIC_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost".to_owned()),
             cors_allowed_origins,

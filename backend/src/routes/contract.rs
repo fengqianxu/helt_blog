@@ -7,7 +7,7 @@
 
 use axum::{
     Json, Router,
-    extract::OriginalUri,
+    extract::{DefaultBodyLimit, OriginalUri},
     http::{Method, StatusCode},
     response::IntoResponse,
     routing::{MethodFilter, on},
@@ -17,6 +17,12 @@ use crate::{
     error::{ErrorBody, ErrorEnvelope},
     state::AppState,
 };
+
+/// 普通 JSON/表单请求的默认上限。大文件上传必须在契约中显式使用素材上限。
+pub const DEFAULT_REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+
+/// 素材库单文件上限，与最新设计稿的 200 MB 要求一致。
+pub const ASSET_UPLOAD_LIMIT_BYTES: usize = 200 * 1024 * 1024;
 
 /// 契约支持的 HTTP 方法。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -103,12 +109,14 @@ pub struct EndpointContract {
     pub response: &'static str,
     /// 状态转换、过滤范围、副作用和主要失败分支。
     pub business_rule: &'static str,
+    /// 路由允许读取的最大请求体；普通接口 2 MB，素材上传 200 MB。
+    pub max_body_bytes: usize,
 }
 
-macro_rules! endpoint {
+macro_rules! endpoint_with_limit {
     ($id:literal, $domain:literal, $method:ident, $path:literal, $example:literal,
      $auth:ident, $status:ident, $summary:literal, $request:literal,
-     $response:literal, $rule:literal) => {
+     $response:literal, $rule:literal, $limit:expr) => {
         EndpointContract {
             id: $id,
             domain: $domain,
@@ -121,11 +129,54 @@ macro_rules! endpoint {
             request: $request,
             response: $response,
             business_rule: $rule,
+            max_body_bytes: $limit,
         }
     };
 }
 
-/// v1 的全部 72 个业务端点。
+macro_rules! endpoint {
+    ($id:literal, $domain:literal, $method:ident, $path:literal, $example:literal,
+     $auth:ident, $status:ident, $summary:literal, $request:literal,
+     $response:literal, $rule:literal) => {
+        endpoint_with_limit!(
+            $id,
+            $domain,
+            $method,
+            $path,
+            $example,
+            $auth,
+            $status,
+            $summary,
+            $request,
+            $response,
+            $rule,
+            DEFAULT_REQUEST_BODY_LIMIT_BYTES
+        )
+    };
+}
+
+macro_rules! asset_upload_endpoint {
+    ($id:literal, $domain:literal, $method:ident, $path:literal, $example:literal,
+     $auth:ident, $status:ident, $summary:literal, $request:literal,
+     $response:literal, $rule:literal) => {
+        endpoint_with_limit!(
+            $id,
+            $domain,
+            $method,
+            $path,
+            $example,
+            $auth,
+            $status,
+            $summary,
+            $request,
+            $response,
+            $rule,
+            ASSET_UPLOAD_LIMIT_BYTES
+        )
+    };
+}
+
+/// v1 的全部 101 个业务端点。
 ///
 /// 健康检查和 API 索引属于运维入口，不计入产品端点总数。数组顺序按“认证 → 公开
 /// 业务 → 后台业务”排列，与 `技术文档/03-API接口总表.md` 保持一致。
@@ -354,7 +405,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "201 JSON id、status=pending、created_at",
         "按 IP+visitor 限流 3/分钟；校验长度与父子同目标；AI 预审只写判定，游客初始状态仍为 pending"
     ),
-    // 说说域：发布由 CLI 完成，HTTP 只负责展示、点赞和评论。
+    // 说说公开域：HTTP 负责展示、点赞和评论；内容维护走下方后台接口。
     endpoint!(
         "MOMENT-01",
         "说说",
@@ -381,7 +432,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 JSON like_count、liked",
         "同一 visitor_id 对同一说说执行原子切换；限流 30/分钟；目标不存在返回 404"
     ),
-    // 娱乐内容域：番剧由 Bilibili 同步，游戏由 CLI 维护，前台均为只读。
+    // 娱乐内容公开域：番剧由 Bilibili 同步，游戏由后台接口维护，前台均为只读。
     endpoint!(
         "MEDIA-01",
         "追番游戏",
@@ -408,7 +459,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 分页 items，meta 包含 counts{playing,finished}",
         "按 sort_order/id 排序；非法状态返回 422；没有详情端点"
     ),
-    // 友链域：公开提交只进入待审核状态，审核由 CLI 完成。
+    // 友链公开域：公开提交只进入待审核状态，审核由下方后台接口完成。
     endpoint!(
         "FRIEND-01",
         "友链",
@@ -420,7 +471,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "读取已通过友链",
         "Query: page/per_page",
         "200 分页 items[{name,url,avatar_url,description}]",
-        "仅返回 approved，按 sort_order/created_at 排序；total 用于前台计数"
+        "仅返回 approved，avatar_url 由当前 MinIO 素材版本派生；按 sort_order/created_at 排序；total 用于前台计数"
     ),
     endpoint!(
         "FRIEND-02",
@@ -433,7 +484,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "提交友链申请",
         "JSON: name、url、avatar_url?、description?",
         "201 JSON id、status=pending",
-        "按 IP 限流 2/小时；规范化 URL；重复 URL 返回 409；申请只能创建为 pending"
+        "按 IP 限流 2/小时；avatar_url 只是待审核来源，批准前须转存 MinIO 并建立 avatar_asset_id；重复 URL 返回 409；申请只能创建为 pending"
     ),
     // 站点域：聚合初始化、统计上报、搜索和 SEO 输出。
     endpoint!(
@@ -603,9 +654,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存或发布文章",
-        "JSON: title、content_md、category_id、tags、cover_key、is_pinned、allow_comment、kanban_ref、status?",
+        "JSON: title、content_md、category_id、tag_ids、cover_asset_id?、content_asset_ids?、is_pinned、allow_comment、kanban_ref、status?",
         "200 返回 id、slug、status、word_count、read_minutes、updated_at",
-        "全量覆盖且事务保存分类/标签；status=published 时校验必填字段并首次写 published_at；计算字数和阅读时长"
+        "全量覆盖且事务保存分类/标签/素材引用；素材类型必须兼容；status=published 时校验必填字段并首次写 published_at；计算字数和阅读时长"
     ),
     endpoint!(
         "ADMIN-ARTICLE-05",
@@ -699,19 +750,400 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 JSON affected",
         "只把 pending 改为 approved；显式 ids 含不存在项时忽略并返回实际 affected"
     ),
-    // 上传域：只登记后台素材；Live2D zip 使用专用端点。
+    // 后台分类与标签：公开列表仍只统计已发布文章，后台接口负责完整维护。
     endpoint!(
-        "UPLOAD-01",
-        "上传",
+        "ADMIN-CATEGORY-01",
+        "后台分类标签",
+        Get,
+        "/api/v1/admin/categories",
+        "/api/v1/admin/categories",
+        AdminJwt,
+        OK,
+        "读取全部分类及后台计数",
+        "无查询参数",
+        "200 JSON items[{id,name,slug,color,sort_order,published_count,draft_count}]",
+        "返回空分类；按 sort_order/id 排序；计数覆盖全部文章状态"
+    ),
+    endpoint!(
+        "ADMIN-CATEGORY-02",
+        "后台分类标签",
         Post,
-        "/api/v1/admin/uploads",
-        "/api/v1/admin/uploads",
+        "/api/v1/admin/categories",
+        "/api/v1/admin/categories",
         AdminJwt,
         CREATED,
-        "上传普通素材到 MinIO",
-        "multipart: file、kind=cover|article_image|bgm|voice|avatar",
-        "201 JSON object_key、url、size_bytes、mime",
-        "先校验 kind/MIME/大小再写对象；图片上限 10MB、音频 30MB；失败不得留下 uploads 脏记录"
+        "新建文章分类",
+        "JSON: name、slug、color?、sort_order?",
+        "201 返回完整分类",
+        "name/slug 唯一；slug 规范化后不可为空；color 为空或 #RRGGBB"
+    ),
+    endpoint!(
+        "ADMIN-CATEGORY-03",
+        "后台分类标签",
+        Patch,
+        "/api/v1/admin/categories/{id}",
+        "/api/v1/admin/categories/1",
+        AdminJwt,
+        OK,
+        "修改分类名称、颜色或顺序",
+        "路径 id；JSON 可包含 name、slug、color、sort_order",
+        "200 返回更新后的完整分类",
+        "至少提交一个字段；唯一键冲突返回 409；修改 slug 不改变文章关联"
+    ),
+    endpoint!(
+        "ADMIN-CATEGORY-04",
+        "后台分类标签",
+        Delete,
+        "/api/v1/admin/categories/{id}",
+        "/api/v1/admin/categories/1",
+        AdminJwt,
+        NO_CONTENT,
+        "删除未使用分类",
+        "路径 id",
+        "204 无响应体",
+        "仍被任意文章引用时返回 409；不存在返回 404；重复删除返回 404"
+    ),
+    endpoint!(
+        "ADMIN-TAG-01",
+        "后台分类标签",
+        Get,
+        "/api/v1/admin/tags",
+        "/api/v1/admin/tags",
+        AdminJwt,
+        OK,
+        "读取全部标签及后台计数",
+        "无查询参数",
+        "200 JSON items[{id,name,published_count,draft_count}]",
+        "返回未使用标签；按总使用量倒序、名称稳定排序"
+    ),
+    endpoint!(
+        "ADMIN-TAG-02",
+        "后台分类标签",
+        Post,
+        "/api/v1/admin/tags",
+        "/api/v1/admin/tags",
+        AdminJwt,
+        CREATED,
+        "新建文章标签",
+        "JSON: name",
+        "201 返回完整标签",
+        "清理首尾空白后 name 唯一；重复返回 409"
+    ),
+    endpoint!(
+        "ADMIN-TAG-03",
+        "后台分类标签",
+        Patch,
+        "/api/v1/admin/tags/{id}",
+        "/api/v1/admin/tags/1",
+        AdminJwt,
+        OK,
+        "重命名文章标签",
+        "路径 id；JSON: name",
+        "200 返回更新后的完整标签",
+        "空名称返回 422；重复名称返回 409；文章关联保持不变"
+    ),
+    endpoint!(
+        "ADMIN-TAG-04",
+        "后台分类标签",
+        Delete,
+        "/api/v1/admin/tags/{id}",
+        "/api/v1/admin/tags/1",
+        AdminJwt,
+        NO_CONTENT,
+        "删除标签",
+        "路径 id",
+        "204 无响应体",
+        "事务删除标签及文章关联但不删除文章；不存在返回 404"
+    ),
+    // 后台说说：补齐原先只能通过 CLI 完成的发布和维护能力。
+    endpoint!(
+        "ADMIN-MOMENT-01",
+        "后台说说",
+        Get,
+        "/api/v1/admin/moments",
+        "/api/v1/admin/moments?page=1&per_page=10",
+        AdminJwt,
+        OK,
+        "分页读取全部说说",
+        "Query: page/per_page、search?",
+        "200 分页 items，包含 images、like_count、reply_count、created_at、updated_at",
+        "按 created_at 倒序；回复计数包含各审核状态分项"
+    ),
+    endpoint!(
+        "ADMIN-MOMENT-02",
+        "后台说说",
+        Post,
+        "/api/v1/admin/moments",
+        "/api/v1/admin/moments",
+        AdminJwt,
+        CREATED,
+        "发布说说",
+        "JSON: content、asset_ids?、created_at?",
+        "201 返回完整说说",
+        "asset_ids 必须指向图片素材；按提交顺序建立引用；空内容且无图片返回 422"
+    ),
+    endpoint!(
+        "ADMIN-MOMENT-03",
+        "后台说说",
+        Put,
+        "/api/v1/admin/moments/{id}",
+        "/api/v1/admin/moments/1",
+        AdminJwt,
+        OK,
+        "编辑说说",
+        "路径 id；JSON: content、asset_ids、created_at?",
+        "200 返回更新后的完整说说",
+        "事务替换图片引用；不重置点赞和回复；不存在返回 404"
+    ),
+    endpoint!(
+        "ADMIN-MOMENT-04",
+        "后台说说",
+        Delete,
+        "/api/v1/admin/moments/{id}",
+        "/api/v1/admin/moments/1",
+        AdminJwt,
+        NO_CONTENT,
+        "删除说说",
+        "路径 id",
+        "204 无响应体",
+        "事务删除点赞、回复和素材引用；素材本体保留；不存在返回 404"
+    ),
+    // 后台游戏：补齐游戏条目的网页维护与排序能力。
+    endpoint!(
+        "ADMIN-GAME-01",
+        "后台游戏",
+        Get,
+        "/api/v1/admin/games",
+        "/api/v1/admin/games?page=1&per_page=10",
+        AdminJwt,
+        OK,
+        "分页读取全部游戏",
+        "Query: page/per_page、status?、search?",
+        "200 分页 items，包含 cover_asset、status、play_hours、comment、sort_order",
+        "后台可见 playing/finished/shelved 全状态；按 sort_order/id 排序"
+    ),
+    endpoint!(
+        "ADMIN-GAME-02",
+        "后台游戏",
+        Post,
+        "/api/v1/admin/games",
+        "/api/v1/admin/games",
+        AdminJwt,
+        CREATED,
+        "新增游戏",
+        "JSON: title、cover_asset_id?、status、play_hours、comment?",
+        "201 返回完整游戏",
+        "封面必须是图片素材；追加到排序末尾；时长不得为负"
+    ),
+    endpoint!(
+        "ADMIN-GAME-03",
+        "后台游戏",
+        Put,
+        "/api/v1/admin/games/{id}",
+        "/api/v1/admin/games/1",
+        AdminJwt,
+        OK,
+        "编辑游戏与进度",
+        "路径 id；JSON 与创建字段同形",
+        "200 返回更新后的完整游戏",
+        "全量覆盖可编辑字段；封面引用原子替换；不存在返回 404"
+    ),
+    endpoint!(
+        "ADMIN-GAME-04",
+        "后台游戏",
+        Delete,
+        "/api/v1/admin/games/{id}",
+        "/api/v1/admin/games/1",
+        AdminJwt,
+        NO_CONTENT,
+        "删除游戏",
+        "路径 id",
+        "204 无响应体",
+        "删除记录和素材引用并压缩排序；素材本体保留；不存在返回 404"
+    ),
+    endpoint!(
+        "ADMIN-GAME-05",
+        "后台游戏",
+        Put,
+        "/api/v1/admin/games/order",
+        "/api/v1/admin/games/order",
+        AdminJwt,
+        OK,
+        "批量调整游戏顺序",
+        "JSON: order 为全部游戏 id 的无重复数组",
+        "200 JSON items 为新顺序",
+        "完整覆盖当前集合并事务更新连续 sort_order；缺失或重复 id 返回 422"
+    ),
+    // 后台友链：公开申请进入 pending，后台完成审核、编辑、排序和移除。
+    endpoint!(
+        "ADMIN-FRIEND-01",
+        "后台友链",
+        Get,
+        "/api/v1/admin/friends",
+        "/api/v1/admin/friends?status=pending&page=1&per_page=10",
+        AdminJwt,
+        OK,
+        "分页读取全部友链申请",
+        "Query: page/per_page、status=pending|approved|rejected?、search?",
+        "200 分页 items，包含全部申请字段、status、sort_order、created_at、updated_at",
+        "后台可见全部状态；按 status、sort_order、created_at 稳定排序"
+    ),
+    endpoint!(
+        "ADMIN-FRIEND-02",
+        "后台友链",
+        Patch,
+        "/api/v1/admin/friends/{id}",
+        "/api/v1/admin/friends/1",
+        AdminJwt,
+        OK,
+        "审核或编辑友链",
+        "路径 id；JSON 可包含 name、url、avatar_url、avatar_asset_id、description、status",
+        "200 返回更新后的完整友链",
+        "至少一个字段；已通过友链必须引用 active 图片素材，公开 avatar_url 由 MinIO 当前版本派生；外链头像仅作为待审核来源；URL 冲突返回 409"
+    ),
+    endpoint!(
+        "ADMIN-FRIEND-03",
+        "后台友链",
+        Delete,
+        "/api/v1/admin/friends/{id}",
+        "/api/v1/admin/friends/1",
+        AdminJwt,
+        NO_CONTENT,
+        "移除友链或申请记录",
+        "路径 id",
+        "204 无响应体",
+        "删除任意状态记录并压缩已通过列表顺序；不存在返回 404"
+    ),
+    endpoint!(
+        "ADMIN-FRIEND-04",
+        "后台友链",
+        Put,
+        "/api/v1/admin/friends/order",
+        "/api/v1/admin/friends/order",
+        AdminJwt,
+        OK,
+        "调整已通过友链顺序",
+        "JSON: order 为全部 approved 友链 id 的无重复数组",
+        "200 JSON items 为新顺序",
+        "只排序 approved；完整覆盖当前集合；失败整体回滚"
+    ),
+    // 素材库：二进制全部存 MinIO，数据库只管理逻辑素材、版本和引用。
+    endpoint!(
+        "ASSET-01",
+        "素材库",
+        Get,
+        "/api/v1/admin/assets",
+        "/api/v1/admin/assets?page=1&per_page=20",
+        AdminJwt,
+        OK,
+        "分页搜索素材库",
+        "Query: page/per_page、media_type=image|audio|video|live2d|font|other?、search?、sort=uploaded_at|name|size?、order=asc|desc?、usable_for?",
+        "200 分页 items；meta 包含各类型计数、total_size_bytes、quota_bytes",
+        "只返回 active 素材；usable_for 按目标接受类型过滤；列表返回当前版本和 reference_count"
+    ),
+    asset_upload_endpoint!(
+        "ASSET-02",
+        "素材库",
+        Post,
+        "/api/v1/admin/assets",
+        "/api/v1/admin/assets",
+        AdminJwt,
+        CREATED,
+        "上传新素材到 MinIO",
+        "multipart: file、name?、media_type?；单文件最大 200MB",
+        "201 返回素材及 v1 当前版本、公开或受控访问 URL",
+        "按内容嗅探而非扩展名确定类型；对象先写 MinIO 再原子登记，失败执行补偿清理"
+    ),
+    endpoint!(
+        "ASSET-03",
+        "素材库",
+        Get,
+        "/api/v1/admin/assets/{id}",
+        "/api/v1/admin/assets/1",
+        AdminJwt,
+        OK,
+        "读取素材详情、版本和引用",
+        "路径 id",
+        "200 JSON asset、current_version、versions[]、references[]、preview",
+        "references 包含可读位置和后台跳转路径；不得返回 MinIO 密钥；不存在返回 404"
+    ),
+    endpoint!(
+        "ASSET-04",
+        "素材库",
+        Patch,
+        "/api/v1/admin/assets/{id}",
+        "/api/v1/admin/assets/1",
+        AdminJwt,
+        OK,
+        "重命名素材",
+        "路径 id；JSON: name",
+        "200 返回更新后的素材",
+        "只改显示名，不改 MinIO object_key 或已有引用；空名称返回 422"
+    ),
+    asset_upload_endpoint!(
+        "ASSET-05",
+        "素材库",
+        Post,
+        "/api/v1/admin/assets/{id}/versions",
+        "/api/v1/admin/assets/1/versions",
+        AdminJwt,
+        CREATED,
+        "替换素材文件并创建新版本",
+        "路径 id；multipart: file；单文件最大 200MB",
+        "201 返回新版本和更新后的素材",
+        "新文件媒体类型必须兼容原素材；旧版本保留；切换 current_version 后所有逻辑引用自动生效"
+    ),
+    endpoint!(
+        "ASSET-06",
+        "素材库",
+        Post,
+        "/api/v1/admin/assets/{id}/versions/{version}/restore",
+        "/api/v1/admin/assets/1/versions/1/restore",
+        AdminJwt,
+        OK,
+        "回滚到历史素材版本",
+        "路径 id、version 为正整数版本号",
+        "200 返回素材和新的当前版本",
+        "历史版本必须属于该素材；只切换 current_version，不复制 MinIO 对象；重复回滚幂等"
+    ),
+    endpoint!(
+        "ASSET-07",
+        "素材库",
+        Delete,
+        "/api/v1/admin/assets/{id}",
+        "/api/v1/admin/assets/1",
+        AdminJwt,
+        NO_CONTENT,
+        "删除未被引用的素材及全部版本",
+        "路径 id",
+        "204 无响应体",
+        "reference_count>0 返回 409；先标记删除再清理 MinIO 全部版本；部分失败可重试且不可留下可见脏数据"
+    ),
+    endpoint!(
+        "ASSET-08",
+        "素材库",
+        Post,
+        "/api/v1/admin/assets/batch-delete",
+        "/api/v1/admin/assets/batch-delete",
+        AdminJwt,
+        OK,
+        "批量删除可删除素材",
+        "JSON: 非空 asset_ids，最多 100 个",
+        "200 JSON deleted_ids、blocked[{id,reference_count}]、missing_ids",
+        "有引用项只进入 blocked，不影响其余可删项；每个素材删除规则与 ASSET-07 相同"
+    ),
+    endpoint!(
+        "ASSET-09",
+        "素材库",
+        Post,
+        "/api/v1/admin/assets/batch-download",
+        "/api/v1/admin/assets/batch-download",
+        AdminJwt,
+        OK,
+        "打包下载素材当前版本",
+        "JSON: 非空 asset_ids，最多 100 个",
+        "200 application/zip 流式响应，Content-Disposition 使用安全文件名",
+        "只读取各素材当前版本并从 MinIO 流式打包；限制总展开大小；临时文件必须清理"
     ),
     // 后台主题与媒体域：配置端点采用全量覆盖或明确的单资源更新。
     endpoint!(
@@ -724,7 +1156,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取日夜主题编辑配置",
         "无查询参数",
-        "200 JSON day、night、rule，含服务端派生的 URL/文件信息",
+        "200 JSON day、night、rule，含 cover_asset/voice_asset 及服务端派生 URL/文件信息",
         "quote_zh 等无页面控件字段也必须下发，前端全量保存时原样回传"
     ),
     endpoint!(
@@ -736,9 +1168,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "全量保存日夜主题",
-        "JSON 与 GET 形状一致；派生字段 cover_url/filename/size 提交时忽略",
+        "JSON 与 GET 可编辑字段同形；使用 cover_asset_id/voice_asset_id，派生 URL/文件信息提交时忽略",
         "200 返回规范化后的完整配置",
-        "在单事务中更新 day/night 与 rule；引用的 object_key 必须存在且类型匹配"
+        "在单事务中更新 day/night、素材引用与 rule；素材必须存在、处于 active 且类型匹配"
     ),
     endpoint!(
         "ADMIN-THEME-03",
@@ -775,9 +1207,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         CREATED,
         "新增 BGM 曲目",
-        "JSON: title、artist、file_key、duration_s",
+        "JSON: title、artist、asset_id、duration_s?",
         "201 返回完整曲目",
-        "file_key 必须是已登记 bgm 音频；追加到排序末尾；duration_s 不得为负"
+        "asset_id 必须是 active 音频素材；时长优先取素材元数据；追加到排序末尾"
     ),
     endpoint!(
         "ADMIN-MUSIC-03",
@@ -840,9 +1272,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "替换日间或夜间开屏语音",
-        "路径 mode=day|night；JSON: file_key、transcript?、credit?",
+        "路径 mode=day|night；JSON: asset_id、transcript?、credit?",
         "200 返回该 mode 的规范化语音配置",
-        "file_key 必须是 voice 音频；非法 mode 返回 404；同时更新对应 theme_config"
+        "asset_id 必须是 active 音频素材；非法 mode 返回 404；同时更新对应 theme_config 引用"
     ),
     endpoint!(
         "ADMIN-VOICE-03",
@@ -946,8 +1378,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取已上传 Live2D 模型",
         "无查询参数且免分页",
-        "200 JSON items[{id,name,model_url,thumbnail_url}]",
-        "只返回登记成功且入口 model3.json 存在的模型，按 created_at 倒序"
+        "200 JSON items[{id,name,asset_id,model_url,thumbnail_url}]",
+        "只返回引用 active Live2D 素材且入口 model3.json 存在的模型，按 created_at 倒序"
     ),
     endpoint!(
         "ADMIN-LIVE2D-02",
@@ -957,10 +1389,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/live2d/models",
         AdminJwt,
         CREATED,
-        "上传并登记 Live2D 模型包",
-        "multipart: file 为 zip、可选 name；最大 50MB",
-        "201 JSON id、name、model_url、thumbnail_url",
-        "防 Zip Slip，必须恰有可确定入口的 .model3.json；解压失败回滚对象；登记目录使用不可猜冲突 key"
+        "从素材库登记 Live2D 模型",
+        "JSON: asset_id、name?；asset 必须是已上传的 live2d 素材",
+        "201 JSON id、name、asset_id、model_url、thumbnail_url",
+        "素材上传阶段已完成 Zip Slip/压缩炸弹检查；必须恰有可确定入口的 .model3.json；重复登记返回 409"
     ),
     // 后台统计与站点运维域。
     endpoint!(
@@ -1089,8 +1521,13 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
 pub fn router() -> Router<AppState> {
     ENDPOINT_CONTRACTS
         .iter()
+        .filter(|contract| !crate::auth::implements(contract.method, contract.path))
         .fold(Router::new(), |router, contract| {
-            router.route(contract.path, on(contract.method.filter(), not_implemented))
+            router.route(
+                contract.path,
+                on(contract.method.filter(), not_implemented)
+                    .layer(DefaultBodyLimit::max(contract.max_body_bytes)),
+            )
         })
 }
 
@@ -1113,7 +1550,7 @@ async fn not_implemented(method: Method, OriginalUri(uri): OriginalUri) -> impl 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use axum::{
         body::Body,
@@ -1147,6 +1584,7 @@ mod tests {
             minio_private_bucket: "blog-private".to_owned(),
             admin_username: "test".to_owned(),
             admin_initial_password: Some("test".to_owned()),
+            auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,
@@ -1161,8 +1599,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_72_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 72);
+    fn catalog_contains_101_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 101);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1218,14 +1656,100 @@ mod tests {
                 "{} lacks business-rule comments",
                 contract.id
             );
+            assert!(
+                contract.max_body_bytes > 0
+                    && contract.max_body_bytes <= super::ASSET_UPLOAD_LIMIT_BYTES,
+                "{} has an invalid request-body limit",
+                contract.id
+            );
         }
 
         let admin_count = ENDPOINT_CONTRACTS
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 51);
+        assert_eq!(admin_count, 80);
         assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 21);
+
+        let large_body_endpoints = ENDPOINT_CONTRACTS
+            .iter()
+            .filter(|contract| contract.max_body_bytes == super::ASSET_UPLOAD_LIMIT_BYTES)
+            .map(|contract| (contract.method.as_str(), contract.path))
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            large_body_endpoints,
+            HashSet::from([
+                ("POST", "/api/v1/admin/assets"),
+                ("POST", "/api/v1/admin/assets/{id}/versions"),
+            ])
+        );
+    }
+
+    /// 固定整个目录的身份快照，避免“数量仍是 101，但某个方法或路径被悄悄替换”。
+    #[test]
+    fn catalog_identity_matches_the_reviewed_snapshot() {
+        let mut fingerprint = 0xcbf29ce484222325_u64;
+
+        for contract in ENDPOINT_CONTRACTS {
+            let authentication = match contract.authentication {
+                Authentication::Anonymous => "anonymous",
+                Authentication::RefreshCookie => "refresh_cookie",
+                Authentication::AdminJwt => "admin_jwt",
+            };
+            for part in [
+                contract.id.to_owned(),
+                contract.method.as_str().to_owned(),
+                contract.path.to_owned(),
+                contract.example_path.to_owned(),
+                authentication.to_owned(),
+                contract.success_status.as_u16().to_string(),
+                contract.max_body_bytes.to_string(),
+            ] {
+                for byte in part.as_bytes() {
+                    fingerprint ^= u64::from(*byte);
+                    fingerprint = fingerprint.wrapping_mul(0x100000001b3);
+                }
+                fingerprint ^= 0xff;
+                fingerprint = fingerprint.wrapping_mul(0x100000001b3);
+            }
+        }
+
+        assert_eq!(
+            fingerprint, 2_220_667_489_107_600_239,
+            "update only after reviewing the full catalog"
+        );
+    }
+
+    /// 代表性 URL 必须真的匹配其路径模板，不能只检查花括号已经被替换。
+    #[test]
+    fn every_example_path_matches_its_template() {
+        for contract in ENDPOINT_CONTRACTS {
+            let example_path = contract.example_path.split('?').next().unwrap();
+            let template_segments = contract.path.split('/').collect::<Vec<_>>();
+            let example_segments = example_path.split('/').collect::<Vec<_>>();
+
+            assert_eq!(
+                template_segments.len(),
+                example_segments.len(),
+                "{} example has a different segment count",
+                contract.id
+            );
+            for (template, example) in template_segments.iter().zip(example_segments) {
+                if template.starts_with('{') && template.ends_with('}') {
+                    assert!(
+                        !example.is_empty(),
+                        "{} has an empty path parameter",
+                        contract.id
+                    );
+                } else {
+                    assert_eq!(
+                        *template, example,
+                        "{} example does not match its route template",
+                        contract.id
+                    );
+                }
+            }
+        }
     }
 
     /// TDD 安全层：公开端点和后台会话要求必须显式声明，防止新增后台路由漏鉴权。
@@ -1251,7 +1775,7 @@ mod tests {
         }
     }
 
-    /// TDD 路由层：逐个执行 72 个代表请求，确认路径和方法已登记。
+    /// TDD 路由层：逐个执行 101 个代表请求，确认路径和方法已登记。
     ///
     /// 测试刻意不强制所有端点永远返回 501：某个占位处理器被真实实现替换后，空请求
     /// 可能得到 400/401/422 或成功响应，只要不是 404/405 就证明方法与路径仍然存在。
@@ -1315,20 +1839,47 @@ mod tests {
         }
     }
 
-    /// 不受支持的方法必须由路由层返回 405，而不是误落入 JSON 404 fallback。
+    /// 每个已登记路径的不受支持方法都必须返回 405，而不是误落入 JSON 404 fallback。
     #[tokio::test]
     async fn registered_paths_reject_unsupported_methods() {
-        let response = test_app()
-            .oneshot(
-                Request::builder()
-                    .method("TRACE")
-                    .uri("/api/v1/articles")
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
-            .await
-            .expect("router response");
+        let app = test_app();
+        let mut paths = HashMap::<&str, (&str, HashSet<axum::http::Method>)>::new();
+        for contract in ENDPOINT_CONTRACTS {
+            let entry = paths
+                .entry(contract.path)
+                .or_insert_with(|| (contract.example_path, HashSet::new()));
+            entry.1.insert(contract.method.http_method());
+        }
 
-        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let candidates = [
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+        ];
+        for (template, (example, supported)) in paths {
+            let method = candidates
+                .iter()
+                .find(|candidate| !supported.contains(*candidate))
+                .expect("each route has at least one unsupported method");
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(example)
+                        .body(Body::empty())
+                        .expect("valid request"),
+                )
+                .await
+                .expect("router response");
+
+            assert_eq!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {template} must be rejected by the registered path"
+            );
+        }
     }
 }

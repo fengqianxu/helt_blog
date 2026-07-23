@@ -22,6 +22,9 @@
    PUBLIC_ORIGIN=https://blog.example.com
    ```
 
+   普通 Docker Compose 部署还需把 `.env` 中的 `AUTH_JWT_SECRET` 替换为至少 32
+   字符的随机值；Coolify 会通过 `SERVICE_PASSWORD_64_JWT` 自动生成该密钥。
+
    如果需要允许其他前端域名跨域访问，再设置逗号分隔的 `CORS_ALLOWED_ORIGINS`；默认与 `PUBLIC_ORIGIN` 相同。
 5. 点击 Deploy。不要给 `frontend`、`backend`、`postgres` 或 `minio` 分配域名。
 

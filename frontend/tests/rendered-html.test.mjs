@@ -40,6 +40,18 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
 
+test("server-renders the admin login design and real authentication form", async () => {
+  const response = await render("/admin/login");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /令咒认证/);
+  assert.match(html, /契 约 · 登 录/);
+  assert.match(html, /通行密钥 Passkey 登录/);
+  assert.match(html, /name="username"/);
+  assert.match(html, /name="password"/);
+  assert.doesNotMatch(html, /value="excalibur"/);
+});
+
 test("renders the selected article and rejects unknown article slugs", async () => {
   const articleResponse = await render("/posts/spring-anime-2026");
   assert.equal(articleResponse.status, 200);

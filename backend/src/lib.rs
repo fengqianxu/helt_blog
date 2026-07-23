@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -62,7 +63,9 @@ pub fn build_app(state: AppState, config: &Config) -> Result<Router> {
     Ok(Router::new()
         .merge(routes::router())
         .fallback(error::not_found)
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(
+            routes::contract::DEFAULT_REQUEST_BODY_LIMIT_BYTES,
+        ))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             Duration::from_secs(config.request_timeout_secs),

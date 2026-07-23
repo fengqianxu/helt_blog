@@ -422,12 +422,248 @@ function Footer() { return <footer><Link href="/" className="brand">helt<span>.<
 
 function AdminRouter({ pathname, theme, toggleTheme, notify }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify }) {
   if (pathname === "/admin/login") return <AdminLogin />;
-  return <AdminLayout pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />;
+  return <AdminSessionGate><AdminLayout pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} /></AdminSessionGate>;
+}
+
+type ApiErrorPayload = { error?: { code?: string; message?: string }; message?: string };
+type PasskeyRequestOptions = {
+  challenge: string;
+  rp_id?: string;
+  timeout?: number;
+  user_verification?: UserVerificationRequirement;
+  allow_credentials?: Array<{ id: string; type?: PublicKeyCredentialType; transports?: AuthenticatorTransport[] }>;
+};
+
+async function responseMessage(response: Response, fallback: string) {
+  const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
+  return payload?.error?.message || payload?.message || fallback;
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer;
+}
+
+function encodeBase64Url(value: ArrayBuffer) {
+  const bytes = new Uint8Array(value);
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function AdminSessionGate({ children }: { children: React.ReactNode }) {
+  const [authenticated, setAuthenticated] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const verify = async () => {
+      try {
+        const session = await fetch("/api/v1/admin/auth/me", {
+          credentials: "include",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (session.ok && session.headers.get("content-type")?.includes("application/json")) {
+          setAuthenticated(true);
+          return;
+        }
+        const refreshed = await fetch("/api/v1/admin/auth/refresh", {
+          method: "POST",
+          credentials: "include",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (refreshed.ok) {
+          setAuthenticated(true);
+          return;
+        }
+        window.location.replace("/admin/login");
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          window.location.replace("/admin/login");
+        }
+      }
+    };
+    void verify();
+    return () => controller.abort();
+  }, []);
+
+  if (!authenticated) {
+    return <main className="admin-session-loading" role="status"><span aria-hidden="true">◆</span><p>正在验证令咒…</p></main>;
+  }
+  return children;
 }
 
 function AdminLogin() {
   const [show, setShow] = useState(false);
-  return <main className="admin-login"><form onSubmit={(e) => { e.preventDefault(); location.href = "/admin"; }}><span className="auth-tag">令咒认证</span><Link href="/" className="brand">helt<span>.</span> <small>ADMIN</small></Link><p>证明せよ。貴方が私のマスターであることを。</p><label>账号<input autoComplete="username" defaultValue="helt" /></label><label>密码<div><input autoComplete="current-password" type={show ? "text" : "password"} defaultValue="excalibur" /><button type="button" aria-label={show ? "隐藏密码" : "显示密码"} aria-pressed={show} onClick={() => setShow(!show)}>◉</button></div></label><label className="remember"><input type="checkbox" defaultChecked /> 七日内免认证</label><button className="admin-primary">以令咒之名 · 认证</button></form></main>;
+  const [username, setUsername] = useState("helt");
+  const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(true);
+  const [busy, setBusy] = useState<"password" | "passkey" | "forgot" | null>(null);
+  const [feedback, setFeedback] = useState<{ tone: "error" | "success"; message: string } | null>(null);
+
+  const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!username.trim() || !password) {
+      setFeedback({ tone: "error", message: "请输入账号和密码。" });
+      return;
+    }
+    setBusy("password");
+    setFeedback(null);
+    try {
+      const response = await fetch("/api/v1/admin/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password, remember }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseMessage(response, "认证失败，请稍后重试。"));
+      }
+      setFeedback({ tone: "success", message: "认证通过，正在进入控制室…" });
+      window.setTimeout(() => { window.location.href = "/admin"; }, 260);
+    } catch (error) {
+      setFeedback({ tone: "error", message: error instanceof Error ? error.message : "认证失败，请稍后重试。" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const requestPasswordReset = async () => {
+    if (!username.trim()) {
+      setFeedback({ tone: "error", message: "请先填写需要重置的账号。" });
+      return;
+    }
+    setBusy("forgot");
+    setFeedback(null);
+    try {
+      const response = await fetch("/api/v1/admin/auth/forgot-password", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: username.trim() }),
+      });
+      const message = await responseMessage(response, "请联系服务器管理员重置密码。");
+      if (!response.ok) throw new Error(message);
+      setFeedback({ tone: "success", message });
+    } catch (error) {
+      setFeedback({ tone: "error", message: error instanceof Error ? error.message : "暂时无法提交重置请求。" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const loginWithPasskey = async () => {
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      setFeedback({ tone: "error", message: "当前浏览器不支持通行密钥 Passkey。" });
+      return;
+    }
+    setBusy("passkey");
+    setFeedback(null);
+    try {
+      const optionsResponse = await fetch("/api/v1/admin/auth/passkey/options", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+      });
+      if (!optionsResponse.ok) {
+        const payload = await optionsResponse.json().catch(() => null) as ApiErrorPayload | null;
+        if (payload?.error?.code === "not_implemented") throw new Error("通行密钥尚未配置，请使用账号密码登录。");
+        throw new Error(payload?.error?.message || "无法获取通行密钥认证请求。");
+      }
+      const options = await optionsResponse.json() as PasskeyRequestOptions;
+      const credential = await navigator.credentials.get({
+        publicKey: {
+          challenge: decodeBase64Url(options.challenge),
+          rpId: options.rp_id,
+          timeout: options.timeout ?? 60_000,
+          userVerification: options.user_verification ?? "preferred",
+          allowCredentials: options.allow_credentials?.map((item) => ({
+            id: decodeBase64Url(item.id),
+            type: item.type ?? "public-key",
+            transports: item.transports,
+          })),
+        },
+      }) as PublicKeyCredential | null;
+      if (!credential) throw new Error("未选择通行密钥。");
+      const assertion = credential.response as AuthenticatorAssertionResponse;
+      const verifyResponse = await fetch("/api/v1/admin/auth/passkey/verify", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: credential.id,
+          raw_id: encodeBase64Url(credential.rawId),
+          type: credential.type,
+          response: {
+            authenticator_data: encodeBase64Url(assertion.authenticatorData),
+            client_data_json: encodeBase64Url(assertion.clientDataJSON),
+            signature: encodeBase64Url(assertion.signature),
+            user_handle: assertion.userHandle ? encodeBase64Url(assertion.userHandle) : null,
+          },
+        }),
+      });
+      if (!verifyResponse.ok) throw new Error(await responseMessage(verifyResponse, "通行密钥认证失败。"));
+      setFeedback({ tone: "success", message: "通行密钥认证通过，正在进入控制室…" });
+      window.setTimeout(() => { window.location.href = "/admin"; }, 260);
+    } catch (error) {
+      const cancelled = error instanceof DOMException && error.name === "NotAllowedError";
+      setFeedback({ tone: "error", message: cancelled ? "通行密钥认证已取消。" : error instanceof Error ? error.message : "通行密钥认证失败。" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <main className="admin-login">
+      <div className="admin-login-shade" aria-hidden="true" />
+      <form onSubmit={submitLogin} aria-busy={busy !== null}>
+        <span className="auth-tag">令咒认证</span>
+        <div className="login-brand">
+          <Link href="/" className="brand" aria-label="返回 helt 博客首页">helt<span>.</span> <small>ADMIN</small></Link>
+          <p lang="ja">証明せよ。貴方が私のマスターであることを。</p>
+        </div>
+        <label htmlFor="admin-username">账号
+          <input id="admin-username" name="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} disabled={busy !== null} />
+        </label>
+        <label htmlFor="admin-password">密码
+          <span className="password-control">
+            <input id="admin-password" name="password" autoComplete="current-password" type={show ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy !== null} autoFocus />
+            <button type="button" aria-label={show ? "隐藏密码" : "显示密码"} aria-pressed={show} onClick={() => setShow(!show)} disabled={busy !== null}>{show ? "◉" : "◎"}</button>
+          </span>
+        </label>
+        <div className="login-options">
+          <label className="remember">
+            <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy !== null} />
+            <span aria-hidden="true">{remember ? "✓" : ""}</span>
+            七日内免认证
+          </label>
+          <button className="forgot-link" type="button" onClick={requestPasswordReset} disabled={busy !== null}>{busy === "forgot" ? "提交中…" : "忘记密码？"}</button>
+        </div>
+        {feedback && <div className={`login-feedback ${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}><span aria-hidden="true">{feedback.tone === "error" ? "!" : "✓"}</span>{feedback.message}</div>}
+        <button className="login-submit" disabled={busy !== null}>{busy === "password" ? "认 证 中…" : "契 约 · 登 录"}</button>
+        <div className="login-divider" aria-hidden="true"><span /><small>OR</small><span /></div>
+        <button className="passkey-button" type="button" onClick={loginWithPasskey} disabled={busy !== null}>{busy === "passkey" ? "正在唤起通行密钥…" : "通行密钥 Passkey 登录"}</button>
+        <small className="login-security">SECURE ADMIN GATEWAY · TLS / HTTPONLY SESSION</small>
+      </form>
+    </main>
+  );
+}
+
+function AdminLogoutButton() {
+  const [busy, setBusy] = useState(false);
+  const logout = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fetch("/api/v1/admin/auth/logout", { method: "POST", credentials: "include" });
+    } finally {
+      window.location.replace("/admin/login");
+    }
+  };
+  return <button className="admin-logout" type="button" title="退出登录" aria-label="退出登录" onClick={logout} disabled={busy}>{busy ? "…" : "↪"}</button>;
 }
 
 const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/articles/new", "✎", "撰写文章"], ["/admin/comments", "◫", "评论审核"], ["/admin/kanban", "♙", "看板娘 · LLM"], ["/admin/media", "♫", "音乐与语音"], ["/admin/appearance", "◐", "封面与主题"], ["/admin/settings", "⚙", "站点设置"]];
@@ -450,7 +686,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify }: { pathname: strin
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [commandOpen]);
-  return <div className="admin-shell"><aside className="admin-sidebar"><Link href="/" className="brand">helt<span>.</span> <small>ADMIN</small></Link><nav aria-label="后台主导航">{adminNav.map(([href, icon, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}><i>{icon}</i>{label}</Link>)}</nav><div className="admin-user"><span>h</span><div><b>helt</b><small>Administrator</small></div><Link href="/admin/login" title="退出登录" aria-label="退出登录">↪</Link></div></aside><main className="admin-main"><header><div><span>CONTROL ROOM /</span><b>{current}</b></div><div><ThemeSwitch theme={theme} onClick={toggleTheme} compact /><button onClick={() => setCommandOpen(true)} aria-label="打开快捷导航" aria-expanded={commandOpen}>⌕</button><span className="admin-avatar">h</span></div></header><nav className="admin-mobile-nav" aria-label="后台移动导航">{adminNav.map(([href, icon, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}><i>{icon}</i><span>{label}</span></Link>)}</nav><div className="admin-content page-enter">{content}</div></main>{commandOpen && <div className="admin-command" role="dialog" aria-modal="true" aria-label="快速导航" onClick={() => setCommandOpen(false)}><div onClick={(e) => e.stopPropagation()}><header><b>快速前往</b><button aria-label="关闭快捷导航" onClick={() => setCommandOpen(false)}>×</button></header>{adminNav.map(([href, icon, label]) => <Link key={href} href={href}><i>{icon}</i><span>{label}</span><small>→</small></Link>)}</div></div>}</div>;
+  return <div className="admin-shell"><aside className="admin-sidebar"><Link href="/" className="brand">helt<span>.</span> <small>ADMIN</small></Link><nav aria-label="后台主导航">{adminNav.map(([href, icon, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}><i>{icon}</i>{label}</Link>)}</nav><div className="admin-user"><span>h</span><div><b>helt</b><small>Administrator</small></div><AdminLogoutButton /></div></aside><main className="admin-main"><header><div><span>CONTROL ROOM /</span><b>{current}</b></div><div><ThemeSwitch theme={theme} onClick={toggleTheme} compact /><button onClick={() => setCommandOpen(true)} aria-label="打开快捷导航" aria-expanded={commandOpen}>⌕</button><span className="admin-avatar">h</span></div></header><nav className="admin-mobile-nav" aria-label="后台移动导航">{adminNav.map(([href, icon, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}><i>{icon}</i><span>{label}</span></Link>)}</nav><div className="admin-content page-enter">{content}</div></main>{commandOpen && <div className="admin-command" role="dialog" aria-modal="true" aria-label="快速导航" onClick={() => setCommandOpen(false)}><div onClick={(e) => e.stopPropagation()}><header><b>快速前往</b><button aria-label="关闭快捷导航" onClick={() => setCommandOpen(false)}>×</button></header>{adminNav.map(([href, icon, label]) => <Link key={href} href={href}><i>{icon}</i><span>{label}</span><small>→</small></Link>)}</div></div>}</div>;
 }
 
 function AdminTitle({ title, sub, action }: { title: string; sub: string; action?: React.ReactNode }) { return <div className="admin-title"><div><h1>{title}</h1><p>{sub}</p></div>{action}</div>; }
