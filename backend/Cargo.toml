@@ -1,0 +1,27 @@
+[package]
+name = "blog-backend"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "chrono", "json", "uuid"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["catch-panic", "compression-gzip", "cors", "request-id", "set-header", "timeout", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["serde", "v7"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
