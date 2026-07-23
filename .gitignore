@@ -12,7 +12,8 @@
 .netrc
 credentials*.json
 secrets*.json
-frontend/.openai/
+frontend/.openai/*
+!frontend/.openai/hosting.json
 backend/target/
 frontend/node_modules/
 frontend/dist/
