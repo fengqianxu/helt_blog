@@ -617,19 +617,26 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 application/xml，包含静态页和全部 published 文章 URL",
         "不得包含草稿或后台 URL；lastmod 来自文章 updated_at；绝对地址使用 PUBLIC_ORIGIN"
     ),
-    // 公开主题、音乐和看板娘域。
+    // 公开灵衣、音乐和看板娘域。
+    //
+    // 灵衣（raiment）是主题色、全站封面、开屏媒体、看板娘人格和 Live2D
+    // 引用的聚合边界。前端不得再分别拉取 theme 与 kanban profile 后自行拼装，
+    // 否则两个请求处于不同配置版本时会出现封面和人格错配。
+    //
+    // v1 暂时只有 day -> saber、night -> alter-saber 两个绑定；响应使用稳定 id
+    // 和 bindings 映射，为未来同一模式绑定多套灵衣、由访客多选预留协议空间。
     endpoint!(
-        "THEME-01",
-        "主题媒体",
+        "RAIMENT-01",
+        "灵衣",
         Get,
-        "/api/v1/themes",
-        "/api/v1/themes",
+        "/api/v1/raiments",
+        "/api/v1/raiments",
         Anonymous,
         OK,
-        "读取日夜双主题资源包",
+        "读取公开灵衣目录与当前模式绑定",
         "无查询参数",
-        "200 JSON day、night、rule，资源 URL 均可直接公开访问",
-        "一次返回双主题，当前模式由前端本地决定；不得返回 MinIO 私钥或内部 object metadata"
+        "200 JSON items[{id,name,cover_url,theme,persona,live2d,opening_voice}]、bindings{day:[id],night:[id]}、rule",
+        "资源 URL 均可公开访问；当前模式由前端本地决定；v1 每个 bindings 数组恰有一个 id；不得返回 prompt、密钥或内部 object metadata"
     ),
     endpoint!(
         "THEME-02",
@@ -644,19 +651,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 JSON items[{id,title,artist,file_url,duration_s}]、autoplay、default_volume",
         "features.music=false 返回 403；曲目按 sort_order/id 排序"
     ),
-    endpoint!(
-        "KANBAN-01",
-        "看板娘",
-        Get,
-        "/api/v1/kanban/profile",
-        "/api/v1/kanban/profile?theme=day",
-        Anonymous,
-        OK,
-        "读取当前主题看板娘公开配置",
-        "Query: theme=day|night 必填",
-        "200 JSON persona_name、greeting_template、live2d_model_url、tts_enabled、tts_voice",
-        "features.kanban=false 返回 403；按主题选择 persona、模型和日夜 TTS 音色；非法主题返回 422"
-    ),
+    // 旧 GET /themes 与 GET /kanban/profile 被 RAIMENT-01 取代并删除。
+    // 看板娘公开展示数据随灵衣一次下发；对话端点只接收稳定 raiment_id。
     endpoint!(
         "KANBAN-02",
         "看板娘",
@@ -666,9 +662,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         Anonymous,
         OK,
         "代理一次看板娘对话",
-        "JSON: session_id、message、article_slug?、theme",
+        "JSON: session_id、message、article_slug?、raiment_id",
         "200 JSON reply、motion?、egg?、fallback",
-        "限流 6/分钟；最多回复 3 句；可选注入已发布文章上下文；LLM 故障时返回降级台词且 fallback=true"
+        "raiment_id 必须来自 RAIMENT-01 且当前可用；服务端据此选择人格与动作；限流 6/分钟；最多回复 3 句；LLM 故障时返回降级台词且 fallback=true"
     ),
     // 后台文章域：草稿创建、编辑、发布和批量状态变更。
     endpoint!(
@@ -1210,45 +1206,49 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 application/zip 流式响应，Content-Disposition 使用安全文件名",
         "只读取各素材当前版本并从 MinIO 流式打包；限制总展开大小；临时文件必须清理"
     ),
-    // 后台主题与媒体域：配置端点采用全量覆盖或明确的单资源更新。
+    // 后台灵衣与媒体域。
+    //
+    // 灵衣用稳定字符串 id 做身份，不再把 day/night 当作资源主键。bindings 只是
+    // 展示模式到灵衣 id 的关联：v1 每个模式单选，后续可直接放开为多选数组，
+    // 无需再次修改灵衣实体或看板娘聊天协议。
     endpoint!(
-        "ADMIN-THEME-01",
-        "后台主题媒体",
+        "ADMIN-RAIMENT-01",
+        "后台灵衣",
         Get,
-        "/api/v1/admin/themes",
-        "/api/v1/admin/themes",
+        "/api/v1/admin/raiments",
+        "/api/v1/admin/raiments",
         AdminJwt,
         OK,
-        "读取日夜主题编辑配置",
-        "无查询参数",
-        "200 JSON day、night、rule，含 cover_asset/voice_asset 及服务端派生 URL/文件信息",
-        "quote_zh 等无页面控件字段也必须下发，前端全量保存时原样回传"
+        "读取全部灵衣、共享 LLM 设置和模式绑定",
+        "无查询参数；v1 数据量小，免分页",
+        "200 JSON items[{id,name,cover_asset,theme,persona,prompt,live2d_model_id,opening_voice_asset}]、bindings、rule、llm",
+        "素材 URL/文件信息由服务端派生；LLM 密钥不下发；返回 revision 供写入时做乐观并发控制"
     ),
     endpoint!(
-        "ADMIN-THEME-02",
-        "后台主题媒体",
+        "ADMIN-RAIMENT-02",
+        "后台灵衣",
         Put,
-        "/api/v1/admin/themes",
-        "/api/v1/admin/themes",
+        "/api/v1/admin/raiments/{id}",
+        "/api/v1/admin/raiments/saber",
         AdminJwt,
         OK,
-        "全量保存日夜主题",
-        "JSON 与 GET 可编辑字段同形；使用 cover_asset_id/voice_asset_id，派生 URL/文件信息提交时忽略",
-        "200 返回规范化后的完整配置",
-        "在单事务中更新 day/night、素材引用与 rule；素材必须存在、处于 active 且类型匹配"
+        "保存单套灵衣",
+        "路径 id 为稳定 slug；JSON: revision、name、cover_asset_id、theme、persona、prompt、live2d_model_id?、opening_voice_asset_id?",
+        "200 返回规范化后的灵衣与新 revision",
+        "只更新目标灵衣，禁止全量覆盖其它灵衣；revision 冲突返回 409；素材必须 active 且类型匹配；id 创建后不可修改"
     ),
     endpoint!(
-        "ADMIN-THEME-03",
-        "后台主题媒体",
-        Post,
-        "/api/v1/admin/themes/reset",
-        "/api/v1/admin/themes/reset",
+        "ADMIN-RAIMENT-03",
+        "后台灵衣",
+        Put,
+        "/api/v1/admin/raiments/bindings",
+        "/api/v1/admin/raiments/bindings",
         AdminJwt,
         OK,
-        "重置主题默认值",
-        "无请求体",
-        "200 返回重置后的完整主题配置",
-        "重置数据库配置但不删除已上传素材；操作应可重复执行"
+        "保存日间与夜间模式的灵衣绑定及切换规则",
+        "JSON: bindings{day:[raiment_id],night:[raiment_id]}、rule{follow_system,schedule}",
+        "200 返回规范化后的 bindings 与 rule",
+        "v1 校验 day/night 各恰有一个启用灵衣；未来开放多选时仅放宽数组数量；同一灵衣可否跨模式复用由服务端策略决定"
     ),
     endpoint!(
         "ADMIN-MUSIC-01",
@@ -1367,33 +1367,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 返回规范化后的 tts 配置",
         "两个 voice id 均须存在于枚举，允许相同；更新后看板娘 profile 立即按主题下发"
     ),
-    // 后台看板娘域：配置、沙盒测试、状态和 Live2D 资源。
-    endpoint!(
-        "ADMIN-KANBAN-01",
-        "后台看板娘",
-        Get,
-        "/api/v1/admin/kanban/config",
-        "/api/v1/admin/kanban/config",
-        AdminJwt,
-        OK,
-        "读取看板娘与 LLM 全部配置",
-        "无查询参数",
-        "200 JSON live2d、sync_theme_persona、LLM 参数、prompts、personas、triggers",
-        "敏感 API 密钥不通过本端点下发；返回完整可回传配置"
-    ),
-    endpoint!(
-        "ADMIN-KANBAN-02",
-        "后台看板娘",
-        Put,
-        "/api/v1/admin/kanban/config",
-        "/api/v1/admin/kanban/config",
-        AdminJwt,
-        OK,
-        "全量保存看板娘配置",
-        "JSON 与 GET 可编辑字段同形",
-        "200 返回规范化后的完整配置",
-        "校验模型、temperature、max_tokens、Live2D 引用和 trigger 唯一性后原子覆盖"
-    ),
+    // 后台看板娘共享能力：人格、prompt 与 Live2D 选择已并入单套灵衣；
+    // 模型枚举、沙盒测试、在线状态和 Live2D 素材登记仍是跨灵衣共享能力。
     endpoint!(
         "ADMIN-KANBAN-03",
         "后台看板娘",
@@ -1416,9 +1391,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "使用草稿配置进行沙盒对话",
-        "JSON: message、persona、draft_config",
+        "JSON: message、raiment_id、draft_raiment、draft_llm?",
         "200 JSON reply、triggered_egg?、motion?",
-        "不得落库 draft_config 或正式聊天统计；仍执行参数校验和供应商超时保护"
+        "draft_raiment 采用 ADMIN-RAIMENT-02 的可编辑形状；不得落库草稿或正式聊天统计；仍执行参数校验和供应商超时保护"
     ),
     endpoint!(
         "ADMIN-KANBAN-05",

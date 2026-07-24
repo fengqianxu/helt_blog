@@ -1597,7 +1597,7 @@ function AdminAccountCenter({
   );
 }
 
-const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/articles/new", "✎", "撰写文章"], ["/admin/comments", "◫", "评论审核"], ["/admin/raiments", "♙", "灵衣"], ["/admin/media", "♫", "音乐与语音"], ["/admin/settings", "⚙", "站点设置"]];
+const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/articles/new", "✎", "撰写文章"], ["/admin/comments", "◫", "评论审核"], ["/admin/assets", "▧", "素材库"], ["/admin/raiments", "♙", "灵衣"], ["/admin/media", "♫", "音乐与语音"], ["/admin/settings", "⚙", "站点设置"]];
 
 function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify; admin: AdminIdentity }) {
   const [commandOpen, setCommandOpen] = useState(false);
@@ -1609,6 +1609,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   else if (pathname === "/admin/articles") content = <ArticleManager notify={notify} />;
   else if (pathname.includes("/admin/articles/")) content = <ArticleEditor notify={notify} />;
   else if (pathname === "/admin/comments") content = <CommentManager notify={notify} />;
+  else if (pathname === "/admin/assets") content = <AssetManager notify={notify} />;
   else if (pathname === "/admin/raiments" || pathname === "/admin/kanban" || pathname === "/admin/appearance") content = <RaimentSettings notify={notify} />;
   else if (pathname === "/admin/media") content = <MediaSettings notify={notify} />;
   else content = <SiteSettings notify={notify} />;
@@ -1687,7 +1688,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
 function AdminTitle({ title, sub, action }: { title: string; sub: string; action?: React.ReactNode }) { return <div className="admin-title"><div><h1>{title}</h1><p>{sub}</p></div>{action}</div>; }
 
 function Dashboard({ notify }: { notify: Notify }) {
-  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · 2026.07.23" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} /><div className="admin-stats">{[["128", "文章总数", "+3 本月"], ["187,203", "累计访客", "+12.4%"], ["1,842", "评论总数", "17 待审核"], ["2,048", "运行天数", "99.98%"]].map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS</small></h2><div className="chart">{[35, 52, 43, 66, 58, 78, 72, 88, 60, 82, 76, 94, 86, 100].map((n, i) => <i key={i} style={{ height: `${n}%` }} />)}</div></section><section className="admin-panel recent-comments"><h2>最新评论 <Link href="/admin/comments">全部 →</Link></h2>{["Rin", "Aki", "Kumo"].map((n, i) => <div key={n}><span>{n[0]}</span><p><b>{n} · {i + 1} 小时前</b>开屏语音这个想法太棒了，期待夜间 Alter…</p><span className="mini-actions"><button onClick={() => notify(`已通过 ${n} 的评论`, "success")}>通过</button><button onClick={() => notify(`已拒绝 ${n} 的评论`, "danger")}>拒绝</button><button onClick={() => notify(`正在回复 ${n}`)}>回复</button></span></div>)}</section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/comments">◫<span>审核评论</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
+  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · 2026.07.23" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} /><div className="admin-stats">{[["128", "文章总数", "+3 本月"], ["187,203", "累计访客", "+12.4%"], ["1,842", "评论总数", "17 待审核"], ["2,048", "运行天数", "99.98%"]].map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS</small></h2><div className="chart">{[35, 52, 43, 66, 58, 78, 72, 88, 60, 82, 76, 94, 86, 100].map((n, i) => <i key={i} style={{ height: `${n}%` }} />)}</div></section><section className="admin-panel recent-comments"><h2>最新评论 <Link href="/admin/comments">全部 →</Link></h2>{["Rin", "Aki", "Kumo"].map((n, i) => <div key={n}><span>{n[0]}</span><p><b>{n} · {i + 1} 小时前</b>开屏语音这个想法太棒了，期待夜间 Alter…</p><span className="mini-actions"><button onClick={() => notify(`已通过 ${n} 的评论`, "success")}>通过</button><button onClick={() => notify(`已拒绝 ${n} 的评论`, "danger")}>拒绝</button><button onClick={() => notify(`正在回复 ${n}`)}>回复</button></span></div>)}</section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/assets">▧<span>上传素材</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
 }
 
 function ArticleManager({ notify }: { notify: Notify }) {
@@ -1713,6 +1714,59 @@ function CommentManager({ notify }: { notify: Notify }) {
   return <><AdminTitle title="评论审核" sub={`COMMENTS · ${items.length - done.length} 待处理`} /><div className="moderation-list">{items.filter((x) => !done.includes(x.n)).map((x) => <article key={x.n}><span>{x.n[0]}</span><div><b>{x.n} <small>· 刚刚</small></b><p>{x.text}</p><small>评论于：<span>《{x.post}》</span></small></div><div><button onClick={() => handle(x.n, "通过")}>✓ 通过</button><button onClick={() => handle(x.n, "拒绝")}>× 拒绝</button><button onClick={() => notify(`已打开对 ${x.n} 的回复框`)}>↩ 回复</button></div></article>)}{done.length === items.length && <div className="empty-panel"><b>✓</b><p>全部评论已处理完毕。</p><button onClick={() => setDone([])}>恢复演示数据</button></div>}</div></>;
 }
 
+type AdminAsset = {
+  id: string;
+  name: string;
+  type: "图片" | "音频" | "视频" | "Live2D" | "其他";
+  meta: string;
+  references: number;
+  preview?: string;
+};
+
+function AssetManager({ notify }: { notify: Notify }) {
+  const [assets, setAssets] = useState<AdminAsset[]>([]);
+  const [filter, setFilter] = useState("全部");
+  const [query, setQuery] = useState("");
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [detail, setDetail] = useState<AdminAsset | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const uploadInput = useRef<HTMLInputElement>(null);
+  const localUrls = useRef<string[]>([]);
+
+  useEffect(() => () => localUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
+
+  const addFiles = (files: FileList | File[]) => {
+    const next = Array.from(files).filter((file) => file.size <= 200 * 1024 * 1024).map((file, index): AdminAsset => {
+      const type: AdminAsset["type"] = file.type.startsWith("image/") ? "图片" : file.type.startsWith("audio/") ? "音频" : file.type.startsWith("video/") ? "视频" : file.name.endsWith(".zip") || file.name.endsWith(".model3.json") ? "Live2D" : "其他";
+      const preview = type === "图片" ? URL.createObjectURL(file) : undefined;
+      if (preview) localUrls.current.push(preview);
+      return { id: `local-${Date.now()}-${index}`, name: file.name, type, meta: `${(file.size / 1024 / 1024).toFixed(file.size > 1024 * 1024 ? 1 : 3)} MB · 刚刚上传`, references: 0, preview };
+    });
+    if (!next.length) return notify("没有可上传的文件；单文件不能超过 200 MB", "danger");
+    setAssets((items) => [...next, ...items]);
+    notify(`${next.length} 个素材已上传，可在其他配置中引用`, "success");
+  };
+
+  const counts = (type: string) => type === "全部" ? assets.length : assets.filter((asset) => asset.type === type).length;
+  const visible = assets.filter((asset) => (filter === "全部" || asset.type === filter) && asset.name.toLowerCase().includes(query.toLowerCase()));
+  const toggleSelected = (id: string) => setSelectedIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
+
+  return <div className="asset-page">
+    <AdminTitle title="素材库" sub={`ASSETS · ${assets.length} 项`} action={<div className="asset-title-actions"><input aria-label="搜索素材" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="⌕ 搜索文件名…" /><button onClick={() => { setSelecting((value) => !value); setSelectedIds([]); }}>{selecting ? "完成" : "☐ 选择"}</button><button className="admin-primary" onClick={() => uploadInput.current?.click()}>↑ 上传素材</button><input ref={uploadInput} type="file" multiple hidden onChange={(event) => event.target.files && addFiles(event.target.files)} /></div>} />
+    <div className="asset-tabs">{["全部", "图片", "音频", "视频", "Live2D", "其他"].map((type) => <button key={type} className={filter === type ? "active" : ""} onClick={() => setFilter(type)}>{type === "Live2D" ? "Live2D 模型" : type} {counts(type)}</button>)}<span>排序：<b>最近上传 ▾</b></span></div>
+    <div className={cx("asset-dropzone", dragging && "dragging")} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); addFiles(event.dataTransfer.files); }} onClick={() => uploadInput.current?.click()} role="button" tabIndex={0} onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && uploadInput.current?.click()}>⇩ 拖拽文件到此处上传 <span>webp / png / mp3 / flac / mp4 / model3.json（zip 整包）· 单文件 ≤ 200 MB</span></div>
+    {selecting && <div className="asset-batchbar"><b>已选择 {selectedIds.length} 项</b><span>业务正在引用的素材不能删除</span><button disabled={!selectedIds.length} onClick={() => notify(`已准备下载 ${selectedIds.length} 个素材（Mock）`)}>⇩ 批量下载</button><button disabled={!selectedIds.length} onClick={() => { const blocked = assets.filter((item) => selectedIds.includes(item.id) && item.references > 0).length; setAssets((items) => items.filter((item) => !selectedIds.includes(item.id) || item.references > 0)); setSelectedIds([]); notify(blocked ? `${blocked} 项仍被引用，已保留；其余素材已删除` : "所选素材已删除", blocked ? "normal" : "danger"); }}>删除可删项</button></div>}
+    <div className="asset-grid">{visible.map((asset) => <button key={asset.id} className={cx("asset-card", selectedIds.includes(asset.id) && "selected")} onClick={() => selecting ? toggleSelected(asset.id) : setDetail(asset)}>
+      <div className={cx("asset-preview", `asset-${asset.type.toLowerCase()}`)} style={asset.preview ? { backgroundImage: `url("${asset.preview}")` } : undefined}><span>{asset.type}</span>{selecting && <i>{selectedIds.includes(asset.id) ? "✓" : ""}</i>}{!asset.preview && <b>{asset.type === "Live2D" ? "L2D" : asset.type === "音频" ? "▥▥▥" : asset.type === "视频" ? "▶" : "FILE"}</b>}</div>
+      <div><b>{asset.name}</b><small>{asset.meta}</small><span className={asset.references ? "used" : ""}>{asset.references ? `被引用 ${asset.references} 处` : "未引用"}</span></div>
+    </button>)}</div>
+    {!visible.length && <div className="empty-panel">没有符合当前筛选的素材。</div>}
+    <div className="asset-footer"><span>点击素材查看详情 · 点“选择”进入多选模式后可批量下载 / 删除</span><div><button className="active">1</button><button>2</button><button>3</button></div></div>
+    {detail && <div className="asset-detail-overlay" role="dialog" aria-modal="true" aria-label="素材详情" onClick={() => setDetail(null)}><section onClick={(event) => event.stopPropagation()}><header><div><span>ASSET DETAIL</span><h2>{detail.name}</h2></div><button aria-label="关闭素材详情" onClick={() => setDetail(null)}>×</button></header><div className={cx("asset-detail-preview", `asset-${detail.type.toLowerCase()}`)} style={detail.preview ? { backgroundImage: `url("${detail.preview}")` } : undefined}>{!detail.preview && <b>{detail.type === "Live2D" ? "L2D" : detail.type === "音频" ? "▥▥▥" : detail.type === "视频" ? "▶" : "FILE"}</b>}</div><dl><div><dt>素材类型</dt><dd>{detail.type}</dd></div><div><dt>文件信息</dt><dd>{detail.meta}</dd></div><div><dt>引用状态</dt><dd>{detail.references ? `被引用 ${detail.references} 处` : "当前未引用"}</dd></div><div><dt>素材 ID</dt><dd>{detail.id}</dd></div></dl><footer><button onClick={() => notify("请选择新版本文件（Mock）")}>替换版本</button><button disabled={detail.references > 0} onClick={() => { setAssets((items) => items.filter((item) => item.id !== detail.id)); setDetail(null); notify("素材已删除", "danger"); }}>删除素材</button></footer></section></div>}
+  </div>;
+}
+
 function RaimentSettings({ notify }: { notify: Notify }) {
   const [selected, setSelected] = useState<Theme>("day");
   const [temperature, setTemperature] = useState(7);
@@ -1725,7 +1779,7 @@ function RaimentSettings({ notify }: { notify: Notify }) {
     </div>
     <section className="raiment-hero" style={{ "--raiment-primary": raiment.colors.primary, "--raiment-secondary": raiment.colors.secondary } as React.CSSProperties}>
       <Image src={raiment.cover} width={5120} height={2160} sizes="(max-width: 900px) 100vw, 62vw" alt={`${raiment.name} 灵衣预览`} />
-      <div><span>{raiment.modeLabel} · 已启用</span><h2>{raiment.name}</h2><p>此封面同时用于开屏、博客首页与灵衣预览，修改后会保持同步。</p><button onClick={() => notify(`请选择 ${raiment.name} 的新封面文件（Mock）`)}>更换同步封面</button></div>
+      <div><span>{raiment.modeLabel} · 已启用</span><h2>{raiment.name}</h2><p>此封面同时用于开屏、博客首页与灵衣预览。文件必须先上传到素材库，再由灵衣引用素材 ID。</p><Link href="/admin/assets">从素材库选择封面</Link></div>
     </section>
     <div className="raiment-settings-grid">
       <section className="admin-panel raiment-theme-panel"><h2>主题外观 <small>THEME TOKENS</small></h2><div className="color-token"><i style={{ background: raiment.colors.primary }} /><label>主色<input defaultValue={raiment.colors.primary} key={`${raiment.id}-primary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.secondary }} /><label>辅色<input defaultValue={raiment.colors.secondary} key={`${raiment.id}-secondary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.background }} /><label>背景色<input defaultValue={raiment.colors.background} key={`${raiment.id}-background`} /></label></div></section>
