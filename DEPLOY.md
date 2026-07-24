@@ -3,7 +3,7 @@
 项目提供两个部署入口：
 
 - `docker-compose.coolify.yml`：用于 Coolify，不发布任何宿主机端口，由 Coolify 代理统一接入。
-- `docker-compose.yml`：用于 Docker Engine + 官方 Compose 插件，默认只监听宿主机 `127.0.0.1:8080`。
+- `docker-compose.yml`：用于 Docker Engine + 官方 Compose 插件，默认只监听宿主机 `127.0.0.1:3000`。
 
 两种方式都会启动网关、前端、后端、PostgreSQL 与 MinIO；数据库迁移和对象桶初始化会在首次启动时自动完成。
 
@@ -57,7 +57,7 @@ cp .env.example .env
 # 并按实际访问地址设置 PUBLIC_ORIGIN 和 CORS_ALLOWED_ORIGINS。
 docker compose up -d --build
 docker compose ps
-curl http://127.0.0.1:8080/health/ready
+curl http://127.0.0.1:3000/health/ready
 ```
 
 数据库密码会嵌入 PostgreSQL URL，请使用足够长的 URL 安全字符组合（字母、数字、`-`、`_`），不要直接使用 `@`、`:`、`/`、`#` 等字符。

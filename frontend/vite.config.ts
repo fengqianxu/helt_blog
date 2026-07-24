@@ -45,7 +45,7 @@ export default defineConfig(async () => {
   const backendProxyTarget =
     process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3001";
   const storageProxyTarget =
-    process.env.STORAGE_PROXY_TARGET ?? "http://127.0.0.1:8080";
+    process.env.STORAGE_PROXY_TARGET ?? "http://127.0.0.1:3000";
 
   return {
     server: {

@@ -2,7 +2,7 @@ FROM rust:1.97-slim-bookworm AS builder
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config \
+    && apt-get install -y --no-install-recommends libssl-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
@@ -23,7 +23,7 @@ RUN rustup component add clippy \
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 blog \
     && useradd --uid 10001 --gid blog --no-create-home --home-dir /nonexistent blog

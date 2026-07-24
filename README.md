@@ -22,10 +22,10 @@ Coolify 请直接选择仓库根目录的 `docker-compose.coolify.yml`，只需�
 
 访问地址：
 
-- 网站：<http://localhost:8080/>
+- 网站：<http://localhost:3000/>
 - 前端开发服务：在 `frontend` 目录运行 `npm run dev -- --host localhost --port 3000` 后访问 <http://localhost:3000/>；`/api` 会自动代理到本地后端的 `3001` 端口
-- API：<http://localhost:8080/api/v1>
-- 就绪检查：<http://localhost:8080/health/ready>
+- API：<http://localhost:3000/api/v1>
+- 就绪检查：<http://localhost:3000/health/ready>
 - MinIO 控制台：<http://localhost:9001/>
 
 后端会在启动时自动执行 sqlx 迁移、插入默认配置，并在管理员表为空时创建首个管理员。`ADMIN_INITIAL_PASSWORD` 留空时，随机密码只在首次创建时输出一次：
@@ -43,9 +43,9 @@ docker compose exec backend blog-admin reset-password
 验证服务：
 
 ```powershell
-Invoke-RestMethod http://localhost:8080/health/live
-Invoke-RestMethod http://localhost:8080/health/ready
-Invoke-RestMethod http://localhost:8080/api/v1
+Invoke-RestMethod http://localhost:3000/health/live
+Invoke-RestMethod http://localhost:3000/health/ready
+Invoke-RestMethod http://localhost:3000/api/v1
 docker compose exec postgres psql -U helt -d helt_blog -c "\dt"
 ```
 

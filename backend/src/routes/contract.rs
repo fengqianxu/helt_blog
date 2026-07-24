@@ -176,7 +176,7 @@ macro_rules! asset_upload_endpoint {
     };
 }
 
-/// v1 的全部 101 个业务端点。
+/// v1 的全部 106 个业务端点。
 ///
 /// 健康检查和 API 索引属于运维入口，不计入产品端点总数。数组顺序按“认证 → 公开
 /// 业务 → 后台业务”排列，与 `技术文档/03-API接口总表.md` 保持一致。
@@ -257,8 +257,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取当前管理员信息",
         "无请求体；读取 access cookie",
-        "200 JSON username、role、avatar_url",
-        "只返回当前会话用户的最小展示信息；无效或过期会话返回 401"
+        "200 JSON username、role、email、avatar_url、bilibili_uid",
+        "只返回当前会话用户的账户中心资料；无效或过期会话返回 401"
     ),
     endpoint!(
         "AUTH-07",
@@ -324,6 +324,71 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "JSON: username",
         "202 无敏感数据；可返回通用提示",
         "无论用户名是否存在都返回相同结果；v1 仅记录安全事件并提示使用 blog-admin CLI 重置"
+    ),
+    endpoint!(
+        "AUTH-12",
+        "认证",
+        Post,
+        "/api/v1/admin/auth/change-password",
+        "/api/v1/admin/auth/change-password",
+        AdminJwt,
+        NO_CONTENT,
+        "修改当前管理员密码",
+        "JSON: current_password、new_password；新密码长度为 12–128 个字符",
+        "204 无响应体并清除当前认证 cookie",
+        "必须复核当前密码；更新 Argon2id 哈希后吊销全部 refresh token，并要求当前会话重新登录"
+    ),
+    endpoint!(
+        "AUTH-13",
+        "认证",
+        Patch,
+        "/api/v1/admin/auth/profile",
+        "/api/v1/admin/auth/profile",
+        AdminJwt,
+        OK,
+        "更新当前管理员个人资料",
+        "JSON: email、bilibili_uid；头像资源必须通过 AUTH-14 单独上传",
+        "200 JSON username、role、email、avatar_url、bilibili_uid",
+        "只更新当前管理员；邮箱与 UID 服务端校验，Bilibili UID 写入 bangumi_sync 配置并从站点设置界面迁入账户中心"
+    ),
+    endpoint!(
+        "AUTH-14",
+        "认证",
+        Post,
+        "/api/v1/admin/auth/avatar",
+        "/api/v1/admin/auth/avatar",
+        AdminJwt,
+        OK,
+        "上传或替换当前管理员头像",
+        "请求体为 PNG、JPEG 或 WebP 原始字节，Content-Type 必须匹配，最大 512 KB",
+        "200 JSON username、role、email、avatar_url、bilibili_uid；avatar_url 为 /storage/ 下的 MinIO 资源",
+        "服务端校验文件签名后写入公共 MinIO 桶，并原子创建 uploads/asset_versions 记录；后续替换沿用同一逻辑资源追加版本"
+    ),
+    endpoint!(
+        "AUTH-15",
+        "认证",
+        Delete,
+        "/api/v1/admin/auth/avatar",
+        "/api/v1/admin/auth/avatar",
+        AdminJwt,
+        OK,
+        "移除当前管理员头像绑定",
+        "无请求体",
+        "200 JSON username、role、email、avatar_url=null、bilibili_uid",
+        "只解除当前管理员头像并归档逻辑资源，历史 MinIO 版本继续由素材库管理"
+    ),
+    endpoint!(
+        "PROFILE-01",
+        "公开资料",
+        Get,
+        "/api/v1/profile",
+        "/api/v1/profile",
+        Anonymous,
+        OK,
+        "读取站点作者的公开资料",
+        "无查询参数",
+        "200 JSON username、email、avatar_url",
+        "与账户中心保存的头像和邮箱使用同一数据源；不公开登录凭据、角色或 Bilibili UID"
     ),
     // 文章与分类域：公开查询只允许读取 published 内容。
     endpoint!(
@@ -1599,8 +1664,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_101_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 101);
+    fn catalog_contains_106_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 106);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1668,8 +1733,8 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 80);
-        assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 21);
+        assert_eq!(admin_count, 84);
+        assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 22);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
             .iter()
@@ -1685,7 +1750,7 @@ mod tests {
         );
     }
 
-    /// 固定整个目录的身份快照，避免“数量仍是 101，但某个方法或路径被悄悄替换”。
+    /// 固定整个目录的身份快照，避免“数量仍是 106，但某个方法或路径被悄悄替换”。
     #[test]
     fn catalog_identity_matches_the_reviewed_snapshot() {
         let mut fingerprint = 0xcbf29ce484222325_u64;
@@ -1715,7 +1780,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 2_220_667_489_107_600_239,
+            fingerprint, 15_744_337_252_995_643_575,
             "update only after reviewing the full catalog"
         );
     }
@@ -1775,7 +1840,7 @@ mod tests {
         }
     }
 
-    /// TDD 路由层：逐个执行 101 个代表请求，确认路径和方法已登记。
+    /// TDD 路由层：逐个执行 102 个代表请求，确认路径和方法已登记。
     ///
     /// 测试刻意不强制所有端点永远返回 501：某个占位处理器被真实实现替换后，空请求
     /// 可能得到 400/401/422 或成功响应，只要不是 404/405 就证明方法与路径仍然存在。

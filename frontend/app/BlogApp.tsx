@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 
 type Theme = "day" | "night";
 type Notify = (message: string, tone?: "normal" | "success" | "danger") => void;
+
+const DEFAULT_PROFILE_AVATAR_URL = "/storage/avatars/default/admin-avatar.webp";
 
 const posts = [
   { slug: "blog-rebuild", category: "技术", date: "2026-07-12", title: "重构博客的一些思考", excerpt: "从单薄的功能到一个完整的个人站点：开屏动画、日夜双主题、追番页与时间轴，这次重构想把「我喜欢的东西」都装进来。", time: "8 min", words: "3.2k 字", comments: 12, pinned: true },
@@ -369,16 +371,44 @@ function AnimePage() {
 }
 
 function AboutPage({ notify }: { notify: Notify }) {
+  const [profile, setProfile] = useState<PublicProfile>({
+    username: "helt",
+    email: "",
+    avatar_url: null,
+  });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/v1/profile", {
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then((response) => response.ok ? response.json() as Promise<PublicProfile> : null)
+      .then((payload) => payload && setProfile(payload))
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          notify("暂时无法读取站点资料");
+        }
+      });
+    return () => controller.abort();
+  }, [notify]);
+
   const copyEmail = async () => {
+    if (!profile.email) {
+      notify("尚未设置联系邮箱");
+      return;
+    }
     try {
       if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
-      await navigator.clipboard.writeText("hello@helt.example.com");
+      await navigator.clipboard.writeText(profile.email);
       notify("邮箱已复制", "success");
     } catch {
-      notify("邮箱：hello@helt.example.com", "normal");
+      notify(`邮箱：${profile.email}`, "normal");
     }
   };
-  return <main className="page-wrap about-layout page-enter"><aside className="profile-card"><div className="avatar">h</div><h1>helt.</h1><p>写代码 / 追番 / 折腾博客<br />骑士王的头号 Master</p><div className="profile-stats"><span><b>128</b>文章</span><span><b>2,048</b>天</span></div><div className="socials"><button aria-label="GitHub" onClick={() => notify("GitHub 主页为演示链接")}>GH</button><button aria-label="哔哩哔哩" onClick={() => notify("哔哩哔哩主页为演示链接")}>BL</button><button aria-label="复制联系邮箱" onClick={copyEmail}>✉</button></div></aside><div className="about-content"><PageHeading title="关于我" subtitle="ABOUT · MASTER PROFILE" /><div className="dialog-box"><b>helt</b><p>你好，欢迎来到我的小站。白天是普通的程序员，晚上是熬夜追番的 Master。这个博客从 2020 年写到现在，记录技术、生活，和那些让我热血的作品。</p></div><SectionTitle index="01" title="技能与兴趣" /><div className="skill-grid">{["React / TypeScript", "Node.js", "UI Engineering", "Fate Series", "摄影与键盘", "动画与游戏"].map((s) => <span key={s}>{s}</span>)}</div><SectionTitle index="02" title="关于本站" /><p>本站从设计到代码都在持续重构中。按下 Konami 秘技（↑↑↓↓←→←→BA）会触发隐藏彩蛋；日夜切换时，Saber 与 Alter 的视觉也会一起切换。</p></div></main>;
+  const displayName = profile.username || "helt";
+  const avatarUrl = profile.avatar_url || DEFAULT_PROFILE_AVATAR_URL;
+  return <main className="page-wrap about-layout page-enter"><aside className="profile-card"><div className="avatar"><Image src={avatarUrl} width={216} height={216} sizes="108px" unoptimized alt={`${displayName} 的头像`} /></div><h1>{displayName}.</h1><p>写代码 / 追番 / 折腾博客<br />骑士王的头号 Master</p><div className="profile-stats"><span><b>128</b>文章</span><span><b>2,048</b>天</span></div><div className="socials"><button aria-label="GitHub" onClick={() => notify("GitHub 主页为演示链接")}>GH</button><button aria-label="哔哩哔哩" onClick={() => notify("哔哩哔哩主页为演示链接")}>BL</button><button aria-label="复制联系邮箱" onClick={copyEmail} disabled={!profile.email}>✉</button></div></aside><div className="about-content"><PageHeading title="关于我" subtitle="ABOUT · MASTER PROFILE" /><div className="dialog-box"><b>{displayName}</b><p>你好，欢迎来到我的小站。白天是普通的程序员，晚上是熬夜追番的 Master。这个博客从 2020 年写到现在，记录技术、生活，和那些让我热血的作品。</p></div><SectionTitle index="01" title="技能与兴趣" /><div className="skill-grid">{["React / TypeScript", "Node.js", "UI Engineering", "Fate Series", "摄影与键盘", "动画与游戏"].map((s) => <span key={s}>{s}</span>)}</div><SectionTitle index="02" title="关于本站" /><p>本站从设计到代码都在持续重构中。按下 Konami 秘技（↑↑↓↓←→←→BA）会触发隐藏彩蛋；日夜切换时，Saber 与 Alter 的视觉也会一起切换。</p></div></main>;
 }
 
 function FriendsPage({ notify }: { notify: Notify }) {
@@ -422,10 +452,111 @@ function Footer() { return <footer><Link href="/" className="brand">helt<span>.<
 
 function AdminRouter({ pathname, theme, toggleTheme, notify }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify }) {
   if (pathname === "/admin/login") return <AdminLogin />;
-  return <AdminSessionGate><AdminLayout pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} /></AdminSessionGate>;
+  return <AdminSessionGate>{(admin) => <AdminLayout pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} admin={admin} />}</AdminSessionGate>;
 }
 
 type ApiErrorPayload = { error?: { code?: string; message?: string }; message?: string };
+type AdminIdentity = {
+  username: string;
+  role: string;
+  email: string;
+  avatar_url: string | null;
+  bilibili_uid: string;
+};
+
+type PublicProfile = Pick<AdminIdentity, "username" | "email" | "avatar_url">;
+type AvatarCropSource = { url: string; width: number; height: number };
+type AvatarCropPosition = { x: number; y: number };
+
+const MAX_AVATAR_SOURCE_BYTES = 10 * 1024 * 1024;
+const MAX_AVATAR_UPLOAD_BYTES = 512 * 1024;
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function avatarCropMetrics(viewportSize: number, source: AvatarCropSource, zoom: number) {
+  const baseScale = Math.max(viewportSize / source.width, viewportSize / source.height);
+  const width = source.width * baseScale * zoom;
+  const height = source.height * baseScale * zoom;
+  return {
+    width,
+    height,
+    maxX: Math.max(0, (width - viewportSize) / 2),
+    maxY: Math.max(0, (height - viewportSize) / 2),
+  };
+}
+
+function canvasBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error("浏览器无法处理这张图片。")),
+      "image/webp",
+      quality,
+    );
+  });
+}
+
+async function renderCroppedAvatar(
+  image: HTMLImageElement,
+  position: AvatarCropPosition,
+  zoom: number,
+  size: number,
+  quality: number,
+) {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("浏览器无法创建头像预览。");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+
+  const scale = Math.max(size / image.naturalWidth, size / image.naturalHeight) * zoom;
+  const width = image.naturalWidth * scale;
+  const height = image.naturalHeight * scale;
+  const offsetX = position.x * Math.max(0, (width - size) / 2);
+  const offsetY = position.y * Math.max(0, (height - size) / 2);
+  context.drawImage(
+    image,
+    (size - width) / 2 + offsetX,
+    (size - height) / 2 + offsetY,
+    width,
+    height,
+  );
+  return canvasBlob(canvas, quality);
+}
+
+async function compressedAvatar(
+  image: HTMLImageElement,
+  position: AvatarCropPosition,
+  zoom: number,
+) {
+  const attempts = [
+    { size: 640, quality: 0.9 },
+    { size: 640, quality: 0.82 },
+    { size: 560, quality: 0.86 },
+    { size: 512, quality: 0.8 },
+  ];
+  let latest: Blob | null = null;
+  for (const attempt of attempts) {
+    latest = await renderCroppedAvatar(image, position, zoom, attempt.size, attempt.quality);
+    if (latest.size <= MAX_AVATAR_UPLOAD_BYTES) return latest;
+  }
+  if (!latest || latest.size > MAX_AVATAR_UPLOAD_BYTES) {
+    throw new Error("图片压缩后仍然过大，请换一张图片。");
+  }
+  return latest;
+}
+
+function AdminProfileAvatar({ admin, className }: { admin: AdminIdentity; className?: string }) {
+  const avatarUrl = admin.avatar_url || DEFAULT_PROFILE_AVATAR_URL;
+  return (
+    <span className={cx("admin-profile-avatar", className)}>
+      <Image src={avatarUrl} width={128} height={128} sizes="96px" unoptimized alt={`${admin.username} 的头像`} />
+    </span>
+  );
+}
 
 async function responseMessage(response: Response, fallback: string) {
   const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
@@ -436,8 +567,8 @@ function isJsonResponse(response: Response) {
   return response.headers.get("content-type")?.includes("application/json") ?? false;
 }
 
-function AdminSessionGate({ children }: { children: React.ReactNode }) {
-  const [authenticated, setAuthenticated] = useState(false);
+function AdminSessionGate({ children }: { children: (admin: AdminIdentity) => React.ReactNode }) {
+  const [admin, setAdmin] = useState<AdminIdentity | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -449,7 +580,7 @@ function AdminSessionGate({ children }: { children: React.ReactNode }) {
           signal: controller.signal,
         });
         if (session.ok && isJsonResponse(session)) {
-          setAuthenticated(true);
+          setAdmin(await session.json() as AdminIdentity);
           return;
         }
         const refreshed = await fetch("/api/v1/admin/auth/refresh", {
@@ -459,7 +590,8 @@ function AdminSessionGate({ children }: { children: React.ReactNode }) {
           signal: controller.signal,
         });
         if (refreshed.ok && isJsonResponse(refreshed)) {
-          setAuthenticated(true);
+          const payload = await refreshed.json() as { admin: AdminIdentity };
+          setAdmin(payload.admin);
           return;
         }
         window.location.replace("/admin/login");
@@ -473,10 +605,10 @@ function AdminSessionGate({ children }: { children: React.ReactNode }) {
     return () => controller.abort();
   }, []);
 
-  if (!authenticated) {
+  if (!admin) {
     return <main className="admin-session-loading" role="status"><span aria-hidden="true">◆</span><p>正在验证令咒…</p></main>;
   }
-  return children;
+  return children(admin);
 }
 
 const loginScenes = {
@@ -532,6 +664,14 @@ function AdminLogin() {
       audio.removeEventListener("ended", syncVoiceState);
       audio.removeEventListener("error", syncVoiceState);
     };
+  }, []);
+
+  useEffect(() => {
+    const message = sessionStorage.getItem("helt-auth-message");
+    if (!message) return;
+    sessionStorage.removeItem("helt-auth-message");
+    const timer = window.setTimeout(() => setFeedback({ tone: "success", message }), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const stopLoginVoice = () => {
@@ -699,24 +839,715 @@ function AdminLogin() {
   );
 }
 
-function AdminLogoutButton() {
-  const [busy, setBusy] = useState(false);
+type PasskeyItem = { id: number; label: string; created_at: string };
+type PasskeyCreationOptionsJSON = {
+  publicKey: Omit<PublicKeyCredentialCreationOptions, "challenge" | "user" | "excludeCredentials"> & {
+    challenge: string;
+    user: Omit<PublicKeyCredentialUserEntity, "id"> & { id: string };
+    excludeCredentials?: Array<Omit<PublicKeyCredentialDescriptor, "id"> & { id: string }>;
+  };
+};
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = window.atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function encodeBase64Url(value: ArrayBuffer) {
+  let binary = "";
+  for (const byte of new Uint8Array(value)) binary += String.fromCharCode(byte);
+  return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function browserCreationOptions(payload: PasskeyCreationOptionsJSON): PublicKeyCredentialCreationOptions {
+  return {
+    ...payload.publicKey,
+    challenge: decodeBase64Url(payload.publicKey.challenge),
+    user: {
+      ...payload.publicKey.user,
+      id: decodeBase64Url(payload.publicKey.user.id),
+    },
+    excludeCredentials: payload.publicKey.excludeCredentials?.map((credential) => ({
+      ...credential,
+      id: decodeBase64Url(credential.id),
+    })),
+  };
+}
+
+function serializedPasskeyCredential(credential: PublicKeyCredential) {
+  const response = credential.response as AuthenticatorAttestationResponse;
+  return {
+    id: credential.id,
+    rawId: encodeBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      attestationObject: encodeBase64Url(response.attestationObject),
+      clientDataJSON: encodeBase64Url(response.clientDataJSON),
+      transports: typeof response.getTransports === "function" ? response.getTransports() : undefined,
+    },
+    extensions: credential.getClientExtensionResults(),
+  };
+}
+
+function AdminAccountCenter({
+  open,
+  admin,
+  onClose,
+  onAdminChange,
+  notify,
+}: {
+  open: boolean;
+  admin: AdminIdentity;
+  onClose: () => void;
+  onAdminChange: (admin: AdminIdentity) => void;
+  notify: Notify;
+}) {
+  const [dialog, setDialog] = useState<"profile" | "password" | "passkey" | null>(null);
+  const [busy, setBusy] = useState<"profile" | "password" | "passkey" | "logout" | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [profileEmail, setProfileEmail] = useState(admin.email);
+  const [profileBilibiliUid, setProfileBilibiliUid] = useState(admin.bilibili_uid);
+  const [profileError, setProfileError] = useState("");
+  const [avatarSource, setAvatarSource] = useState<AvatarCropSource | null>(null);
+  const [avatarCropOpen, setAvatarCropOpen] = useState(false);
+  const [cropPosition, setCropPosition] = useState<AvatarCropPosition>({ x: 0, y: 0 });
+  const [cropZoom, setCropZoom] = useState(1);
+  const [cropViewportSize, setCropViewportSize] = useState(0);
+  const [removeAvatar, setRemoveAvatar] = useState(false);
+  const [passkeyLabel, setPasskeyLabel] = useState("");
+  const [passkeys, setPasskeys] = useState<PasskeyItem[]>([]);
+  const [passkeysLoading, setPasskeysLoading] = useState(false);
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  const avatarInput = useRef<HTMLInputElement>(null);
+  const avatarSourceUrl = useRef<string | null>(null);
+  const avatarPreviewUrl = useRef<string | null>(null);
+  const avatarImage = useRef<HTMLImageElement | null>(null);
+  const avatarSelectionVersion = useRef(0);
+  const avatarPreviewVersion = useRef(0);
+  const cropViewport = useRef<HTMLDivElement>(null);
+  const cropDrag = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    position: AvatarCropPosition;
+    maxX: number;
+    maxY: number;
+  } | null>(null);
+  const cropSnapshot = useRef<{ position: AvatarCropPosition; zoom: number } | null>(null);
+  const profileOriginal = useRef<AdminIdentity | null>(null);
+  const passkeySupported = typeof window !== "undefined"
+    && "PublicKeyCredential" in window
+    && Boolean(navigator.credentials);
+
+  const clearAvatarDraft = useCallback((restore: boolean) => {
+    avatarSelectionVersion.current += 1;
+    avatarPreviewVersion.current += 1;
+    if (avatarSourceUrl.current) {
+      URL.revokeObjectURL(avatarSourceUrl.current);
+      avatarSourceUrl.current = null;
+    }
+    if (avatarPreviewUrl.current) {
+      URL.revokeObjectURL(avatarPreviewUrl.current);
+      avatarPreviewUrl.current = null;
+    }
+    avatarImage.current = null;
+    cropDrag.current = null;
+    cropSnapshot.current = null;
+    setAvatarSource(null);
+    setAvatarCropOpen(false);
+    setCropPosition({ x: 0, y: 0 });
+    setCropZoom(1);
+    setCropViewportSize(0);
+    setRemoveAvatar(false);
+    if (restore && profileOriginal.current) onAdminChange(profileOriginal.current);
+    if (avatarInput.current) avatarInput.current.value = "";
+  }, [onAdminChange]);
+
+  const cancelAvatarCrop = useCallback(() => {
+    const snapshot = cropSnapshot.current;
+    cropSnapshot.current = null;
+    setAvatarCropOpen(false);
+    if (snapshot) {
+      setCropPosition(snapshot.position);
+      setCropZoom(snapshot.zoom);
+      return;
+    }
+    clearAvatarDraft(true);
+  }, [clearAvatarDraft]);
+
+  const closeDialog = useCallback(() => {
+    if (busy) return;
+    if (dialog === "profile") clearAvatarDraft(true);
+    setDialog(null);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordError("");
+    setProfileError("");
+  }, [busy, clearAvatarDraft, dialog]);
+
+  useEffect(() => {
+    if (!open && !dialog && !avatarCropOpen) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (avatarCropOpen) cancelAvatarCrop();
+      else if (dialog) closeDialog();
+      else onClose();
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [avatarCropOpen, cancelAvatarCrop, closeDialog, dialog, onClose, open]);
+
+  useEffect(() => () => {
+    if (avatarSourceUrl.current) URL.revokeObjectURL(avatarSourceUrl.current);
+    if (avatarPreviewUrl.current) URL.revokeObjectURL(avatarPreviewUrl.current);
+  }, []);
+
+  useEffect(() => {
+    if (!avatarCropOpen || !avatarSource || !cropViewport.current) return;
+    const viewport = cropViewport.current;
+    const updateSize = () => setCropViewportSize(viewport.getBoundingClientRect().width);
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [avatarCropOpen, avatarSource]);
+
+  useEffect(() => {
+    const image = avatarImage.current;
+    if (!avatarSource || !image) return;
+    const version = ++avatarPreviewVersion.current;
+    const timer = window.setTimeout(() => {
+      void renderCroppedAvatar(image, cropPosition, cropZoom, 256, 0.9)
+        .then((blob) => {
+          if (version !== avatarPreviewVersion.current) return;
+          const previewUrl = URL.createObjectURL(blob);
+          if (avatarPreviewUrl.current) URL.revokeObjectURL(avatarPreviewUrl.current);
+          avatarPreviewUrl.current = previewUrl;
+          const original = profileOriginal.current;
+          if (original) onAdminChange({ ...original, avatar_url: previewUrl });
+        })
+        .catch(() => {
+          if (version === avatarPreviewVersion.current) {
+            setProfileError("无法生成头像预览，请重新选择图片。");
+          }
+        });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [avatarSource, cropPosition, cropZoom, onAdminChange]);
+
+  useEffect(() => {
+    if (dialog !== "passkey") return;
+    const controller = new AbortController();
+    void fetch("/api/v1/admin/auth/passkeys", {
+      credentials: "include",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "无法读取已保存的 Passkey。"));
+        return response.json() as Promise<{ items: PasskeyItem[] }>;
+      })
+      .then((payload) => setPasskeys(payload.items))
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          notify(error instanceof Error ? error.message : "无法读取已保存的 Passkey。", "danger");
+        }
+      })
+      .finally(() => setPasskeysLoading(false));
+    return () => controller.abort();
+  }, [dialog, notify]);
+
+  const openDialog = (next: "profile" | "password" | "passkey") => {
+    onClose();
+    setPasswordError("");
+    setProfileError("");
+    if (next === "profile") {
+      clearAvatarDraft(false);
+      profileOriginal.current = admin;
+      setProfileEmail(admin.email);
+      setProfileBilibiliUid(admin.bilibili_uid);
+    }
+    if (next === "passkey") setPasskeysLoading(true);
+    setDialog(next);
+  };
+
+  const selectAvatar = async (file: File | undefined) => {
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      setProfileError("请选择 PNG、JPEG 或 WebP 图片。");
+      return;
+    }
+    if (file.size > MAX_AVATAR_SOURCE_BYTES) {
+      setProfileError("原图不能超过 10 MB。");
+      return;
+    }
+    const version = ++avatarSelectionVersion.current;
+    const sourceUrl = URL.createObjectURL(file);
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const candidate = new window.Image();
+        candidate.decoding = "async";
+        candidate.onload = () => resolve(candidate);
+        candidate.onerror = () => reject(new Error("图片内容无法读取。"));
+        candidate.src = sourceUrl;
+      });
+      if (version !== avatarSelectionVersion.current) {
+        URL.revokeObjectURL(sourceUrl);
+        return;
+      }
+      if (avatarSourceUrl.current) URL.revokeObjectURL(avatarSourceUrl.current);
+      if (avatarPreviewUrl.current) {
+        URL.revokeObjectURL(avatarPreviewUrl.current);
+        avatarPreviewUrl.current = null;
+      }
+      avatarSourceUrl.current = sourceUrl;
+      avatarImage.current = image;
+      cropSnapshot.current = null;
+      setAvatarSource({ url: sourceUrl, width: image.naturalWidth, height: image.naturalHeight });
+      setAvatarCropOpen(true);
+      setCropPosition({ x: 0, y: 0 });
+      setCropZoom(1);
+      setRemoveAvatar(false);
+      setProfileError("");
+      onAdminChange({ ...(profileOriginal.current ?? admin), avatar_url: sourceUrl });
+    } catch (error) {
+      URL.revokeObjectURL(sourceUrl);
+      if (version === avatarSelectionVersion.current) {
+        setProfileError(error instanceof Error ? error.message : "图片内容无法读取。");
+      }
+    }
+  };
+
+  const previewAvatarRemoval = () => {
+    avatarSelectionVersion.current += 1;
+    avatarPreviewVersion.current += 1;
+    if (avatarSourceUrl.current) {
+      URL.revokeObjectURL(avatarSourceUrl.current);
+      avatarSourceUrl.current = null;
+    }
+    if (avatarPreviewUrl.current) {
+      URL.revokeObjectURL(avatarPreviewUrl.current);
+      avatarPreviewUrl.current = null;
+    }
+    avatarImage.current = null;
+    cropDrag.current = null;
+    cropSnapshot.current = null;
+    setAvatarSource(null);
+    setAvatarCropOpen(false);
+    setCropPosition({ x: 0, y: 0 });
+    setCropZoom(1);
+    setCropViewportSize(0);
+    setRemoveAvatar(true);
+    setProfileError("");
+    onAdminChange({ ...(profileOriginal.current ?? admin), avatar_url: null });
+  };
+
+  const reopenAvatarCrop = () => {
+    if (!avatarSource) return;
+    cropSnapshot.current = { position: cropPosition, zoom: cropZoom };
+    setAvatarCropOpen(true);
+  };
+
+  const confirmAvatarCrop = () => {
+    cropSnapshot.current = null;
+    setAvatarCropOpen(false);
+  };
+
+  const cropMetrics = avatarSource && cropViewportSize > 0
+    ? avatarCropMetrics(cropViewportSize, avatarSource, cropZoom)
+    : null;
+
+  const startCropDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!cropMetrics) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    cropDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      position: cropPosition,
+      maxX: cropMetrics.maxX,
+      maxY: cropMetrics.maxY,
+    };
+  };
+
+  const moveCrop = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = cropDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setCropPosition({
+      x: drag.maxX === 0
+        ? 0
+        : clamp(drag.position.x + (event.clientX - drag.startX) / drag.maxX, -1, 1),
+      y: drag.maxY === 0
+        ? 0
+        : clamp(drag.position.y + (event.clientY - drag.startY) / drag.maxY, -1, 1),
+    });
+  };
+
+  const stopCropDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (cropDrag.current?.pointerId !== event.pointerId) return;
+    cropDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const saveProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (profileBilibiliUid && !/^\d{1,20}$/.test(profileBilibiliUid.trim())) {
+      setProfileError("B 站 UID 只能包含数字，且不能超过 20 位。");
+      return;
+    }
+    setBusy("profile");
+    setProfileError("");
+    let persistedProfile: AdminIdentity | null = null;
+    try {
+      const response = await fetch("/api/v1/admin/auth/profile", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          email: profileEmail,
+          bilibili_uid: profileBilibiliUid,
+        }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "个人资料保存失败，请稍后重试。"));
+      persistedProfile = await response.json() as AdminIdentity;
+      profileOriginal.current = persistedProfile;
+      let updated = persistedProfile;
+      if (avatarSource) {
+        if (!avatarImage.current) throw new Error("头像原图尚未准备好，请稍后重试。");
+        const avatarBlob = await compressedAvatar(avatarImage.current, cropPosition, cropZoom);
+        const avatarResponse = await fetch("/api/v1/admin/auth/avatar", {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": avatarBlob.type, accept: "application/json" },
+          body: avatarBlob,
+        });
+        if (!avatarResponse.ok) throw new Error(await responseMessage(avatarResponse, "头像上传失败，请稍后重试。"));
+        updated = await avatarResponse.json() as AdminIdentity;
+      } else if (removeAvatar) {
+        const avatarResponse = await fetch("/api/v1/admin/auth/avatar", {
+          method: "DELETE",
+          credentials: "include",
+          headers: { accept: "application/json" },
+        });
+        if (!avatarResponse.ok) throw new Error(await responseMessage(avatarResponse, "头像移除失败，请稍后重试。"));
+        updated = await avatarResponse.json() as AdminIdentity;
+      }
+      clearAvatarDraft(false);
+      profileOriginal.current = updated;
+      onAdminChange(updated);
+      setDialog(null);
+      notify("个人资料已更新", "success");
+    } catch (error) {
+      if (persistedProfile) profileOriginal.current = persistedProfile;
+      setProfileError(error instanceof Error ? error.message : "个人资料保存失败，请稍后重试。");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const changePassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (newPassword.length < 12 || newPassword.length > 128) {
+      setPasswordError("新密码长度须为 12–128 个字符。");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("两次输入的新密码不一致。");
+      return;
+    }
+    setBusy("password");
+    setPasswordError("");
+    try {
+      const response = await fetch("/api/v1/admin/auth/change-password", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "密码修改失败，请稍后重试。"));
+      sessionStorage.setItem("helt-auth-message", "密码已更新，请使用新密码重新建立契约。");
+      window.location.replace("/admin/login");
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : "密码修改失败，请稍后重试。");
+      setBusy(null);
+    }
+  };
+
+  const savePasskey = async () => {
+    if (!passkeySupported || busy) return;
+    setBusy("passkey");
+    try {
+      const optionsResponse = await fetch("/api/v1/admin/auth/passkeys/options", {
+        method: "POST",
+        credentials: "include",
+        headers: { accept: "application/json" },
+      });
+      if (!optionsResponse.ok) throw new Error(await responseMessage(optionsResponse, "无法创建 Passkey 验证。"));
+      const payload = await optionsResponse.json() as PasskeyCreationOptionsJSON;
+      const credential = await navigator.credentials.create({
+        publicKey: browserCreationOptions(payload),
+      }) as PublicKeyCredential | null;
+      if (!credential) throw new Error("浏览器没有返回有效的 Passkey。");
+
+      const saveResponse = await fetch("/api/v1/admin/auth/passkeys", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...serializedPasskeyCredential(credential),
+          label: passkeyLabel.trim() || "当前设备",
+        }),
+      });
+      if (!saveResponse.ok) throw new Error(await responseMessage(saveResponse, "Passkey 保存失败，请稍后重试。"));
+      const item = await saveResponse.json() as PasskeyItem;
+      setPasskeys((items) => [item, ...items]);
+      setPasskeyLabel("");
+      notify("Passkey 已安全保存", "success");
+    } catch (error) {
+      if (error instanceof DOMException && (error.name === "AbortError" || error.name === "NotAllowedError")) {
+        notify("已取消保存 Passkey");
+      } else {
+        notify(error instanceof Error ? error.message : "Passkey 保存失败，请稍后重试。", "danger");
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removePasskey = async (item: PasskeyItem) => {
+    if (!window.confirm(`移除“${item.label}”？移除后将无法再用它完成认证。`)) return;
+    setRemovingId(item.id);
+    try {
+      const response = await fetch(`/api/v1/admin/auth/passkeys/${item.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "Passkey 移除失败。"));
+      setPasskeys((items) => items.filter((candidate) => candidate.id !== item.id));
+      notify("Passkey 已移除", "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Passkey 移除失败。", "danger");
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
   const logout = async () => {
     if (busy) return;
-    setBusy(true);
+    setBusy("logout");
     try {
       await fetch("/api/v1/admin/auth/logout", { method: "POST", credentials: "include" });
     } finally {
       window.location.replace("/admin/login");
     }
   };
-  return <button className="admin-logout" type="button" title="退出登录" aria-label="退出登录" onClick={logout} disabled={busy}>{busy ? "…" : "↪"}</button>;
+
+  return (
+    <>
+      {open && (
+        <>
+          <button className="admin-account-dismiss" type="button" aria-label="关闭账户菜单" onClick={onClose} />
+          <section className="admin-account-menu" role="menu" aria-label="管理员账户">
+            <header className="admin-account-hero">
+              <AdminProfileAvatar admin={admin} className="admin-account-avatar" />
+              <div>
+                <span>ADMINISTRATOR</span>
+                <b>{admin.username}</b>
+                <small>{admin.email || "尚未设置联系邮箱"}</small>
+              </div>
+            </header>
+            <div className="admin-account-actions">
+              <button type="button" role="menuitem" onClick={() => openDialog("profile")}>
+                编辑个人资料
+              </button>
+              <button type="button" role="menuitem" onClick={() => openDialog("password")}>
+                修改密码
+              </button>
+              <button type="button" role="menuitem" onClick={() => openDialog("passkey")}>
+                通行密钥
+              </button>
+              <button className="danger" type="button" role="menuitem" onClick={logout} disabled={busy === "logout"}>
+                {busy === "logout" ? "正在注销…" : "注销登录"}
+              </button>
+            </div>
+          </section>
+        </>
+      )}
+
+      <input
+        ref={avatarInput}
+        className="admin-avatar-input"
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          void selectAvatar(file);
+        }}
+      />
+
+      {dialog === "profile" && !avatarCropOpen && (
+        <div className="admin-account-dialog" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
+          <form className="admin-profile-dialog" onSubmit={saveProfile} role="dialog" aria-modal="true" aria-labelledby="profile-title">
+            <header>
+              <div><span>ACCOUNT / PROFILE</span><h2 id="profile-title">个人资料</h2></div>
+              <button type="button" aria-label="关闭个人资料" onClick={closeDialog}>×</button>
+            </header>
+            <div className="admin-avatar-editor">
+              <AdminProfileAvatar
+                admin={admin}
+                className="admin-avatar-preview"
+              />
+              <div>
+                <b>个人头像</b>
+                <span>
+                  {avatarSource
+                    ? <button type="button" onClick={reopenAvatarCrop}>调整裁剪</button>
+                    : <button type="button" onClick={() => avatarInput.current?.click()}>选择图片</button>}
+                  {avatarSource && <button type="button" onClick={() => avatarInput.current?.click()}>重新选择</button>}
+                  {admin.avatar_url && <button className="avatar-remove" type="button" onClick={previewAvatarRemoval}>移除</button>}
+                </span>
+              </div>
+            </div>
+            <div className="admin-profile-fields">
+              <label>
+                邮箱地址
+                <input type="email" autoComplete="email" maxLength={254} value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} placeholder="name@example.com" />
+              </label>
+              <label>
+                B 站 UID
+                <input inputMode="numeric" pattern="[0-9]*" maxLength={20} value={profileBilibiliUid} onChange={(event) => setProfileBilibiliUid(event.target.value)} placeholder="例如：12345678" />
+              </label>
+            </div>
+            {profileError && <div className="admin-account-error" role="alert">! {profileError}</div>}
+            <footer><button type="button" onClick={closeDialog}>取消</button><button className="admin-primary" disabled={busy === "profile"}>{busy === "profile" ? "正在保存…" : "保存资料"}</button></footer>
+          </form>
+        </div>
+      )}
+
+      {avatarCropOpen && avatarSource && (
+        <div className="admin-account-dialog" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && cancelAvatarCrop()}>
+          <section className="admin-avatar-crop-dialog" role="dialog" aria-modal="true" aria-labelledby="avatar-crop-title">
+            <header>
+              <div><span>PROFILE / AVATAR</span><h2 id="avatar-crop-title">头像裁剪</h2></div>
+              <button type="button" aria-label="关闭头像裁剪" onClick={cancelAvatarCrop}>×</button>
+            </header>
+            <div className="admin-avatar-cropper">
+              <div
+                ref={cropViewport}
+                className="admin-avatar-crop-stage"
+                aria-label="拖动图片选择头像区域"
+                onPointerDown={startCropDrag}
+                onPointerMove={moveCrop}
+                onPointerUp={stopCropDrag}
+                onPointerCancel={stopCropDrag}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={avatarSource.url}
+                  alt=""
+                  draggable={false}
+                  style={cropMetrics ? {
+                    width: `${cropMetrics.width}px`,
+                    height: `${cropMetrics.height}px`,
+                    transform: `translate(-50%, -50%) translate3d(${cropPosition.x * cropMetrics.maxX}px, ${cropPosition.y * cropMetrics.maxY}px, 0)`,
+                  } : {
+                    width: "100%",
+                    height: "100%",
+                    transform: "translate(-50%, -50%)",
+                  }}
+                />
+                <span aria-hidden="true" />
+              </div>
+              <div className="admin-avatar-crop-controls">
+                <label>
+                  <span>缩放</span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="3"
+                    step="0.01"
+                    value={cropZoom}
+                    aria-label="头像缩放比例"
+                    onChange={(event) => setCropZoom(Number(event.target.value))}
+                  />
+                </label>
+                <div>
+                  <button type="button" onClick={() => setCropPosition({ x: 0, y: 0 })}>居中</button>
+                  <button type="button" onClick={() => avatarInput.current?.click()}>重新选择</button>
+                </div>
+              </div>
+            </div>
+            {profileError && <div className="admin-account-error" role="alert">! {profileError}</div>}
+            <footer>
+              <button type="button" onClick={cancelAvatarCrop}>取消</button>
+              <button className="admin-primary" type="button" onClick={confirmAvatarCrop}>确定</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {dialog === "password" && (
+        <div className="admin-account-dialog" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
+          <form onSubmit={changePassword} role="dialog" aria-modal="true" aria-labelledby="change-password-title">
+            <header>
+              <div><span>SECURITY / CREDENTIALS</span><h2 id="change-password-title">修改密码</h2></div>
+              <button type="button" aria-label="关闭修改密码" onClick={closeDialog}>×</button>
+            </header>
+            <p>更新后会注销当前会话，并撤销所有七日免认证凭据。</p>
+            <label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoFocus required /></label>
+            <label>新密码<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /><small>12–128 个字符</small></label>
+            <label>确认新密码<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></label>
+            {passwordError && <div className="admin-account-error" role="alert">! {passwordError}</div>}
+            <footer><button type="button" onClick={closeDialog}>取消</button><button className="admin-primary" disabled={busy === "password"}>{busy === "password" ? "正在更新…" : "确认修改"}</button></footer>
+          </form>
+        </div>
+      )}
+
+      {dialog === "passkey" && (
+        <div className="admin-account-dialog" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
+          <section className="admin-passkey-dialog" role="dialog" aria-modal="true" aria-labelledby="passkey-title">
+            <header>
+              <div><span>SECURITY / PASSKEY</span><h2 id="passkey-title">通行密钥</h2></div>
+              <button type="button" aria-label="关闭通行密钥" onClick={closeDialog}>×</button>
+            </header>
+            <p>把登录凭据保存在设备或密码管理器中。验证由系统完成，指纹和面容数据不会发送到本站。</p>
+            <div className="passkey-enroll">
+              <label>设备名称<input value={passkeyLabel} maxLength={80} onChange={(event) => setPasskeyLabel(event.target.value)} placeholder="例如：工作电脑 · Windows Hello" /></label>
+              <button className="admin-primary" type="button" onClick={savePasskey} disabled={!passkeySupported || busy === "passkey"}>{busy === "passkey" ? "等待系统验证…" : "＋ 保存到此设备"}</button>
+              {!passkeySupported && <small>当前浏览器不支持 Passkey，请使用新版 Chrome、Edge 或 Safari。</small>}
+            </div>
+            <div className="passkey-list">
+              <h3>已保存 <span>{passkeys.length}</span></h3>
+              {passkeysLoading ? <div className="passkey-empty">正在读取凭据…</div> : passkeys.length ? passkeys.map((item) => (
+                <article key={item.id}>
+                  <i aria-hidden="true">⌁</i>
+                  <div><b>{item.label}</b><small>添加于 {new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(item.created_at))}</small></div>
+                  <button type="button" onClick={() => removePasskey(item)} disabled={removingId === item.id}>{removingId === item.id ? "…" : "移除"}</button>
+                </article>
+              )) : <div className="passkey-empty">尚未保存 Passkey</div>}
+            </div>
+          </section>
+        </div>
+      )}
+    </>
+  );
 }
 
 const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/articles/new", "✎", "撰写文章"], ["/admin/comments", "◫", "评论审核"], ["/admin/kanban", "♙", "看板娘 · LLM"], ["/admin/media", "♫", "音乐与语音"], ["/admin/appearance", "◐", "封面与主题"], ["/admin/settings", "⚙", "站点设置"]];
 
-function AdminLayout({ pathname, theme, toggleTheme, notify }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify }) {
+function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify; admin: AdminIdentity }) {
   const [commandOpen, setCommandOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [currentAdmin, setCurrentAdmin] = useState(admin);
   const current = adminNav.find(([href]) => pathname === href)?.[2] || (pathname.includes("articles") ? "文章编辑器" : "仪表盘");
   let content: React.ReactNode;
   if (pathname === "/admin") content = <Dashboard notify={notify} />;
@@ -733,7 +1564,70 @@ function AdminLayout({ pathname, theme, toggleTheme, notify }: { pathname: strin
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [commandOpen]);
-  return <div className="admin-shell"><aside className="admin-sidebar"><Link href="/" className="brand">helt<span>.</span> <small>ADMIN</small></Link><nav aria-label="后台主导航">{adminNav.map(([href, icon, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}><i>{icon}</i>{label}</Link>)}</nav><div className="admin-user"><span>h</span><div><b>helt</b><small>Administrator</small></div><AdminLogoutButton /></div></aside><main className="admin-main"><header><div><span>CONTROL ROOM /</span><b>{current}</b></div><div><ThemeSwitch theme={theme} onClick={toggleTheme} compact /><button onClick={() => setCommandOpen(true)} aria-label="打开快捷导航" aria-expanded={commandOpen}>⌕</button><span className="admin-avatar">h</span></div></header><nav className="admin-mobile-nav" aria-label="后台移动导航">{adminNav.map(([href, icon, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}><i>{icon}</i><span>{label}</span></Link>)}</nav><div className="admin-content page-enter">{content}</div></main>{commandOpen && <div className="admin-command" role="dialog" aria-modal="true" aria-label="快速导航" onClick={() => setCommandOpen(false)}><div onClick={(e) => e.stopPropagation()}><header><b>快速前往</b><button aria-label="关闭快捷导航" onClick={() => setCommandOpen(false)}>×</button></header>{adminNav.map(([href, icon, label]) => <Link key={href} href={href}><i>{icon}</i><span>{label}</span><small>→</small></Link>)}</div></div>}</div>;
+  return (
+    <div className="admin-shell">
+      <aside className="admin-sidebar">
+        <Link href="/" className="brand">helt<span>.</span> <small>ADMIN</small></Link>
+        <nav aria-label="后台主导航">
+          {adminNav.map(([href, icon, label]) => (
+            <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}>
+              <i>{icon}</i>{label}
+            </Link>
+          ))}
+        </nav>
+        <div className="admin-user">
+          <AdminProfileAvatar admin={currentAdmin} />
+          <div>
+            <b>{currentAdmin.username}</b>
+            <small>{currentAdmin.email || "ADMINISTRATOR"}</small>
+          </div>
+        </div>
+      </aside>
+      <main className="admin-main">
+        <header>
+          <div><span>CONTROL ROOM /</span><b>{current}</b></div>
+          <div>
+            <ThemeSwitch theme={theme} onClick={toggleTheme} compact />
+            <button onClick={() => setCommandOpen(true)} aria-label="打开快捷导航" aria-expanded={commandOpen}>⌕</button>
+            <button
+              className="admin-profile-trigger"
+              type="button"
+              aria-label="打开账户菜单"
+              aria-expanded={accountOpen}
+              onClick={() => setAccountOpen((value) => !value)}
+            >
+              <AdminProfileAvatar admin={currentAdmin} />
+              <span><b>{currentAdmin.username}</b><small>Administrator</small></span>
+              <i aria-hidden="true">⌄</i>
+            </button>
+          </div>
+        </header>
+        <nav className="admin-mobile-nav" aria-label="后台移动导航">
+          {adminNav.map(([href, icon, label]) => (
+            <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}>
+              <i>{icon}</i><span>{label}</span>
+            </Link>
+          ))}
+        </nav>
+        <div className="admin-content page-enter">{content}</div>
+      </main>
+      <AdminAccountCenter
+        open={accountOpen}
+        admin={currentAdmin}
+        onClose={() => setAccountOpen(false)}
+        onAdminChange={setCurrentAdmin}
+        notify={notify}
+      />
+      {commandOpen && (
+        <div className="admin-command" role="dialog" aria-modal="true" aria-label="快速导航" onClick={() => setCommandOpen(false)}>
+          <div onClick={(event) => event.stopPropagation()}>
+            <header><b>快速前往</b><button aria-label="关闭快捷导航" onClick={() => setCommandOpen(false)}>×</button></header>
+            {adminNav.map(([href, icon, label]) => <Link key={href} href={href}><i>{icon}</i><span>{label}</span><small>→</small></Link>)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function AdminTitle({ title, sub, action }: { title: string; sub: string; action?: React.ReactNode }) { return <div className="admin-title"><div><h1>{title}</h1><p>{sub}</p></div>{action}</div>; }
@@ -792,5 +1686,5 @@ function AppearanceSettings({ notify }: { notify: Notify }) {
 
 function SiteSettings({ notify }: { notify: Notify }) {
   const [saved, setSaved] = useState(false);
-  return <><AdminTitle title="站点设置" sub="SITE CONFIGURATION" action={<button className="admin-primary" onClick={() => { setSaved(true); notify("站点设置已保存", "success"); }}>保存设置</button>} />{saved && <div className="save-toast">✓ 设置已保存（Mock）</div>}<div className="settings-grid"><section className="admin-panel form-panel"><h2>基本信息</h2><label>站点名称<input defaultValue="helt." /></label><label>站点描述<textarea defaultValue="写代码、追番、折腾博客的个人小站。" /></label><label>站点地址<input defaultValue="https://helt.example.com" /></label><label>联系邮箱<input defaultValue="hello@helt.example.com" /></label></section><section className="admin-panel toggles"><h2>功能开关</h2>{[["开屏页", "关闭后直接进入文章流"], ["评论系统", "允许访客在文章下留言"], ["看板娘", "显示 Live2D 角色与对话"], ["背景音乐", "显示全局音乐播放器"], ["Konami 彩蛋", "启用键盘隐藏彩蛋"]].map(([a, b], i) => <div key={a}><span><b>{a}</b><small>{b}</small></span><label className="toggle"><input type="checkbox" defaultChecked={i !== 4} onChange={(e) => notify(`${a}已${e.target.checked ? "开启" : "关闭"}`)} /><i /></label></div>)}</section></div></>;
+  return <><AdminTitle title="站点设置" sub="SITE CONFIGURATION" action={<button className="admin-primary" onClick={() => { setSaved(true); notify("站点设置已保存", "success"); }}>保存设置</button>} />{saved && <div className="save-toast">✓ 设置已保存（Mock）</div>}<div className="settings-grid"><section className="admin-panel form-panel"><h2>基本信息</h2><label>站点名称<input defaultValue="helt." /></label><label>站点描述<textarea defaultValue="写代码、追番、折腾博客的个人小站。" /></label><label>站点地址<input defaultValue="https://helt.example.com" /></label></section><section className="admin-panel toggles"><h2>功能开关</h2>{[["开屏页", "关闭后直接进入文章流"], ["评论系统", "允许访客在文章下留言"], ["看板娘", "显示 Live2D 角色与对话"], ["背景音乐", "显示全局音乐播放器"], ["Konami 彩蛋", "启用键盘隐藏彩蛋"]].map(([a, b], i) => <div key={a}><span><b>{a}</b><small>{b}</small></span><label className="toggle"><input type="checkbox" defaultChecked={i !== 4} onChange={(e) => notify(`${a}已${e.target.checked ? "开启" : "关闭"}`)} /><i /></label></div>)}</section></div></>;
 }

@@ -3,23 +3,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::{
     Json, Router,
-    extract::State,
+    body::Bytes,
+    extract::{Path, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
-        header::{COOKIE, SET_COOKIE},
+        header::{CONTENT_TYPE, COOKIE, SET_COOKIE},
     },
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, patch, post},
 };
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use rand::distr::{Alphanumeric, SampleString};
+use rand::{
+    RngCore,
+    distr::{Alphanumeric, SampleString},
+};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use tracing::{error, info, warn};
+use webauthn_rs::prelude::{CredentialID, RegisterPublicKeyCredential, Uuid};
 
 use crate::{
     error::{ErrorBody, ErrorEnvelope},
@@ -32,23 +38,49 @@ const REFRESH_COOKIE: &str = "helt_admin_refresh";
 const ACCESS_TTL_SECONDS: i64 = 2 * 60 * 60;
 const REFRESH_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const JWT_ISSUER: &str = "helt-blog";
+const MAX_AVATAR_BYTES: usize = 512 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/profile", get(public_profile))
         .route("/api/v1/admin/auth/login", post(login))
         .route("/api/v1/admin/auth/refresh", post(refresh))
         .route("/api/v1/admin/auth/logout", post(logout))
         .route("/api/v1/admin/auth/me", get(me))
+        .route("/api/v1/admin/auth/profile", patch(update_profile))
+        .route(
+            "/api/v1/admin/auth/avatar",
+            post(upload_avatar).delete(remove_avatar),
+        )
+        .route("/api/v1/admin/auth/change-password", post(change_password))
+        .route(
+            "/api/v1/admin/auth/passkeys",
+            get(list_passkeys).post(register_passkey),
+        )
+        .route(
+            "/api/v1/admin/auth/passkeys/options",
+            post(passkey_registration_options),
+        )
+        .route("/api/v1/admin/auth/passkeys/{id}", delete(delete_passkey))
         .route("/api/v1/admin/auth/forgot-password", post(forgot_password))
 }
 
 pub fn implements(method: HttpMethod, path: &str) -> bool {
     matches!(
         (method, path),
-        (HttpMethod::Post, "/api/v1/admin/auth/login")
+        (HttpMethod::Get, "/api/v1/profile")
+            | (HttpMethod::Post, "/api/v1/admin/auth/login")
             | (HttpMethod::Post, "/api/v1/admin/auth/refresh")
             | (HttpMethod::Post, "/api/v1/admin/auth/logout")
             | (HttpMethod::Get, "/api/v1/admin/auth/me")
+            | (HttpMethod::Patch, "/api/v1/admin/auth/profile")
+            | (HttpMethod::Post, "/api/v1/admin/auth/avatar")
+            | (HttpMethod::Delete, "/api/v1/admin/auth/avatar")
+            | (HttpMethod::Post, "/api/v1/admin/auth/change-password")
+            | (HttpMethod::Get, "/api/v1/admin/auth/passkeys")
+            | (HttpMethod::Post, "/api/v1/admin/auth/passkeys/options")
+            | (HttpMethod::Post, "/api/v1/admin/auth/passkeys")
+            | (HttpMethod::Delete, "/api/v1/admin/auth/passkeys/{id}")
             | (HttpMethod::Post, "/api/v1/admin/auth/forgot-password")
     )
 }
@@ -67,6 +99,25 @@ struct ForgotPasswordRequest {
     username: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateProfileRequest {
+    email: String,
+    bilibili_uid: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RegisterPasskeyRequest {
+    #[serde(flatten)]
+    credential: RegisterPublicKeyCredential,
+    label: Option<String>,
+}
+
 #[derive(Debug, FromRow)]
 struct LoginUser {
     id: i64,
@@ -79,7 +130,29 @@ struct LoginUser {
 struct AdminIdentity {
     username: String,
     role: &'static str,
+    email: String,
     avatar_url: Option<String>,
+    bilibili_uid: String,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+struct PublicProfile {
+    username: String,
+    email: String,
+    avatar_url: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct AdminProfileRow {
+    username: String,
+    email: String,
+    avatar_url: Option<String>,
+    bilibili_uid: String,
+}
+
+struct AvatarMedia {
+    mime: &'static str,
+    extension: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +163,36 @@ struct LoginResponse {
 #[derive(Debug, Serialize)]
 struct MessageResponse {
     message: &'static str,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+struct PasskeyItem {
+    id: i64,
+    label: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct PasskeyListResponse {
+    items: Vec<PasskeyItem>,
+}
+
+async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProfile>, ApiError> {
+    let profile = sqlx::query_as::<_, PublicProfile>(
+        "SELECT username, email, avatar_url
+         FROM admin_users
+         ORDER BY id
+         LIMIT 1",
+    )
+    .fetch_optional(state.pool())
+    .await
+    .map_err(|err| {
+        error!(error = %err, "public profile could not be loaded");
+        ApiError::Internal
+    })?
+    .ok_or(ApiError::Internal)?;
+
+    Ok(Json(profile))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,7 +208,10 @@ struct AccessClaims {
 #[derive(Debug)]
 enum ApiError {
     Unauthorized,
+    CurrentPasswordInvalid,
     Validation(&'static str),
+    NotFound(&'static str),
+    Conflict(&'static str),
     RateLimited,
     Internal,
 }
@@ -118,11 +224,18 @@ impl IntoResponse for ApiError {
                 "invalid_credentials",
                 "账号、密码或动态验证码不正确",
             ),
+            Self::CurrentPasswordInvalid => (
+                StatusCode::UNAUTHORIZED,
+                "current_password_invalid",
+                "当前密码不正确",
+            ),
             Self::Validation(message) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "validation_error",
                 message,
             ),
+            Self::NotFound(message) => (StatusCode::NOT_FOUND, "not_found", message),
+            Self::Conflict(message) => (StatusCode::CONFLICT, "conflict", message),
             Self::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too_many_attempts",
@@ -234,13 +347,12 @@ async fn login(
         append_cookie(&mut response_headers, clear_cookie(&state, REFRESH_COOKIE))?;
     }
 
+    let admin = load_admin_identity(&state, user.id, &user.username).await?;
     info!(username = %user.username, "administrator signed in");
     Ok((
         StatusCode::OK,
         response_headers,
-        Json(LoginResponse {
-            admin: admin_identity(user.username),
-        }),
+        Json(LoginResponse { admin }),
     )
         .into_response())
 }
@@ -312,12 +424,11 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     append_cookie(&mut response_headers, access_cookie(&state, &access_token))?;
     append_cookie(&mut response_headers, refresh_cookie(&state, &next_refresh))?;
 
+    let admin = load_admin_identity(&state, user_id, &username).await?;
     Ok((
         StatusCode::OK,
         response_headers,
-        Json(LoginResponse {
-            admin: admin_identity(username),
-        }),
+        Json(LoginResponse { admin }),
     )
         .into_response())
 }
@@ -342,6 +453,288 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let claims = authenticate(&state, &headers)?;
+    Ok(Json(load_admin_identity(&state, claims.sub, &claims.username).await?).into_response())
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateProfileRequest>,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let email = normalized_email(&request.email)?;
+    let bilibili_uid = normalized_bilibili_uid(&request.bilibili_uid)?;
+    let mut transaction = state.pool().begin().await.map_err(|err| {
+        error!(error = %err, "profile update transaction could not start");
+        ApiError::Internal
+    })?;
+
+    let updated = sqlx::query(
+        "UPDATE admin_users
+         SET email = $1
+         WHERE id = $2 AND username = $3",
+    )
+    .bind(&email)
+    .bind(claims.sub)
+    .bind(&claims.username)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator profile could not be updated");
+        ApiError::Internal
+    })?;
+    if updated.rows_affected() != 1 {
+        let _ = transaction.rollback().await;
+        return Err(ApiError::Unauthorized);
+    }
+
+    sqlx::query(
+        "UPDATE site_settings
+         SET settings = jsonb_set(
+             settings,
+             '{bangumi_sync}',
+             COALESCE(settings -> 'bangumi_sync', '{}'::jsonb)
+                 || jsonb_build_object('uid', $1::text),
+             true
+         )
+         WHERE id = 1",
+    )
+    .bind(&bilibili_uid)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "Bilibili UID could not be moved into the administrator profile");
+        ApiError::Internal
+    })?;
+
+    transaction.commit().await.map_err(|err| {
+        error!(error = %err, "profile update transaction could not commit");
+        ApiError::Internal
+    })?;
+    info!(username = %claims.username, "administrator profile updated");
+
+    Ok(Json(load_admin_identity(&state, claims.sub, &claims.username).await?).into_response())
+}
+
+async fn upload_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let media = validate_avatar_upload(&headers, &body)?;
+    ensure_admin_exists(&state, claims.sub, &claims.username).await?;
+    let object_id = Uuid::now_v7();
+    let object_key = format!(
+        "avatars/admin/{}/{}.{}",
+        claims.sub, object_id, media.extension
+    );
+    let bytes = body.to_vec();
+    state
+        .object_storage()
+        .put_public_object(state.http_client(), &object_key, media.mime, bytes.clone())
+        .await
+        .map_err(|err| {
+            error!(error = %err, object_key, "administrator avatar upload failed");
+            ApiError::Internal
+        })?;
+
+    let avatar_url = state.object_storage().public_url(&object_key);
+    let persisted = persist_avatar_asset(
+        &state,
+        claims.sub,
+        &claims.username,
+        &object_key,
+        &avatar_url,
+        media.mime,
+        &bytes,
+    )
+    .await;
+    if let Err(error) = persisted {
+        if let Err(cleanup_error) = state
+            .object_storage()
+            .delete_public_object(state.http_client(), &object_key)
+            .await
+        {
+            warn!(error = %cleanup_error, object_key, "orphaned avatar object could not be cleaned up");
+        }
+        return Err(error);
+    }
+
+    info!(username = %claims.username, object_key, "administrator avatar uploaded");
+    Ok(Json(load_admin_identity(&state, claims.sub, &claims.username).await?).into_response())
+}
+
+async fn remove_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let mut transaction = state.pool().begin().await.map_err(|err| {
+        error!(error = %err, "avatar removal transaction could not start");
+        ApiError::Internal
+    })?;
+    let current = sqlx::query_as::<_, (Option<i64>,)>(
+        "SELECT avatar_asset_id
+         FROM admin_users
+         WHERE id = $1 AND username = $2
+         FOR UPDATE",
+    )
+    .bind(claims.sub)
+    .bind(&claims.username)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator avatar binding could not be read");
+        ApiError::Internal
+    })?
+    .ok_or(ApiError::Unauthorized)?
+    .0;
+
+    sqlx::query(
+        "UPDATE admin_users
+         SET avatar_url = NULL, avatar_asset_id = NULL
+         WHERE id = $1",
+    )
+    .bind(claims.sub)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator avatar could not be removed");
+        ApiError::Internal
+    })?;
+    sqlx::query(
+        "DELETE FROM asset_references
+         WHERE source_type = 'admin_avatar' AND source_key = $1",
+    )
+    .bind(format!("admin:{}", claims.sub))
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator avatar reference could not be removed");
+        ApiError::Internal
+    })?;
+    if let Some(asset_id) = current {
+        sqlx::query("UPDATE assets SET status = 'archived' WHERE id = $1")
+            .bind(asset_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "administrator avatar asset could not be archived");
+                ApiError::Internal
+            })?;
+    }
+    transaction.commit().await.map_err(|err| {
+        error!(error = %err, "avatar removal transaction could not commit");
+        ApiError::Internal
+    })?;
+
+    info!(username = %claims.username, "administrator avatar removed");
+    Ok(Json(load_admin_identity(&state, claims.sub, &claims.username).await?).into_response())
+}
+
+async fn change_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ChangePasswordRequest>,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    validate_password_change(&request)?;
+
+    let stored_hash = sqlx::query_scalar::<_, String>(
+        "SELECT password_hash FROM admin_users WHERE id = $1 AND username = $2",
+    )
+    .bind(claims.sub)
+    .bind(&claims.username)
+    .fetch_optional(state.pool())
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator password lookup failed");
+        ApiError::Internal
+    })?
+    .ok_or(ApiError::Unauthorized)?;
+
+    let current_password = request.current_password;
+    let current_valid = tokio::task::spawn_blocking(move || {
+        verify_password_or_run_dummy(Some(&stored_hash), &current_password)
+    })
+    .await
+    .map_err(|err| {
+        error!(error = %err, "current password verification task failed");
+        ApiError::Internal
+    })?;
+    if !current_valid {
+        return Err(ApiError::CurrentPasswordInvalid);
+    }
+
+    let new_password = request.new_password;
+    let password_hash = tokio::task::spawn_blocking(move || hash_password(&new_password))
+        .await
+        .map_err(|err| {
+            error!(error = %err, "new password hashing task failed");
+            ApiError::Internal
+        })??;
+
+    let mut transaction = state.pool().begin().await.map_err(|err| {
+        error!(error = %err, "password change transaction could not start");
+        ApiError::Internal
+    })?;
+    sqlx::query("UPDATE admin_users SET password_hash = $1 WHERE id = $2")
+        .bind(password_hash)
+        .bind(claims.sub)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "administrator password could not be updated");
+            ApiError::Internal
+        })?;
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
+        .bind(claims.sub)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "administrator refresh tokens could not be revoked");
+            ApiError::Internal
+        })?;
+    transaction.commit().await.map_err(|err| {
+        error!(error = %err, "password change transaction could not commit");
+        ApiError::Internal
+    })?;
+
+    let mut response_headers = HeaderMap::new();
+    append_cookie(&mut response_headers, clear_cookie(&state, ACCESS_COOKIE))?;
+    append_cookie(&mut response_headers, clear_cookie(&state, REFRESH_COOKIE))?;
+    info!(username = %claims.username, "administrator password changed");
+    Ok((StatusCode::NO_CONTENT, response_headers).into_response())
+}
+
+async fn list_passkeys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let items = sqlx::query_as::<_, PasskeyItem>(
+        "SELECT id, label, created_at
+         FROM passkeys
+         WHERE user_id = $1
+         ORDER BY created_at DESC, id DESC",
+    )
+    .bind(claims.sub)
+    .fetch_all(state.pool())
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator passkeys could not be listed");
+        ApiError::Internal
+    })?;
+
+    Ok(Json(PasskeyListResponse { items }).into_response())
+}
+
+async fn passkey_registration_options(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
     let username = sqlx::query_scalar::<_, String>(
         "SELECT username FROM admin_users WHERE id = $1 AND username = $2",
     )
@@ -350,12 +743,113 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Respons
     .fetch_optional(state.pool())
     .await
     .map_err(|err| {
-        error!(error = %err, "administrator session lookup failed");
+        error!(error = %err, "administrator lookup for passkey registration failed");
         ApiError::Internal
     })?
     .ok_or(ApiError::Unauthorized)?;
+    let credential_ids =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT credential_id FROM passkeys WHERE user_id = $1")
+            .bind(claims.sub)
+            .fetch_all(state.pool())
+            .await
+            .map_err(|err| {
+                error!(error = %err, "existing passkeys could not be loaded");
+                ApiError::Internal
+            })?;
+    let excluded = (!credential_ids.is_empty()).then(|| {
+        credential_ids
+            .into_iter()
+            .map(CredentialID::from)
+            .collect::<Vec<_>>()
+    });
+    let user_handle = Uuid::from_u128(claims.sub as u128);
+    let (options, registration) = state
+        .webauthn()
+        .start_passkey_registration(user_handle, &username, &username, excluded)
+        .map_err(|err| {
+            error!(error = %err, "passkey registration challenge could not be created");
+            ApiError::Internal
+        })?;
+    state.store_passkey_registration(claims.sub, registration);
 
-    Ok(Json(admin_identity(username)).into_response())
+    Ok(Json(options).into_response())
+}
+
+async fn register_passkey(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RegisterPasskeyRequest>,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let label = normalized_passkey_label(request.label.as_deref())?;
+    let registration = state
+        .take_passkey_registration(claims.sub)
+        .ok_or(ApiError::Validation("通行密钥验证已失效，请重新发起保存"))?;
+    let passkey = state
+        .webauthn()
+        .finish_passkey_registration(&request.credential, &registration)
+        .map_err(|err| {
+            warn!(error = %err, username = %claims.username, "passkey registration was rejected");
+            ApiError::Validation("通行密钥验证失败，请重试")
+        })?;
+    let credential_id = passkey.cred_id().as_slice().to_vec();
+    let serialized_passkey = serde_json::to_vec(&passkey).map_err(|err| {
+        error!(error = %err, "passkey could not be serialized");
+        ApiError::Internal
+    })?;
+
+    let item = sqlx::query_as::<_, PasskeyItem>(
+        "INSERT INTO passkeys (user_id, credential_id, public_key, sign_count, label)
+         VALUES ($1, $2, $3, 0, $4)
+         RETURNING id, label, created_at",
+    )
+    .bind(claims.sub)
+    .bind(credential_id)
+    .bind(serialized_passkey)
+    .bind(label)
+    .fetch_one(state.pool())
+    .await
+    .map_err(|err| {
+        if err
+            .as_database_error()
+            .is_some_and(|database_error| database_error.is_unique_violation())
+        {
+            ApiError::Conflict("这枚通行密钥已经保存")
+        } else {
+            error!(error = %err, "passkey could not be persisted");
+            ApiError::Internal
+        }
+    })?;
+
+    info!(username = %claims.username, passkey_id = item.id, "administrator passkey registered");
+    Ok((StatusCode::CREATED, Json(item)).into_response())
+}
+
+async fn delete_passkey(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(passkey_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    if passkey_id <= 0 {
+        return Err(ApiError::Validation("通行密钥编号无效"));
+    }
+    let deleted = sqlx::query("DELETE FROM passkeys WHERE id = $1 AND user_id = $2")
+        .bind(passkey_id)
+        .bind(claims.sub)
+        .execute(state.pool())
+        .await
+        .map_err(|err| {
+            error!(error = %err, "passkey could not be deleted");
+            ApiError::Internal
+        })?
+        .rows_affected();
+    if deleted == 0 {
+        return Err(ApiError::NotFound("未找到这枚通行密钥"));
+    }
+
+    info!(username = %claims.username, passkey_id, "administrator passkey removed");
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn forgot_password(
@@ -451,6 +945,49 @@ fn verify_password_or_run_dummy(stored_hash: Option<&str>, supplied_password: &s
     }
 }
 
+fn validate_password_change(request: &ChangePasswordRequest) -> Result<(), ApiError> {
+    let current_length = request.current_password.chars().count();
+    let new_length = request.new_password.chars().count();
+    if current_length == 0 || current_length > 512 {
+        return Err(ApiError::Validation("请输入有效的当前密码"));
+    }
+    if !(12..=128).contains(&new_length) {
+        return Err(ApiError::Validation("新密码长度须为 12–128 个字符"));
+    }
+    if request.current_password == request.new_password {
+        return Err(ApiError::Validation("新密码不能与当前密码相同"));
+    }
+    Ok(())
+}
+
+fn hash_password(password: &str) -> Result<String, ApiError> {
+    let mut salt_bytes = [0_u8; 16];
+    rand::rng().fill_bytes(&mut salt_bytes);
+    let salt = SaltString::encode_b64(&salt_bytes).map_err(|err| {
+        error!(error = %err, "password salt could not be encoded");
+        ApiError::Internal
+    })?;
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|err| {
+            error!(error = %err, "password could not be hashed");
+            ApiError::Internal
+        })
+}
+
+fn normalized_passkey_label(label: Option<&str>) -> Result<String, ApiError> {
+    let label = label.unwrap_or_default().trim();
+    if label.chars().count() > 80 {
+        return Err(ApiError::Validation("通行密钥名称不能超过 80 个字符"));
+    }
+    Ok(if label.is_empty() {
+        "未命名通行密钥".to_owned()
+    } else {
+        label.to_owned()
+    })
+}
+
 fn verify_totp(secret: &str, supplied_code: &str) -> bool {
     if supplied_code.len() != 6 || !supplied_code.bytes().all(|byte| byte.is_ascii_digit()) {
         return false;
@@ -515,12 +1052,293 @@ fn hash_token(token: &str) -> String {
         .collect()
 }
 
-fn admin_identity(username: String) -> AdminIdentity {
-    AdminIdentity {
-        username,
+async fn load_admin_identity(
+    state: &AppState,
+    user_id: i64,
+    username: &str,
+) -> Result<AdminIdentity, ApiError> {
+    let profile = sqlx::query_as::<_, AdminProfileRow>(
+        "SELECT
+             au.username,
+             au.email,
+             au.avatar_url,
+             COALESCE(ss.settings #>> '{bangumi_sync,uid}', '') AS bilibili_uid
+         FROM admin_users au
+         LEFT JOIN site_settings ss ON ss.id = 1
+         WHERE au.id = $1 AND au.username = $2",
+    )
+    .bind(user_id)
+    .bind(username)
+    .fetch_optional(state.pool())
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator profile lookup failed");
+        ApiError::Internal
+    })?
+    .ok_or(ApiError::Unauthorized)?;
+
+    Ok(AdminIdentity {
+        username: profile.username,
         role: "administrator",
-        avatar_url: None,
+        email: profile.email,
+        avatar_url: profile.avatar_url,
+        bilibili_uid: profile.bilibili_uid,
+    })
+}
+
+fn normalized_email(value: &str) -> Result<String, ApiError> {
+    let email = value.trim().to_lowercase();
+    if email.is_empty() {
+        return Ok(email);
     }
+    if email.len() > 254
+        || email.chars().any(char::is_whitespace)
+        || !email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
+        })
+    {
+        return Err(ApiError::Validation("请输入有效的邮箱地址"));
+    }
+    Ok(email)
+}
+
+fn normalized_bilibili_uid(value: &str) -> Result<String, ApiError> {
+    let uid = value.trim();
+    if uid.is_empty() {
+        return Ok(String::new());
+    }
+    if uid.len() > 20 || !uid.bytes().all(|character| character.is_ascii_digit()) {
+        return Err(ApiError::Validation(
+            "B 站 UID 只能包含数字，且不能超过 20 位",
+        ));
+    }
+    Ok(uid.to_owned())
+}
+
+fn validate_avatar_upload(headers: &HeaderMap, body: &[u8]) -> Result<AvatarMedia, ApiError> {
+    if body.is_empty() || body.len() > MAX_AVATAR_BYTES {
+        return Err(ApiError::Validation("头像文件大小须在 1 B–512 KB 之间"));
+    }
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    let media = match content_type {
+        Some("image/png") if body.starts_with(b"\x89PNG\r\n\x1a\n") => AvatarMedia {
+            mime: "image/png",
+            extension: "png",
+        },
+        Some("image/jpeg") if body.starts_with(b"\xff\xd8\xff") => AvatarMedia {
+            mime: "image/jpeg",
+            extension: "jpg",
+        },
+        Some("image/webp")
+            if body.len() >= 12 && body.starts_with(b"RIFF") && &body[8..12] == b"WEBP" =>
+        {
+            AvatarMedia {
+                mime: "image/webp",
+                extension: "webp",
+            }
+        }
+        _ => {
+            return Err(ApiError::Validation(
+                "头像必须是内容有效的 PNG、JPEG 或 WebP 图片",
+            ));
+        }
+    };
+    Ok(media)
+}
+
+async fn ensure_admin_exists(
+    state: &AppState,
+    user_id: i64,
+    username: &str,
+) -> Result<(), ApiError> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+             SELECT 1 FROM admin_users WHERE id = $1 AND username = $2
+         )",
+    )
+    .bind(user_id)
+    .bind(username)
+    .fetch_one(state.pool())
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator lookup before avatar upload failed");
+        ApiError::Internal
+    })?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized)
+    }
+}
+
+async fn persist_avatar_asset(
+    state: &AppState,
+    user_id: i64,
+    username: &str,
+    object_key: &str,
+    avatar_url: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> Result<(), ApiError> {
+    let mut transaction = state.pool().begin().await.map_err(|err| {
+        error!(error = %err, "avatar asset transaction could not start");
+        ApiError::Internal
+    })?;
+    let current_asset_id = sqlx::query_as::<_, (Option<i64>,)>(
+        "SELECT avatar_asset_id
+         FROM admin_users
+         WHERE id = $1 AND username = $2
+         FOR UPDATE",
+    )
+    .bind(user_id)
+    .bind(username)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator avatar asset binding could not be locked");
+        ApiError::Internal
+    })?
+    .ok_or(ApiError::Unauthorized)?
+    .0;
+    let checksum = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let upload_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO uploads (
+             object_key, bucket, mime, size_bytes, kind,
+             original_filename, checksum_sha256, metadata
+         )
+         VALUES ($1, $2, $3, $4, 'avatar', $5, $6, $7)
+         RETURNING id",
+    )
+    .bind(object_key)
+    .bind(state.object_storage().public_bucket())
+    .bind(mime)
+    .bind(i64::try_from(bytes.len()).map_err(|_| ApiError::Internal)?)
+    .bind(format!(
+        "{}-avatar.{}",
+        username,
+        mime.rsplit('/').next().unwrap_or("image")
+    ))
+    .bind(checksum)
+    .bind(json!({ "owner": username, "source": "admin_profile" }))
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "avatar upload ledger could not be created");
+        ApiError::Internal
+    })?;
+
+    let asset_id = if let Some(asset_id) = current_asset_id {
+        sqlx::query("SELECT id FROM assets WHERE id = $1 FOR UPDATE")
+            .bind(asset_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "avatar asset could not be locked");
+                ApiError::Internal
+            })?;
+        sqlx::query("UPDATE assets SET status = 'active' WHERE id = $1")
+            .bind(asset_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "avatar asset could not be reactivated");
+                ApiError::Internal
+            })?;
+        asset_id
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "INSERT INTO assets (name, media_type, origin_upload_id)
+             VALUES ($1, 'image', $2)
+             RETURNING id",
+        )
+        .bind(format!("{username} 的管理员头像"))
+        .bind(upload_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "administrator avatar asset could not be created");
+            ApiError::Internal
+        })?
+    };
+    let version_no = sqlx::query_scalar::<_, i32>(
+        "SELECT COALESCE(MAX(version_no), 0) + 1
+         FROM asset_versions
+         WHERE asset_id = $1",
+    )
+    .bind(asset_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "next avatar asset version could not be calculated");
+        ApiError::Internal
+    })?;
+    let version_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO asset_versions (asset_id, version_no, upload_id)
+         VALUES ($1, $2, $3)
+         RETURNING id",
+    )
+    .bind(asset_id)
+    .bind(version_no)
+    .bind(upload_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "avatar asset version could not be created");
+        ApiError::Internal
+    })?;
+    sqlx::query("UPDATE assets SET current_version_id = $1 WHERE id = $2")
+        .bind(version_id)
+        .bind(asset_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "avatar current version could not be updated");
+            ApiError::Internal
+        })?;
+    sqlx::query(
+        "UPDATE admin_users
+         SET avatar_url = $1, avatar_asset_id = $2
+         WHERE id = $3",
+    )
+    .bind(avatar_url)
+    .bind(asset_id)
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator avatar binding could not be updated");
+        ApiError::Internal
+    })?;
+    sqlx::query(
+        "INSERT INTO asset_references (
+             asset_id, source_type, source_key, source_label, admin_path
+         )
+         VALUES ($1, 'admin_avatar', $2, $3, '/admin')
+         ON CONFLICT (source_type, source_key) DO UPDATE
+         SET asset_id = EXCLUDED.asset_id,
+             source_label = EXCLUDED.source_label,
+             admin_path = EXCLUDED.admin_path",
+    )
+    .bind(asset_id)
+    .bind(format!("admin:{user_id}"))
+    .bind(format!("{username} 的管理员头像"))
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator avatar reference could not be updated");
+        ApiError::Internal
+    })?;
+    transaction.commit().await.map_err(|err| {
+        error!(error = %err, "avatar asset transaction could not commit");
+        ApiError::Internal
+    })
 }
 
 fn auth_rate_key(headers: &HeaderMap, username: &str) -> String {
@@ -587,7 +1405,11 @@ fn append_cookie(headers: &mut HeaderMap, cookie: String) -> Result<(), ApiError
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessClaims, JWT_ISSUER, decode_access_token, decode_base32, hash_token};
+    use super::{
+        AccessClaims, JWT_ISSUER, decode_access_token, decode_base32, hash_token,
+        normalized_bilibili_uid, normalized_email, validate_avatar_upload,
+    };
+    use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 
     #[test]
@@ -624,5 +1446,28 @@ mod tests {
         .unwrap();
         assert!(decode_access_token("correct-secret", &token).is_ok());
         assert!(decode_access_token("wrong-secret", &token).is_err());
+    }
+
+    #[test]
+    fn profile_fields_are_normalized_and_reject_invalid_values() {
+        assert_eq!(
+            normalized_email(" Admin@Example.COM ").unwrap(),
+            "admin@example.com"
+        );
+        assert!(normalized_email("not-an-email").is_err());
+        assert_eq!(normalized_bilibili_uid(" 123456 ").unwrap(), "123456");
+        assert!(normalized_bilibili_uid("uid-123").is_err());
+    }
+
+    #[test]
+    fn avatar_upload_requires_matching_image_content_and_mime() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
+        let png = b"\x89PNG\r\n\x1a\nvalid-enough-for-sniffing";
+        assert_eq!(
+            validate_avatar_upload(&headers, png).unwrap().extension,
+            "png"
+        );
+        assert!(validate_avatar_upload(&headers, b"not-an-image").is_err());
     }
 }
