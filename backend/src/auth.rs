@@ -139,7 +139,6 @@ struct LoginUser {
 #[derive(Debug, Serialize)]
 struct AdminIdentity {
     username: String,
-    role: &'static str,
     email: String,
     avatar_url: Option<String>,
     avatar_asset_id: Option<i64>,
@@ -217,7 +216,6 @@ async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProf
 struct AccessClaims {
     sub: i64,
     username: String,
-    role: String,
     iss: String,
     iat: usize,
     exp: usize,
@@ -995,7 +993,7 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<AccessClaims, A
     let token = read_cookie(headers, ACCESS_COOKIE).ok_or(ApiError::Unauthorized)?;
     let claims =
         decode_access_token(state.auth_jwt_secret(), &token).map_err(|_| ApiError::Unauthorized)?;
-    if claims.sub <= 0 || claims.username.trim().is_empty() || claims.role != "administrator" {
+    if claims.sub <= 0 || claims.username.trim().is_empty() {
         return Err(ApiError::Unauthorized);
     }
     Ok(claims)
@@ -1014,7 +1012,6 @@ fn create_access_token(state: &AppState, user: &LoginUser) -> Result<String, Api
     let claims = AccessClaims {
         sub: user.id,
         username: user.username.clone(),
-        role: "administrator".to_owned(),
         iss: JWT_ISSUER.to_owned(),
         iat: now as usize,
         exp: (now + ACCESS_TTL_SECONDS) as usize,
@@ -1195,7 +1192,6 @@ async fn load_admin_identity(
 
     Ok(AdminIdentity {
         username: profile.username,
-        role: "administrator",
         email: profile.email,
         avatar_url: profile.avatar_url,
         avatar_asset_id: profile.avatar_asset_id,
@@ -1592,7 +1588,6 @@ mod tests {
         let claims = AccessClaims {
             sub: 1,
             username: "helt".to_owned(),
-            role: "administrator".to_owned(),
             iss: JWT_ISSUER.to_owned(),
             iat: 1,
             exp: usize::MAX / 2,
@@ -1608,12 +1603,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authentication_rejects_non_admin_or_malformed_identity_claims() {
+    async fn single_administrator_authentication_rejects_malformed_identity_claims() {
         let state = test_state();
         let valid = AccessClaims {
             sub: 1,
             username: "helt".to_owned(),
-            role: "administrator".to_owned(),
             iss: JWT_ISSUER.to_owned(),
             iat: 1,
             exp: usize::MAX / 2,
@@ -1622,17 +1616,8 @@ mod tests {
 
         for claims in [
             AccessClaims {
-                sub: 1,
-                username: "helt".to_owned(),
-                role: "viewer".to_owned(),
-                iss: JWT_ISSUER.to_owned(),
-                iat: 1,
-                exp: usize::MAX / 2,
-            },
-            AccessClaims {
                 sub: 0,
                 username: "helt".to_owned(),
-                role: "administrator".to_owned(),
                 iss: JWT_ISSUER.to_owned(),
                 iat: 1,
                 exp: usize::MAX / 2,
@@ -1640,7 +1625,6 @@ mod tests {
             AccessClaims {
                 sub: 1,
                 username: " ".to_owned(),
-                role: "administrator".to_owned(),
                 iss: JWT_ISSUER.to_owned(),
                 iat: 1,
                 exp: usize::MAX / 2,

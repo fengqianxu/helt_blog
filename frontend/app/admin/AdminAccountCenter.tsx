@@ -361,7 +361,7 @@ export function AdminAccountCenter({
           <section className="admin-account-menu" role="menu" aria-label="管理员账户">
             <header className="admin-account-hero">
               <AdminProfileAvatar admin={admin} className="admin-account-avatar" />
-              <div><span>ADMINISTRATOR</span><b>{admin.username}</b><small>{admin.email || "尚未设置联系邮箱"}</small></div>
+              <div><span>唯一管理员</span><b>{admin.username}</b><small>{admin.email || "尚未设置联系邮箱"}</small></div>
             </header>
             <div className="admin-account-actions">
               <button type="button" role="menuitem" onClick={() => openDialog("profile")}>编辑个人资料</button>

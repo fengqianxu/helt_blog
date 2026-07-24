@@ -86,7 +86,8 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.match(app, /asset-detail-image/);
   assert.doesNotMatch(app, /当前版本|历史版本|替换版本|素材 ID|素材ID|版本回滚|current_version/);
   const sidebarUser = app.match(/<div className="admin-user">[\s\S]*?<\/aside>/)?.[0] ?? "";
-  assert.match(sidebarUser, /<small>\{currentAdmin\.email \|\| "ADMINISTRATOR"\}<\/small>/);
+  assert.match(sidebarUser, /<small>\{currentAdmin\.email \|\| "唯一管理员"\}<\/small>/);
+  assert.doesNotMatch(app, /\brole:\s*string\b|Administrator|ADMINISTRATOR/);
   assert.doesNotMatch(app, /这组资料用于后台身份展示|仅用于后台资料展示|留空会停止使用当前账号同步追番数据/);
   assert.match(app, /\/api\/v1\/admin\/auth\/passkeys\/options/);
   assert.match(app, /navigator\.credentials\.create/);

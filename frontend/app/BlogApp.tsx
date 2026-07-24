@@ -609,7 +609,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
           <AdminProfileAvatar admin={currentAdmin} />
           <div>
             <b>{currentAdmin.username}</b>
-            <small>{currentAdmin.email || "ADMINISTRATOR"}</small>
+            <small>{currentAdmin.email || "唯一管理员"}</small>
           </div>
         </div>
       </aside>
@@ -627,7 +627,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
               onClick={() => setAccountOpen((value) => !value)}
             >
               <AdminProfileAvatar admin={currentAdmin} />
-              <span><b>{currentAdmin.username}</b><small>Administrator</small></span>
+              <span><b>{currentAdmin.username}</b><small>唯一管理员</small></span>
               <i aria-hidden="true">⌄</i>
             </button>
           </div>

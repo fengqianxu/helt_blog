@@ -1,5 +1,8 @@
 # helt. 博客
 
+后台采用单管理员模型：系统最多存在一个管理员账户，认证结果只有“已登录管理员”
+和“匿名访客”两种，不提供用户、角色或 RBAC 权限矩阵。
+
 这是一个完全运行在 Docker 容器中的博客项目。日常启动不需要在宿主机安装
 Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compose v2。
 

@@ -257,7 +257,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取当前管理员信息",
         "无请求体；读取 access cookie",
-        "200 JSON username、role、email、avatar_url、bilibili_uid",
+        "200 JSON username、email、avatar_url、bilibili_uid",
         "只返回当前会话用户的账户中心资料；无效或过期会话返回 401"
     ),
     endpoint!(
@@ -348,7 +348,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "更新当前管理员个人资料",
         "JSON: email、bilibili_uid；头像资源必须通过 AUTH-14 单独上传",
-        "200 JSON username、role、email、avatar_url、bilibili_uid",
+        "200 JSON username、email、avatar_url、bilibili_uid",
         "只更新当前管理员；邮箱与 UID 服务端校验，Bilibili UID 写入 bangumi_sync 配置并从站点设置界面迁入账户中心"
     ),
     endpoint!(
@@ -361,7 +361,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "上传或替换当前管理员头像",
         "请求体为 PNG、JPEG 或 WebP 原始字节，Content-Type 必须匹配，最大 512 KB",
-        "200 JSON username、role、email、avatar_url、bilibili_uid；avatar_url 为 /storage/ 下的 MinIO 资源",
+        "200 JSON username、email、avatar_url、bilibili_uid；avatar_url 为 /storage/ 下的 MinIO 资源",
         "服务端校验文件签名后写入公共 MinIO 桶，并原子创建 uploads/assets 记录；替换直接交换唯一文件并将旧对象加入清理队列"
     ),
     endpoint!(
@@ -374,7 +374,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "移除当前管理员头像绑定",
         "无请求体",
-        "200 JSON username、role、email、avatar_url=null、bilibili_uid",
+        "200 JSON username、email、avatar_url=null、bilibili_uid",
         "只解除当前管理员头像并归档逻辑资源，MinIO 文件继续由素材库管理"
     ),
     endpoint!(

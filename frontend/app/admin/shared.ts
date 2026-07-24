@@ -5,7 +5,6 @@ export const DEFAULT_PROFILE_AVATAR_URL = "/storage/avatars/default/admin-avatar
 
 export type AdminIdentity = {
   username: string;
-  role: string;
   email: string;
   avatar_url: string | null;
   avatar_asset_id: number | null;
