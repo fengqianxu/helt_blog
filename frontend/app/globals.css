@@ -572,6 +572,37 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 .reveal { opacity: 0; transform: translateY(24px); transition: opacity .65s ease, transform .65s cubic-bezier(.2,.8,.2,1); }
 .reveal.is-visible { opacity: 1; transform: translateY(0); }
 @keyframes pageEnter { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.raiment-mode-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 220px)); gap: 12px; margin-bottom: 18px; }
+.raiment-mode-switch button { min-width: 0; display: grid; grid-template-columns: 32px 1fr; grid-template-rows: auto auto; column-gap: 10px; padding: 14px 16px; text-align: left; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-left: 3px solid transparent; }
+.raiment-mode-switch button > span { grid-row: 1 / span 2; align-self: center; font-size: 22px; }
+.raiment-mode-switch button b { color: var(--text); font-size: 13px; }
+.raiment-mode-switch button small { color: var(--faint); font: 9px ui-monospace, monospace; letter-spacing: .08em; }
+.raiment-mode-switch button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.raiment-hero { min-height: 320px; position: relative; display: flex; align-items: end; overflow: hidden; color: #fff; background: #101522; border: 1px solid var(--line); }
+.raiment-hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(8,10,17,.92), rgba(8,10,17,.62) 42%, transparent 75%), linear-gradient(0deg, rgba(8,10,17,.72), transparent 55%); }
+.raiment-hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.raiment-hero > div { z-index: 1; width: min(520px, 70%); padding: 34px; }
+.raiment-hero span { display: inline-block; padding: 5px 9px; color: #fff; background: var(--raiment-primary); font: 800 9px ui-monospace, monospace; letter-spacing: .12em; }
+.raiment-hero h2 { margin: 12px 0 8px; font-size: 32px; }
+.raiment-hero p { margin: 0 0 18px; color: rgba(255,255,255,.72); font-size: 12px; line-height: 1.7; }
+.raiment-hero button { padding: 9px 15px; color: #fff; background: transparent; border: 1px solid rgba(255,255,255,.42); }
+.raiment-settings-grid { display: grid; grid-template-columns: .8fr 1.2fr; gap: 16px; margin-top: 16px; }
+.raiment-settings-grid .admin-panel { display: flex; flex-direction: column; gap: 14px; }
+.raiment-settings-grid label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 11px; }
+.raiment-settings-grid input, .raiment-settings-grid select, .raiment-settings-grid textarea { border: 1px solid var(--line); padding: 11px 13px; color: var(--text); background: var(--bg); outline: none; }
+.raiment-settings-grid textarea { min-height: 126px; resize: vertical; line-height: 1.7; }
+.raiment-settings-grid label input[type="range"] { padding: 0; accent-color: var(--accent); }
+.raiment-settings-grid .admin-panel > button { align-self: flex-start; padding: 8px 14px; color: var(--accent); background: var(--bg); border: 1px solid var(--line); }
+.raiment-model-panel { grid-column: 1 / -1; display: grid !important; grid-template-columns: repeat(4, 1fr); align-items: end; }
+.raiment-model-panel h2, .raiment-model-panel .raiment-shared-note { grid-column: 1 / -1; }
+.raiment-shared-note, .schedule > p { margin: 2px 0 0; color: var(--faint); font-size: 11px; }
+.color-token { display: grid; grid-template-columns: 42px 1fr; gap: 10px; align-items: end; }
+.color-token > i { width: 42px; height: 42px; border: 1px solid var(--line); box-shadow: inset 0 0 0 3px var(--surface); }
+.raiment-bindings { display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center; }
+.raiment-bindings > span { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; background: var(--bg); border: 1px solid var(--line); }
+.raiment-bindings > span small { color: var(--faint); }
+.raiment-bindings > i { color: var(--accent); font-style: normal; }
+
 .hero-art { animation: heroDrift 16s ease-in-out infinite alternate; transform-origin: center; }
 @keyframes heroDrift { from { transform: scale(1.015) translate3d(0,0,0); } to { transform: scale(1.06) translate3d(-1.2%, -.5%, 0); } }
 .hero-copy > * { animation: heroCopyIn .72s both; }.hero-copy > *:nth-child(2) { animation-delay: .08s; }.hero-copy > *:nth-child(3) { animation-delay: .16s; }.hero-copy > *:nth-child(4) { animation-delay: .24s; }
@@ -650,6 +681,7 @@ button:disabled { cursor: not-allowed; opacity: .35; }
   .about-layout { grid-template-columns: 1fr; gap: 30px; }.profile-card { position: static; }.about-content .dialog-box { margin-top: 36px; }.skill-grid { grid-template-columns: 1fr; }.friends-grid { grid-template-columns: 1fr; }
   .music-player { left: 10px; bottom: 10px; }.music-player > div, .music-player > button:not(.disc) { display: none; }.floating-tools { right: 10px; bottom: 10px; }
   .admin-shell { display: block; }.admin-sidebar { display: none; }.admin-main > header { padding: 0 16px; }.admin-main > header > div:first-child span { display: none; }.admin-content { padding: 20px 14px; }.admin-content::before { content: "管理后台建议在桌面端访问"; display: block; margin-bottom: 16px; padding: 10px; color: var(--gold); background: color-mix(in srgb, var(--gold) 12%, var(--surface)); font-size: 12px; }.admin-title { flex-direction: column; }.admin-title > *:last-child { align-self: flex-start; }.admin-stats { grid-template-columns: 1fr 1fr; }.quick > div { grid-template-columns: 1fr 1fr; }.editor-meta { grid-template-columns: 1fr; }.editor-area.split { grid-template-columns: 1fr; }.editor-area.split textarea { display: none; }.moderation-list article { grid-template-columns: 38px 1fr; }.moderation-list article > div:last-child { grid-column: 2; }.appearance-grid { grid-template-columns: 1fr; }.appearance-grid img { height: 190px; }
+  .raiment-mode-switch { grid-template-columns: 1fr 1fr; }.raiment-hero { min-height: 290px; }.raiment-hero > div { width: 100%; padding: 24px 20px; }.raiment-settings-grid { grid-template-columns: 1fr; }.raiment-model-panel { grid-column: auto; display: flex !important; }.raiment-bindings { grid-template-columns: 1fr; }.raiment-bindings > i { text-align: center; transform: rotate(90deg); }
   .admin-main > header .admin-profile-trigger { min-width: 40px; width: 40px; grid-template-columns: 32px; padding: 3px; border-radius: 50%; }
   .admin-profile-trigger > span, .admin-profile-trigger > i { display: none; }
   .admin-account-menu { top: 61px; right: 10px; width: min(360px, calc(100% - 20px)); }

@@ -10,10 +10,28 @@ Drizzle support.
 
 ## Quick Start
 
+在仓库根目录的 Compose 服务未占用 `3000` 端口时，使用下面的命令启动本地前端：
+
 ```bash
 npm install
-npm run dev
+npm run dev -- --host localhost --port 3000
 npm run build
+```
+
+然后访问 <http://localhost:3000/>。开发服务会把 `/api` 请求代理到
+<http://localhost:3001/> 的本地后端。
+
+如果已经通过仓库根目录的 `docker-compose.yml` 启动完整博客，
+`127.0.0.1:3000` 会由 `gateway` 容器占用。切换到本地前端开发前，先在仓库根目录运行：
+
+```bash
+docker compose stop gateway frontend
+```
+
+这会保留 `backend`、PostgreSQL 和 MinIO，便于本地前端继续联调。需要恢复容器版站点时运行：
+
+```bash
+docker compose up -d frontend gateway
 ```
 
 This starter does not use `wrangler.jsonc`.

@@ -434,6 +434,7 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+    authenticate(&state, &headers)?;
     if let Some(refresh_token) = read_cookie(&headers, REFRESH_COOKIE) {
         sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = $1")
             .bind(hash_token(&refresh_token))
@@ -894,7 +895,16 @@ async fn forgot_password(
 
 fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<AccessClaims, ApiError> {
     let token = read_cookie(headers, ACCESS_COOKIE).ok_or(ApiError::Unauthorized)?;
-    decode_access_token(state.auth_jwt_secret(), &token).map_err(|_| ApiError::Unauthorized)
+    let claims =
+        decode_access_token(state.auth_jwt_secret(), &token).map_err(|_| ApiError::Unauthorized)?;
+    if claims.sub <= 0 || claims.username.trim().is_empty() || claims.role != "administrator" {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok(claims)
+}
+
+pub(crate) fn has_valid_admin_session(state: &AppState, headers: &HeaderMap) -> bool {
+    authenticate(state, headers).is_ok()
 }
 
 fn create_access_token(state: &AppState, user: &LoginUser) -> Result<String, ApiError> {
@@ -1406,11 +1416,59 @@ fn append_cookie(headers: &mut HeaderMap, cookie: String) -> Result<(), ApiError
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessClaims, JWT_ISSUER, decode_access_token, decode_base32, hash_token,
-        normalized_bilibili_uid, normalized_email, validate_avatar_upload,
+        ACCESS_COOKIE, AccessClaims, JWT_ISSUER, authenticate, decode_access_token, decode_base32,
+        hash_token, normalized_bilibili_uid, normalized_email, validate_avatar_upload,
     };
     use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use sqlx::postgres::PgPoolOptions;
+
+    use crate::{config::Config, state::AppState};
+
+    fn test_state() -> AppState {
+        let config = Config {
+            environment: "test".to_owned(),
+            host: "127.0.0.1".parse().unwrap(),
+            port: 3000,
+            database_url: "postgres://test:test@localhost/test".to_owned(),
+            db_max_connections: 1,
+            db_min_connections: 0,
+            run_migrations: false,
+            minio_endpoint: "http://localhost:9000".to_owned(),
+            minio_access_key: "test".to_owned(),
+            minio_secret_key: "test".to_owned(),
+            minio_public_bucket: "blog-public".to_owned(),
+            minio_private_bucket: "blog-private".to_owned(),
+            admin_username: "test".to_owned(),
+            admin_initial_password: Some("test".to_owned()),
+            auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
+            public_origin: "http://localhost".to_owned(),
+            cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
+            request_timeout_secs: 5,
+        };
+        AppState::new(
+            PgPoolOptions::new()
+                .connect_lazy(&config.database_url)
+                .unwrap(),
+            &config,
+        )
+        .unwrap()
+    }
+
+    fn access_cookie(claims: AccessClaims) -> HeaderMap {
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(b"test-secret-at-least-32-bytes-long"),
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            HeaderValue::from_str(&format!("{ACCESS_COOKIE}={token}")).unwrap(),
+        );
+        headers
+    }
 
     #[test]
     fn base32_decoder_accepts_standard_totp_secrets() {
@@ -1446,6 +1504,49 @@ mod tests {
         .unwrap();
         assert!(decode_access_token("correct-secret", &token).is_ok());
         assert!(decode_access_token("wrong-secret", &token).is_err());
+    }
+
+    #[tokio::test]
+    async fn authentication_rejects_non_admin_or_malformed_identity_claims() {
+        let state = test_state();
+        let valid = AccessClaims {
+            sub: 1,
+            username: "helt".to_owned(),
+            role: "administrator".to_owned(),
+            iss: JWT_ISSUER.to_owned(),
+            iat: 1,
+            exp: usize::MAX / 2,
+        };
+        assert!(authenticate(&state, &access_cookie(valid)).is_ok());
+
+        for claims in [
+            AccessClaims {
+                sub: 1,
+                username: "helt".to_owned(),
+                role: "viewer".to_owned(),
+                iss: JWT_ISSUER.to_owned(),
+                iat: 1,
+                exp: usize::MAX / 2,
+            },
+            AccessClaims {
+                sub: 0,
+                username: "helt".to_owned(),
+                role: "administrator".to_owned(),
+                iss: JWT_ISSUER.to_owned(),
+                iat: 1,
+                exp: usize::MAX / 2,
+            },
+            AccessClaims {
+                sub: 1,
+                username: " ".to_owned(),
+                role: "administrator".to_owned(),
+                iss: JWT_ISSUER.to_owned(),
+                iat: 1,
+                exp: usize::MAX / 2,
+            },
+        ] {
+            assert!(authenticate(&state, &access_cookie(claims)).is_err());
+        }
     }
 
     #[test]

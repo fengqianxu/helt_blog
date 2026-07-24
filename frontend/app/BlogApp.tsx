@@ -10,6 +10,58 @@ type Notify = (message: string, tone?: "normal" | "success" | "danger") => void;
 
 const DEFAULT_PROFILE_AVATAR_URL = "/storage/avatars/default/admin-avatar.webp";
 
+type RaimentId = "saber" | "alter-saber";
+type Raiment = {
+  id: RaimentId;
+  mode: Theme;
+  modeLabel: string;
+  name: string;
+  shortName: string;
+  cover: string;
+  colors: { primary: string; secondary: string; background: string };
+  kanban: {
+    displayName: string;
+    persona: string;
+    greeting: string;
+  };
+};
+
+// 灵衣是封面、主题和看板娘人格的唯一配置源。以后新增灵衣时只需扩展注册表，
+// 再将其 ID 绑定到展示模式；目前仍保持日间 / 夜间的一对一切换。
+const RAIMENTS: Record<RaimentId, Raiment> = {
+  saber: {
+    id: "saber",
+    mode: "day",
+    modeLabel: "日间模式",
+    name: "Saber",
+    shortName: "SABER",
+    cover: "/saber-day.png",
+    colors: { primary: "#2B5FB8", secondary: "#B99A3E", background: "#F5F7FB" },
+    kanban: {
+      displayName: "Saber",
+      persona: "你是 helt 博客的看板娘，人格原型为骑士王。称呼访客为「Master」，语气端正温和、略带古风骑士腔，偶尔提到晚餐。回答不超过三句话……",
+      greeting: "Master，今日也请从容阅读。",
+    },
+  },
+  "alter-saber": {
+    id: "alter-saber",
+    mode: "night",
+    modeLabel: "夜间模式",
+    name: "Alter Saber",
+    shortName: "ALTER",
+    cover: "/saber-night.png",
+    colors: { primary: "#D84358", secondary: "#7B4B8E", background: "#0E0B16" },
+    kanban: {
+      displayName: "Alter",
+      persona: "你是 helt 博客夜间灵衣的看板娘 Alter。称呼访客为「Master」，语气冷静、简短而可靠，偶尔表现出对晚餐的执着。回答不超过三句话……",
+      greeting: "夜深了，Master。继续前进吧。",
+    },
+  },
+};
+
+const RAIMENT_BINDINGS: Record<Theme, RaimentId> = { day: "saber", night: "alter-saber" };
+const getRaiment = (theme: Theme) => RAIMENTS[RAIMENT_BINDINGS[theme]];
+
 const posts = [
   { slug: "blog-rebuild", category: "技术", date: "2026-07-12", title: "重构博客的一些思考", excerpt: "从单薄的功能到一个完整的个人站点：开屏动画、日夜双主题、追番页与时间轴，这次重构想把「我喜欢的东西」都装进来。", time: "8 min", words: "3.2k 字", comments: 12, pinned: true },
   { slug: "spring-anime-2026", category: "追番", date: "2026-07-02", title: "2026 春季番剧总结：这季度我推的都完结了", excerpt: "照例的季度总结，聊聊这个季度追完的六部番，以及为什么我又把 Fate/Zero 重刷了一遍。", time: "6 min", words: "2.4k 字", comments: 8 },
@@ -174,12 +226,13 @@ function Toast({ message, tone }: { message: string; tone: "normal" | "success" 
 }
 
 function EasterEgg({ theme, onClose }: { theme: Theme; onClose: () => void }) {
+  const raiment = getRaiment(theme);
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
-  return <div className="easter-egg" role="dialog" aria-modal="true" aria-label="隐藏彩蛋" onClick={onClose}><div onClick={(e) => e.stopPropagation()}><Image src={theme === "day" ? "/saber-day.png" : "/saber-night.png"} width={5120} height={2160} sizes="(max-width: 760px) 100vw, 760px" alt="" /><div className="dialog-box"><b>{theme === "day" ? "Saber" : "Alter"}</b><p>能抵达这里，说明你的意志相当坚定，Master。今晚的晚餐，就由胜者决定吧。</p></div><button onClick={onClose}>收起令咒</button></div></div>;
+  return <div className="easter-egg" role="dialog" aria-modal="true" aria-label="隐藏彩蛋" onClick={onClose}><div onClick={(e) => e.stopPropagation()}><Image src={raiment.cover} width={5120} height={2160} sizes="(max-width: 760px) 100vw, 760px" alt="" /><div className="dialog-box"><b>{raiment.kanban.displayName}</b><p>能抵达这里，说明你的意志相当坚定，Master。今晚的晚餐，就由胜者决定吧。</p></div><button onClick={onClose}>收起令咒</button></div></div>;
 }
 
 function ThemeSwitch({ theme, onClick, compact = false }: { theme: Theme; onClick: () => void; compact?: boolean }) {
@@ -209,6 +262,7 @@ function TopNav({ pathname, theme, toggleTheme, menuOpen, setMenuOpen, setSearch
 }
 
 function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; toggleTheme: () => void; notify: Notify; onSearch: () => void }) {
+  const raiment = getRaiment(theme);
   const [page, setPage] = useState(1);
   const [menuOpen, setMenuOpen] = useState(false);
   const [navElevated, setNavElevated] = useState(false);
@@ -242,7 +296,7 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
       <TopNav pathname="/" theme={theme} toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating elevated={navElevated} />
       <section className="hero">
         <div className="hero-stripe stripe-one" /><div className="hero-stripe stripe-two" />
-        <Image className="hero-art" src={theme === "day" ? "/saber-day.png" : "/saber-night.png"} width={5120} height={2160} sizes="(max-width: 768px) 100vw, 64vw" priority alt={theme === "day" ? "Saber" : "Saber Alter"} />
+        <Image className="hero-art" src={raiment.cover} width={5120} height={2160} sizes="(max-width: 768px) 100vw, 64vw" priority alt={`${raiment.name} 灵衣封面`} />
         <div className="hero-copy">
           <div className="eyebrow"><i /> SINCE 2020 · HELT&apos;S BLOG</div>
           <h1>「問おう。<br />貴方が私の<span>マスター</span>か？」</h1>
@@ -435,17 +489,18 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
 }
 
 function FloatingTools({ theme, toggleTheme, playerOpen, setPlayerOpen, notify }: { theme: Theme; toggleTheme: () => void; playerOpen: boolean; setPlayerOpen: (v: boolean) => void; notify: Notify }) {
+  const raiment = getRaiment(theme);
   const tracks = [{ title: "THIS ILLUSION", artist: "LiSA · Fate OST" }, { title: "to the beginning", artist: "Kalafina" }, { title: "花の唄", artist: "Aimer" }];
   const [track, setTrack] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [showTop, setShowTop] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatText, setChatText] = useState("");
-  const [chatReply, setChatReply] = useState("Master，需要我为你介绍今天的内容吗？");
+  const [chatReply, setChatReply] = useState<{ theme: Theme; text: string } | null>(null);
   useEffect(() => { const watch = () => setShowTop(window.scrollY > 500); watch(); window.addEventListener("scroll", watch, { passive: true }); return () => window.removeEventListener("scroll", watch); }, []);
   const moveTrack = (delta: number) => { const next = (track + delta + tracks.length) % tracks.length; setTrack(next); setPlaying(true); notify(`正在播放：${tracks[next].title}`); };
-  const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply("我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。"); setChatText(""); };
-  return <><div className={cx("music-player", !playerOpen && "collapsed", playing && "is-playing")}><button className="disc" onClick={() => playerOpen ? setPlaying(!playing) : setPlayerOpen(true)} aria-label={playerOpen ? (playing ? "暂停音乐" : "播放音乐") : "展开播放器"}><i /></button>{playerOpen && <><div><b>{tracks[track].title}</b><span>{tracks[track].artist}</span><i className="progress"><i /></i></div><button onClick={() => moveTrack(-1)} aria-label="上一首">⏮</button><button onClick={() => { setPlaying(!playing); notify(playing ? "音乐已暂停" : `正在播放：${tracks[track].title}`); }} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button><button onClick={() => moveTrack(1)} aria-label="下一首">⏭</button><button className="collapse-player" onClick={() => setPlayerOpen(false)} aria-label="收起播放器">−</button></>}</div>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">SABER · GUIDE</div><p>{chatReply}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder="问问看板娘…" /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label={`切换到${theme === "day" ? "夜间" : "日间"}主题`}>{theme === "day" ? "☾" : "☀"}</button></div></>;
+  const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply({ theme, text: "我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。" }); setChatText(""); };
+  return <><div className={cx("music-player", !playerOpen && "collapsed", playing && "is-playing")}><button className="disc" onClick={() => playerOpen ? setPlaying(!playing) : setPlayerOpen(true)} aria-label={playerOpen ? (playing ? "暂停音乐" : "播放音乐") : "展开播放器"}><i /></button>{playerOpen && <><div><b>{tracks[track].title}</b><span>{tracks[track].artist}</span><i className="progress"><i /></i></div><button onClick={() => moveTrack(-1)} aria-label="上一首">⏮</button><button onClick={() => { setPlaying(!playing); notify(playing ? "音乐已暂停" : `正在播放：${tracks[track].title}`); }} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button><button onClick={() => moveTrack(1)} aria-label="下一首">⏭</button><button className="collapse-player" onClick={() => setPlayerOpen(false)} aria-label="收起播放器">−</button></>}</div>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.theme === theme ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label={`切换到${theme === "day" ? "夜间" : "日间"}主题`}>{theme === "day" ? "☾" : "☀"}</button></div></>;
 }
 
 function Footer() { return <footer><Link href="/" className="brand">helt<span>.</span></Link><p>写代码、追番、折腾博客的个人小站。</p><span>© 2020—2026 helt. · POWERED BY REACT</span></footer>; }
@@ -1542,7 +1597,7 @@ function AdminAccountCenter({
   );
 }
 
-const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/articles/new", "✎", "撰写文章"], ["/admin/comments", "◫", "评论审核"], ["/admin/kanban", "♙", "看板娘 · LLM"], ["/admin/media", "♫", "音乐与语音"], ["/admin/appearance", "◐", "封面与主题"], ["/admin/settings", "⚙", "站点设置"]];
+const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/articles/new", "✎", "撰写文章"], ["/admin/comments", "◫", "评论审核"], ["/admin/raiments", "♙", "灵衣"], ["/admin/media", "♫", "音乐与语音"], ["/admin/settings", "⚙", "站点设置"]];
 
 function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify; admin: AdminIdentity }) {
   const [commandOpen, setCommandOpen] = useState(false);
@@ -1554,9 +1609,8 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   else if (pathname === "/admin/articles") content = <ArticleManager notify={notify} />;
   else if (pathname.includes("/admin/articles/")) content = <ArticleEditor notify={notify} />;
   else if (pathname === "/admin/comments") content = <CommentManager notify={notify} />;
-  else if (pathname === "/admin/kanban") content = <KanbanSettings notify={notify} />;
+  else if (pathname === "/admin/raiments" || pathname === "/admin/kanban" || pathname === "/admin/appearance") content = <RaimentSettings notify={notify} />;
   else if (pathname === "/admin/media") content = <MediaSettings notify={notify} />;
-  else if (pathname === "/admin/appearance") content = <AppearanceSettings notify={notify} />;
   else content = <SiteSettings notify={notify} />;
   useEffect(() => {
     if (!commandOpen) return;
@@ -1633,7 +1687,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
 function AdminTitle({ title, sub, action }: { title: string; sub: string; action?: React.ReactNode }) { return <div className="admin-title"><div><h1>{title}</h1><p>{sub}</p></div>{action}</div>; }
 
 function Dashboard({ notify }: { notify: Notify }) {
-  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · 2026.07.23" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} /><div className="admin-stats">{[["128", "文章总数", "+3 本月"], ["187,203", "累计访客", "+12.4%"], ["1,842", "评论总数", "17 待审核"], ["2,048", "运行天数", "99.98%"]].map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS</small></h2><div className="chart">{[35, 52, 43, 66, 58, 78, 72, 88, 60, 82, 76, 94, 86, 100].map((n, i) => <i key={i} style={{ height: `${n}%` }} />)}</div></section><section className="admin-panel recent-comments"><h2>最新评论 <Link href="/admin/comments">全部 →</Link></h2>{["Rin", "Aki", "Kumo"].map((n, i) => <div key={n}><span>{n[0]}</span><p><b>{n} · {i + 1} 小时前</b>开屏语音这个想法太棒了，期待夜间 Alter…</p><span className="mini-actions"><button onClick={() => notify(`已通过 ${n} 的评论`, "success")}>通过</button><button onClick={() => notify(`已拒绝 ${n} 的评论`, "danger")}>拒绝</button><button onClick={() => notify(`正在回复 ${n}`)}>回复</button></span></div>)}</section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/comments">◫<span>审核评论</span></Link><Link href="/admin/appearance">◐<span>切换封面</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
+  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · 2026.07.23" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} /><div className="admin-stats">{[["128", "文章总数", "+3 本月"], ["187,203", "累计访客", "+12.4%"], ["1,842", "评论总数", "17 待审核"], ["2,048", "运行天数", "99.98%"]].map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS</small></h2><div className="chart">{[35, 52, 43, 66, 58, 78, 72, 88, 60, 82, 76, 94, 86, 100].map((n, i) => <i key={i} style={{ height: `${n}%` }} />)}</div></section><section className="admin-panel recent-comments"><h2>最新评论 <Link href="/admin/comments">全部 →</Link></h2>{["Rin", "Aki", "Kumo"].map((n, i) => <div key={n}><span>{n[0]}</span><p><b>{n} · {i + 1} 小时前</b>开屏语音这个想法太棒了，期待夜间 Alter…</p><span className="mini-actions"><button onClick={() => notify(`已通过 ${n} 的评论`, "success")}>通过</button><button onClick={() => notify(`已拒绝 ${n} 的评论`, "danger")}>拒绝</button><button onClick={() => notify(`正在回复 ${n}`)}>回复</button></span></div>)}</section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/comments">◫<span>审核评论</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
 }
 
 function ArticleManager({ notify }: { notify: Notify }) {
@@ -1659,11 +1713,27 @@ function CommentManager({ notify }: { notify: Notify }) {
   return <><AdminTitle title="评论审核" sub={`COMMENTS · ${items.length - done.length} 待处理`} /><div className="moderation-list">{items.filter((x) => !done.includes(x.n)).map((x) => <article key={x.n}><span>{x.n[0]}</span><div><b>{x.n} <small>· 刚刚</small></b><p>{x.text}</p><small>评论于：<span>《{x.post}》</span></small></div><div><button onClick={() => handle(x.n, "通过")}>✓ 通过</button><button onClick={() => handle(x.n, "拒绝")}>× 拒绝</button><button onClick={() => notify(`已打开对 ${x.n} 的回复框`)}>↩ 回复</button></div></article>)}{done.length === items.length && <div className="empty-panel"><b>✓</b><p>全部评论已处理完毕。</p><button onClick={() => setDone([])}>恢复演示数据</button></div>}</div></>;
 }
 
-function KanbanSettings({ notify }: { notify: Notify }) {
+function RaimentSettings({ notify }: { notify: Notify }) {
+  const [selected, setSelected] = useState<Theme>("day");
   const [temperature, setTemperature] = useState(7);
   const [testing, setTesting] = useState(false);
+  const raiment = getRaiment(selected);
   const test = () => { setTesting(true); window.setTimeout(() => { setTesting(false); notify("模型连通测试完成", "success"); }, 900); };
-  return <><AdminTitle title="看板娘 · LLM" sub="KANBAN GIRL · MODEL CONFIGURATION" action={<button className="admin-primary" onClick={() => notify("看板娘配置已保存", "success")}>保存配置</button>} /><div className="settings-grid"><section className="admin-panel"><h2>模型连接 <span className="live-dot">ONLINE</span></h2><label>服务商<select><option>OpenAI Compatible</option><option>Anthropic</option></select></label><label>模型<input defaultValue="gpt-4.1-mini" /></label><label>API 地址<input defaultValue="https://api.example.com/v1" /></label><label>Temperature <b>{temperature / 10}</b><input type="range" min="0" max="10" value={temperature} onChange={(e) => setTemperature(Number(e.target.value))} /></label></section><section className="admin-panel"><h2>人格提示词</h2><textarea defaultValue="你是 helt 博客的看板娘，人格原型为骑士王。称呼访客为「Master」，语气端正温和、略带古风骑士腔，偶尔提到晚餐。回答不超过三句话……" /><button className={testing ? "loading" : ""} onClick={test} disabled={testing}>{testing ? "正在召唤…" : "测试对话"}</button><div className={cx("test-chat", testing && "thinking")}><b>Saber</b><p>{testing ? "正在读取当前文章上下文……" : "Master，今日更新了《重构博客的一些思考》。关于开屏与主题系统的部分，我认为值得一读。"}</p></div></section></div></>;
+  return <><AdminTitle title="灵衣" sub="RAIMENTS · COVER / THEME / KANBAN" action={<button className="admin-primary" onClick={() => notify(`${raiment.name} 灵衣已保存并同步到博客`, "success")}>保存并应用</button>} />
+    <div className="raiment-mode-switch" role="tablist" aria-label="灵衣模式">
+      {(["day", "night"] as Theme[]).map((mode) => { const item = getRaiment(mode); return <button key={mode} role="tab" aria-selected={selected === mode} className={selected === mode ? "active" : ""} onClick={() => setSelected(mode)}><span>{mode === "day" ? "☀" : "☾"}</span><b>{item.modeLabel}</b><small>{item.name}</small></button>; })}
+    </div>
+    <section className="raiment-hero" style={{ "--raiment-primary": raiment.colors.primary, "--raiment-secondary": raiment.colors.secondary } as React.CSSProperties}>
+      <Image src={raiment.cover} width={5120} height={2160} sizes="(max-width: 900px) 100vw, 62vw" alt={`${raiment.name} 灵衣预览`} />
+      <div><span>{raiment.modeLabel} · 已启用</span><h2>{raiment.name}</h2><p>此封面同时用于开屏、博客首页与灵衣预览，修改后会保持同步。</p><button onClick={() => notify(`请选择 ${raiment.name} 的新封面文件（Mock）`)}>更换同步封面</button></div>
+    </section>
+    <div className="raiment-settings-grid">
+      <section className="admin-panel raiment-theme-panel"><h2>主题外观 <small>THEME TOKENS</small></h2><div className="color-token"><i style={{ background: raiment.colors.primary }} /><label>主色<input defaultValue={raiment.colors.primary} key={`${raiment.id}-primary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.secondary }} /><label>辅色<input defaultValue={raiment.colors.secondary} key={`${raiment.id}-secondary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.background }} /><label>背景色<input defaultValue={raiment.colors.background} key={`${raiment.id}-background`} /></label></div></section>
+      <section className="admin-panel"><h2>看板娘人格 <small>{raiment.kanban.displayName.toUpperCase()}</small></h2><label>显示名称<input defaultValue={raiment.kanban.displayName} key={`${raiment.id}-name`} /></label><label>人格提示词<textarea defaultValue={raiment.kanban.persona} key={`${raiment.id}-persona`} /></label><button className={testing ? "loading" : ""} onClick={test} disabled={testing}>{testing ? "正在召唤…" : "测试对话"}</button><div className={cx("test-chat", testing && "thinking")}><b>{raiment.kanban.displayName}</b><p>{testing ? "正在读取当前文章上下文……" : raiment.kanban.greeting}</p></div></section>
+      <section className="admin-panel raiment-model-panel"><h2>模型连接 <span className="live-dot">ONLINE</span></h2><label>服务商<select><option>OpenAI Compatible</option><option>Anthropic</option></select></label><label>模型<input defaultValue="gpt-4.1-mini" /></label><label>API 地址<input defaultValue="https://api.example.com/v1" /></label><label>Temperature <b>{temperature / 10}</b><input type="range" min="0" max="10" value={temperature} onChange={(e) => setTemperature(Number(e.target.value))} /></label><p className="raiment-shared-note">模型连接为所有灵衣共用；人格、封面与主题色由每套灵衣独立保存。</p></section>
+    </div>
+    <section className="admin-panel schedule"><h2>当前模式绑定 <small>暂按日间 / 夜间切换</small></h2><div className="raiment-bindings"><span><b>☀ 日间模式</b><small>Saber</small></span><i>⇄</i><span><b>☾ 夜间模式</b><small>Alter Saber</small></span></div><p>未来加入更多灵衣后，此处可升级为多选绑定；当前不改变访客熟悉的日夜切换方式。</p></section>
+  </>;
 }
 
 function MediaSettings({ notify }: { notify: Notify }) {
@@ -1677,11 +1747,6 @@ function MediaSettings({ notify }: { notify: Notify }) {
     { id: "night-success", kind: "night", name: "夜间 Alter · 契约成立", file: "alter-saber-success.mp3 · 固定资源" },
   ];
   return <><AdminTitle title="音乐与语音" sub={`AUDIO LIBRARY · ${tracks.length} BGM · 4 LOCKED VOICES`} action={<button className="admin-primary" onClick={() => notify("BGM 上传入口已打开（Mock）")}>＋ 上传 BGM</button>} /><div className="settings-grid media-settings"><section className="admin-panel"><h2>BGM 播放列表</h2>{tracks.map((t, i) => <div className="track" key={t}><span>0{i + 1}</span><div><b>{t}</b><small>Fate Series · Audio Track</small></div><button onClick={() => move(i, -1)} disabled={i === 0}>↑</button><button onClick={() => move(i, 1)} disabled={i === tracks.length - 1}>↓</button><button onClick={() => { setTracks((items) => items.filter((item) => item !== t)); notify(`已移除 ${t}`, "danger"); }}>×</button></div>)}</section><section className="admin-panel voice-cards"><h2>登录语音 <small>FIXED · MINIO</small></h2>{voices.map(({ id, kind, name, file }) => <div key={id}><i className={kind} /><b>{name}</b><span>{file}</span><button className={preview === id ? "active" : ""} onClick={() => { setPreview(preview === id ? "" : id); notify(preview === id ? "试听已暂停" : `正在试听 ${name}`); }}>{preview === id ? "Ⅱ 暂停" : "▶ 试听"}</button></div>)}</section></div></>;
-}
-
-function AppearanceSettings({ notify }: { notify: Notify }) {
-  const [rule, setRule] = useState("system");
-  return <><AdminTitle title="封面与主题" sub="APPEARANCE · DAY / NIGHT" action={<button className="admin-primary" onClick={() => notify("主题策略已保存并应用", "success")}>保存并应用</button>} /><div className="appearance-grid"><article><Image src="/saber-day.png" width={5120} height={2160} sizes="(max-width: 900px) 100vw, 45vw" alt="日间 Saber 封面" /><div><b>日间主题 · SABER</b><span>#2B5FB8 · #B99A3E</span><button onClick={() => notify("请选择新的日间封面文件（Mock）")}>更换封面</button></div></article><article><Image src="/saber-night.png" width={5120} height={2160} sizes="(max-width: 900px) 100vw, 45vw" alt="夜间 Alter 封面" /><div><b>夜间主题 · ALTER</b><span>#D84358 · #0E0B16</span><button onClick={() => notify("请选择新的夜间封面文件（Mock）")}>更换封面</button></div></article></div><section className="admin-panel schedule"><h2>主题切换规则 <small>当前：{rule === "system" ? "跟随系统" : rule === "schedule" ? "定时切换" : "始终日间"}</small></h2><label><input type="radio" name="theme-rule" checked={rule === "system"} onChange={() => setRule("system")} /> 跟随系统</label><label><input type="radio" name="theme-rule" checked={rule === "schedule"} onChange={() => setRule("schedule")} /> 定时切换 <input type="time" defaultValue="07:00" disabled={rule !== "schedule"} /> — <input type="time" defaultValue="19:00" disabled={rule !== "schedule"} /></label><label><input type="radio" name="theme-rule" checked={rule === "day"} onChange={() => setRule("day")} /> 始终使用日间主题</label></section></>;
 }
 
 function SiteSettings({ notify }: { notify: Notify }) {

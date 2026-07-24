@@ -49,12 +49,14 @@ Coolify 配置特意没有自定义 Docker 网络或宿主机端口，持久化�
 
 ## Docker Engine / Docker Compose
 
-要求 Docker Engine 和 Docker Compose v2 插件。首次部署只需：
+要求 Docker Engine 和 Docker Compose v2 插件。完整的本地首次启动与排错步骤见
+[README.md](README.md)。服务器首次部署：
 
 ```bash
 cp .env.example .env
-# 编辑 .env：至少替换 POSTGRES_PASSWORD、MINIO_ROOT_PASSWORD，
-# 并按实际访问地址设置 PUBLIC_ORIGIN 和 CORS_ALLOWED_ORIGINS。
+# 编辑 .env：替换 POSTGRES_PASSWORD、MINIO_ROOT_PASSWORD、AUTH_JWT_SECRET，
+# 并按实际 HTTPS 地址设置 PUBLIC_ORIGIN 和 CORS_ALLOWED_ORIGINS。
+docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 curl http://127.0.0.1:3000/health/ready
@@ -80,6 +82,9 @@ docker compose down
 ```
 
 `docker compose down` 会保留命名卷。生产环境不要执行 `docker compose down -v`，该命令会删除数据库与对象文件。
+
+仅修改 `.env` 后也应运行 `docker compose up -d`，让 Compose 重建配置发生变化的
+容器。修改 PostgreSQL 的数据库名、用户名或密码不会自动更新已有数据卷中的账户。
 
 ## 离线部署
 

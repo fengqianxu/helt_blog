@@ -7,8 +7,8 @@
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, OriginalUri},
-    http::{Method, StatusCode},
+    extract::{DefaultBodyLimit, OriginalUri, State},
+    http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
     routing::{MethodFilter, on},
 };
@@ -199,8 +199,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "AUTH-02",
         "认证",
         Post,
-        "/api/v1/admin/auth/passkey/options",
-        "/api/v1/admin/auth/passkey/options",
+        "/api/v1/admin/auth/passkey/login/options",
+        "/api/v1/admin/auth/passkey/login/options",
         Anonymous,
         OK,
         "获取 Passkey 登录挑战",
@@ -212,8 +212,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "AUTH-03",
         "认证",
         Post,
-        "/api/v1/admin/auth/passkey/verify",
-        "/api/v1/admin/auth/passkey/verify",
+        "/api/v1/admin/auth/passkey/login/verify",
+        "/api/v1/admin/auth/passkey/login/verify",
         Anonymous,
         OK,
         "校验 Passkey 断言并登录",
@@ -1588,16 +1588,53 @@ pub fn router() -> Router<AppState> {
         .iter()
         .filter(|contract| !crate::auth::implements(contract.method, contract.path))
         .fold(Router::new(), |router, contract| {
+            let route = match contract.authentication {
+                Authentication::AdminJwt => on(contract.method.filter(), protected_not_implemented),
+                Authentication::Anonymous | Authentication::RefreshCookie => {
+                    on(contract.method.filter(), not_implemented)
+                }
+            };
             router.route(
                 contract.path,
-                on(contract.method.filter(), not_implemented)
-                    .layer(DefaultBodyLimit::max(contract.max_body_bytes)),
+                route.layer(DefaultBodyLimit::max(contract.max_body_bytes)),
             )
         })
 }
 
 /// 契约已登记但业务尚未编写时的统一响应。
 async fn not_implemented(method: Method, OriginalUri(uri): OriginalUri) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "not_implemented",
+                message: format!(
+                    "{} {} is defined by the API contract but has no business implementation yet",
+                    method,
+                    uri.path()
+                ),
+            },
+        }),
+    )
+}
+
+async fn protected_not_implemented(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+) -> impl IntoResponse {
+    if !crate::auth::has_valid_admin_session(&state, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorEnvelope {
+                error: ErrorBody {
+                    code: "invalid_credentials",
+                    message: "需要有效的管理员会话".to_owned(),
+                },
+            }),
+        );
+    }
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(ErrorEnvelope {
@@ -1780,7 +1817,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 15_744_337_252_995_643_575,
+            fingerprint, 9_370_780_074_650_664_659,
             "update only after reviewing the full catalog"
         );
     }
@@ -1822,8 +1859,8 @@ mod tests {
     fn authentication_contract_matches_the_public_allowlist() {
         let anonymous_admin_allowlist = HashSet::from([
             "/api/v1/admin/auth/login",
-            "/api/v1/admin/auth/passkey/options",
-            "/api/v1/admin/auth/passkey/verify",
+            "/api/v1/admin/auth/passkey/login/options",
+            "/api/v1/admin/auth/passkey/login/verify",
             "/api/v1/admin/auth/forgot-password",
         ]);
 
@@ -1840,7 +1877,7 @@ mod tests {
         }
     }
 
-    /// TDD 路由层：逐个执行 102 个代表请求，确认路径和方法已登记。
+    /// TDD 路由层：逐个执行全部代表请求，确认路径和方法已登记。
     ///
     /// 测试刻意不强制所有端点永远返回 501：某个占位处理器被真实实现替换后，空请求
     /// 可能得到 400/401/422 或成功响应，只要不是 404/405 就证明方法与路径仍然存在。
@@ -1901,6 +1938,52 @@ mod tests {
                     contract.id
                 );
             }
+        }
+    }
+
+    /// 所有声明为后台会话的端点都必须在无 cookie 时停止在认证/输入边界，
+    /// 不能进入真实处理器，也不能让尚未实现的管理端点直接暴露 501。
+    #[tokio::test]
+    async fn every_admin_jwt_contract_rejects_anonymous_requests() {
+        let app = test_app();
+
+        for contract in ENDPOINT_CONTRACTS
+            .iter()
+            .filter(|contract| contract.authentication == Authentication::AdminJwt)
+        {
+            let body = match contract.id {
+                "AUTH-12" => {
+                    r#"{"current_password":"current-password","new_password":"new-password-123"}"#
+                }
+                "AUTH-13" => r#"{"email":"","bilibili_uid":""}"#,
+                _ => "{}",
+            };
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(contract.method.http_method())
+                        .uri(contract.example_path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .expect("valid anonymous admin request"),
+                )
+                .await
+                .expect("admin route should respond");
+
+            assert!(
+                !response.status().is_success(),
+                "{} {} accepted an anonymous request",
+                contract.method.as_str(),
+                contract.example_path
+            );
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_IMPLEMENTED,
+                "{} {} disclosed an unguarded management placeholder",
+                contract.method.as_str(),
+                contract.example_path
+            );
         }
     }
 
