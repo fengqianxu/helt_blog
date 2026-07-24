@@ -7,15 +7,26 @@ Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compo
 
 | 服务 | 用途 | 宿主机默认入口 |
 | --- | --- | --- |
-| `gateway` | Nginx 统一入口，转发页面、API、健康检查和公开文件 | `127.0.0.1:3000` |
+| `gateway` | Nginx 统一入口，转发页面、API、健康检查和公开文件 | `127.0.0.1:18080` |
 | `frontend` | Vinext/React SSR 前端 | 仅容器网络 |
-| `backend` | Rust/Axum API；启动时执行数据库迁移 | `127.0.0.1:3001`，仅供本机调试 |
-| `postgres` | PostgreSQL 16 业务数据库 | `127.0.0.1:5432` |
-| `minio` | S3 兼容对象存储 | API `127.0.0.1:9000`，控制台 `127.0.0.1:9001` |
+| `backend` | Rust/Axum API；启动时执行数据库迁移 | 仅 `api` 容器网络 |
+| `postgres` | PostgreSQL 16 业务数据库 | 仅 `database` 容器网络 |
+| `minio` | S3 兼容对象存储 | 仅 `storage` 容器网络 |
 | `minio-init` | 创建公开/私有桶并设置访问策略 | 一次性任务，成功后退出 |
 
 浏览器和正式客户端只应访问 `gateway`。容器之间使用 Compose 服务名通信，
 不要把 `localhost` 写成容器内的 PostgreSQL 或 MinIO 地址。
+
+默认启动只占用一个宿主机端口。一个入口网络加四个相互隔离的内部网络按最小
+权限连接服务：
+
+| 网络 | 连接的服务 |
+| --- | --- |
+| `edge` | 仅 `gateway`，承载宿主机或平台反向代理入口 |
+| `web` | `gateway`、`frontend` |
+| `api` | `gateway`、`backend` |
+| `database` | `backend`、`postgres` |
+| `storage` | `gateway`、`backend`、`minio`、`minio-init` |
 
 ## 首次启动
 
@@ -26,8 +37,8 @@ docker --version
 docker compose version
 ```
 
-建议为 Docker 分配至少 4 GB 内存。确认宿主机的 `3000`、`3001`、`5432`、
-`9000` 和 `9001` 端口未被占用；也可以在下一步的 `.env` 中修改对应端口。
+建议为 Docker 分配至少 4 GB 内存。默认只需确认宿主机的 `18080` 端口未被
+占用；如有冲突，在下一步的 `.env` 中修改 `WEB_PORT` 即可。
 
 ### 2. 创建配置
 
@@ -55,8 +66,8 @@ AUTH_JWT_SECRET=至少32个字符的随机值
 `@`、`:`、`/`、`#`。本机默认访问地址无需修改：
 
 ```dotenv
-PUBLIC_ORIGIN=http://localhost:3000
-CORS_ALLOWED_ORIGINS=http://localhost:3000
+PUBLIC_ORIGIN=http://localhost:18080
+CORS_ALLOWED_ORIGINS=http://localhost:18080
 ```
 
 生产环境应把这两项改成实际 HTTPS 域名。
@@ -75,10 +86,9 @@ docker compose ps
 
 所有长期运行服务都应显示 `Up ... (healthy)`。启动完成后访问：
 
-- 网站：<http://localhost:3000/>
-- API：<http://localhost:3000/api/v1>
-- 就绪检查：<http://localhost:3000/health/ready>
-- MinIO 控制台：<http://localhost:9001/>
+- 网站：<http://localhost:18080/>
+- API：<http://localhost:18080/api/v1>
+- 就绪检查：<http://localhost:18080/health/ready>
 
 ### 4. 获取初始管理员密码
 
@@ -124,19 +134,45 @@ docker compose down
 MinIO 的命名卷。只修改 `.env` 后也要再次执行 `docker compose up -d`，Compose
 才会按新配置重建相关容器。
 
+## 可选：本机直连内部服务
+
+只有在使用数据库客户端、MinIO 控制台或绕过网关调试 API 时，才加载调试覆盖
+文件：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d
+```
+
+它仅监听回环地址，默认入口如下：
+
+- 后端 API：`127.0.0.1:18081`
+- PostgreSQL：`127.0.0.1:15432`
+- MinIO API：`127.0.0.1:19000`
+- MinIO 控制台：<http://localhost:19001/>
+
+如有冲突，修改 `.env` 中对应的 `*_DEBUG_PORT`。恢复为只开放网关的标准模式：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.debug.yml down
+docker compose up -d
+```
+
 ## 验证与排错
 
 ```powershell
-Invoke-RestMethod http://localhost:3000/health/live
-Invoke-RestMethod http://localhost:3000/health/ready
+Invoke-RestMethod http://localhost:18080/health/live
+Invoke-RestMethod http://localhost:18080/health/ready
 docker compose exec postgres psql -U helt -d helt_blog -c "\dt"
 docker compose logs --tail 200 backend
 ```
 
 常见问题：
 
-- `port is already allocated`：修改 `.env` 中冲突的 `WEB_PORT`、`BACKEND_PORT`、
-  `POSTGRES_PORT`、`MINIO_API_PORT` 或 `MINIO_CONSOLE_PORT`。
+- 标准模式出现 `port is already allocated`：只需修改 `.env` 中的 `WEB_PORT`，
+  并同步修改本地 `PUBLIC_ORIGIN` 和 `CORS_ALLOWED_ORIGINS`。
+- 调试模式端口冲突：修改对应的 `BACKEND_DEBUG_PORT`、
+  `POSTGRES_DEBUG_PORT`、`MINIO_API_DEBUG_PORT` 或
+  `MINIO_CONSOLE_DEBUG_PORT`。
 - `backend` 反复重启：先查看后端日志，并检查密码、`AUTH_JWT_SECRET` 长度和
   PostgreSQL 健康状态。
 - `gateway` 没有启动：它会等待前端和后端健康；分别查看这两个服务的日志。

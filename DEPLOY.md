@@ -3,7 +3,8 @@
 项目提供两个部署入口：
 
 - `docker-compose.coolify.yml`：用于 Coolify，不发布任何宿主机端口，由 Coolify 代理统一接入。
-- `docker-compose.yml`：用于 Docker Engine + 官方 Compose 插件，默认只监听宿主机 `127.0.0.1:3000`。
+- `docker-compose.yml`：用于 Docker Engine + 官方 Compose 插件，默认只监听宿主机 `127.0.0.1:18080`。
+- `docker-compose.debug.yml`：可选的本机调试覆盖文件，显式开放后端、数据库和 MinIO；生产环境不加载。
 
 两种方式都会启动网关、前端、后端、PostgreSQL 与 MinIO；数据库迁移和对象桶初始化会在首次启动时自动完成。
 
@@ -43,7 +44,10 @@ https://blog.example.com/
 https://blog.example.com/health/ready
 ```
 
-Coolify 配置特意没有自定义 Docker 网络或宿主机端口，持久化数据保存在 `postgres_data` 和 `minio_data` 命名卷中。`minio-init` 是正常执行后退出的一次性任务，已从 Coolify 总体健康检查中排除。
+Coolify 配置不发布任何宿主机端口，并使用入口 `edge` 网络，以及 `web`、
+`api`、`database` 和 `storage` 四个隔离的内部网络。持久化数据保存在 `postgres_data` 和
+`minio_data` 命名卷中。`minio-init` 是正常执行后退出的一次性任务，已从
+Coolify 总体健康检查中排除。
 
 > `exclude_from_hc` 是 Coolify 的 Compose 扩展字段，因此不要用原生 `docker compose` 运行 `docker-compose.coolify.yml`；原生部署请使用默认的 `docker-compose.yml`。
 
@@ -59,12 +63,16 @@ cp .env.example .env
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
-curl http://127.0.0.1:3000/health/ready
+curl http://127.0.0.1:18080/health/ready
 ```
 
 数据库密码会嵌入 PostgreSQL URL，请使用足够长的 URL 安全字符组合（字母、数字、`-`、`_`），不要直接使用 `@`、`:`、`/`、`#` 等字符。
 
 生产环境推荐保持 `BIND_ADDRESS=127.0.0.1`，由宿主机的 HTTPS 反向代理转发到 `WEB_PORT`。如果容器必须直接监听公网地址，将其改为 `BIND_ADDRESS=0.0.0.0`，并自行配置防火墙和 TLS。
+
+标准部署只发布 `WEB_PORT`，不要在生产环境叠加
+`docker-compose.debug.yml`。PostgreSQL、后端和 MinIO 通过内部网络及服务名
+通信，不依赖宿主机端口，因此不会与宿主机上同类服务发生端口冲突。
 
 当 `ADMIN_INITIAL_PASSWORD` 留空时，后端会在首次创建管理员时生成随机密码并只打印一次：
 

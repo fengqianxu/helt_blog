@@ -1,0 +1,15 @@
+# Optional local-only access to internal services.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d
+services:
+  backend:
+    ports:
+      - "127.0.0.1:${BACKEND_DEBUG_PORT:-18081}:3000"
+
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_DEBUG_PORT:-15432}:5432"
+
+  minio:
+    ports:
+      - "127.0.0.1:${MINIO_API_DEBUG_PORT:-19000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_DEBUG_PORT:-19001}:9001"
