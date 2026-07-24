@@ -7,7 +7,7 @@ rust-version = "1.85"
 [dependencies]
 anyhow = "1"
 argon2 = "0.5"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 hmac = "0.12"
@@ -27,6 +27,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 webauthn-rs = { version = "=0.5.4", default-features = false }
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, process::ExitCode, time::Duration};
 
 use anyhow::{Context, Result};
-use blog_backend::{admin, build_app, config::Config, db, state::AppState, telemetry};
+use blog_backend::{admin, build_app, config::Config, db, state::AppState, storage_gc, telemetry};
 use tokio::{net::TcpListener, signal};
 use tracing::{error, info};
 
@@ -45,6 +45,7 @@ async fn main() -> Result<ExitCode> {
         .context("administrator bootstrap failed")?;
 
     let state = AppState::new(pool, &config).context("failed to build application state")?;
+    tokio::spawn(storage_gc::run(state.clone()));
     let app = build_app(state, &config).context("failed to build router")?;
     let address = SocketAddr::new(config.host, config.port);
     let listener = TcpListener::bind(address)

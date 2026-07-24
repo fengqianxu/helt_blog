@@ -31,6 +31,7 @@ use crate::{
     error::{ErrorBody, ErrorEnvelope},
     routes::contract::HttpMethod,
     state::AppState,
+    storage_gc,
 };
 
 const ACCESS_COOKIE: &str = "helt_admin_access";
@@ -103,12 +104,21 @@ struct ForgotPasswordRequest {
 struct ChangePasswordRequest {
     current_password: String,
     new_password: String,
+    #[serde(default)]
+    revoke_other_sessions: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct UpdateProfileRequest {
     email: String,
     bilibili_uid: String,
+    avatar_asset_id: Option<i64>,
+    #[serde(default)]
+    avatar_crop_x: f32,
+    #[serde(default)]
+    avatar_crop_y: f32,
+    #[serde(default = "default_avatar_zoom")]
+    avatar_crop_zoom: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +142,10 @@ struct AdminIdentity {
     role: &'static str,
     email: String,
     avatar_url: Option<String>,
+    avatar_asset_id: Option<i64>,
+    avatar_crop_x: f32,
+    avatar_crop_y: f32,
+    avatar_crop_zoom: f32,
     bilibili_uid: String,
 }
 
@@ -147,6 +161,10 @@ struct AdminProfileRow {
     username: String,
     email: String,
     avatar_url: Option<String>,
+    avatar_asset_id: Option<i64>,
+    avatar_crop_x: f32,
+    avatar_crop_y: f32,
+    avatar_crop_zoom: f32,
     bilibili_uid: String,
 }
 
@@ -465,17 +483,52 @@ async fn update_profile(
     let claims = authenticate(&state, &headers)?;
     let email = normalized_email(&request.email)?;
     let bilibili_uid = normalized_bilibili_uid(&request.bilibili_uid)?;
+    if !(-1.0..=1.0).contains(&request.avatar_crop_x)
+        || !(-1.0..=1.0).contains(&request.avatar_crop_y)
+        || !(1.0..=3.0).contains(&request.avatar_crop_zoom)
+    {
+        return Err(ApiError::Validation("头像裁剪参数无效"));
+    }
     let mut transaction = state.pool().begin().await.map_err(|err| {
         error!(error = %err, "profile update transaction could not start");
         ApiError::Internal
     })?;
 
+    let avatar_url = if let Some(asset_id) = request.avatar_asset_id {
+        Some(
+            sqlx::query_scalar::<_, String>(
+                "SELECT '/storage/' || upload.object_key
+             FROM assets asset
+             JOIN uploads upload ON upload.id = asset.upload_id
+             WHERE asset.id = $1
+               AND asset.status = 'active'
+               AND asset.media_type = 'image'",
+            )
+            .bind(asset_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "profile avatar asset could not be validated");
+                ApiError::Internal
+            })?
+            .ok_or(ApiError::Validation("请选择有效的图片素材作为头像"))?,
+        )
+    } else {
+        None
+    };
+
     let updated = sqlx::query(
         "UPDATE admin_users
-         SET email = $1
-         WHERE id = $2 AND username = $3",
+         SET email = $1, avatar_url = $2, avatar_asset_id = $3,
+             avatar_crop_x = $4, avatar_crop_y = $5, avatar_crop_zoom = $6
+         WHERE id = $7 AND username = $8",
     )
     .bind(&email)
+    .bind(&avatar_url)
+    .bind(request.avatar_asset_id)
+    .bind(request.avatar_crop_x)
+    .bind(request.avatar_crop_y)
+    .bind(request.avatar_crop_zoom)
     .bind(claims.sub)
     .bind(&claims.username)
     .execute(&mut *transaction)
@@ -487,6 +540,39 @@ async fn update_profile(
     if updated.rows_affected() != 1 {
         let _ = transaction.rollback().await;
         return Err(ApiError::Unauthorized);
+    }
+
+    sqlx::query(
+        "DELETE FROM asset_references
+         WHERE source_type = 'admin_avatar' AND source_key = $1",
+    )
+    .bind(format!("admin:{}", claims.sub))
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "previous profile avatar reference could not be removed");
+        ApiError::Internal
+    })?;
+    if let Some(asset_id) = request.avatar_asset_id {
+        sqlx::query(
+            "INSERT INTO asset_references (
+                 asset_id, source_type, source_key, source_label, admin_path
+             )
+             VALUES ($1, 'admin_avatar', $2, $3, '/admin/profile')
+             ON CONFLICT (source_type, source_key) DO UPDATE
+             SET asset_id = EXCLUDED.asset_id,
+                 source_label = EXCLUDED.source_label,
+                 admin_path = EXCLUDED.admin_path",
+        )
+        .bind(asset_id)
+        .bind(format!("admin:{}", claims.sub))
+        .bind(format!("{} 的管理员头像", claims.username))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "profile avatar reference could not be created");
+            ApiError::Internal
+        })?;
     }
 
     sqlx::query(
@@ -689,14 +775,26 @@ async fn change_password(
             error!(error = %err, "administrator password could not be updated");
             ApiError::Internal
         })?;
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
-        .bind(claims.sub)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|err| {
-            error!(error = %err, "administrator refresh tokens could not be revoked");
-            ApiError::Internal
-        })?;
+    if request.revoke_other_sessions {
+        sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
+            .bind(claims.sub)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "administrator refresh tokens could not be revoked");
+                ApiError::Internal
+            })?;
+    } else if let Some(current_refresh) = read_cookie(&headers, REFRESH_COOKIE) {
+        sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1 AND token_hash = $2")
+            .bind(claims.sub)
+            .bind(hash_token(&current_refresh))
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "current administrator refresh token could not be revoked");
+                ApiError::Internal
+            })?;
+    }
     transaction.commit().await.map_err(|err| {
         error!(error = %err, "password change transaction could not commit");
         ApiError::Internal
@@ -907,6 +1005,10 @@ pub(crate) fn has_valid_admin_session(state: &AppState, headers: &HeaderMap) -> 
     authenticate(state, headers).is_ok()
 }
 
+pub(crate) fn authenticated_admin_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
+    authenticate(state, headers).ok().map(|claims| claims.sub)
+}
+
 fn create_access_token(state: &AppState, user: &LoginUser) -> Result<String, ApiError> {
     let now = Utc::now().timestamp();
     let claims = AccessClaims {
@@ -1072,6 +1174,10 @@ async fn load_admin_identity(
              au.username,
              au.email,
              au.avatar_url,
+             au.avatar_asset_id,
+             au.avatar_crop_x,
+             au.avatar_crop_y,
+             au.avatar_crop_zoom,
              COALESCE(ss.settings #>> '{bangumi_sync,uid}', '') AS bilibili_uid
          FROM admin_users au
          LEFT JOIN site_settings ss ON ss.id = 1
@@ -1092,8 +1198,16 @@ async fn load_admin_identity(
         role: "administrator",
         email: profile.email,
         avatar_url: profile.avatar_url,
+        avatar_asset_id: profile.avatar_asset_id,
+        avatar_crop_x: profile.avatar_crop_x,
+        avatar_crop_y: profile.avatar_crop_y,
+        avatar_crop_zoom: profile.avatar_crop_zoom,
         bilibili_uid: profile.bilibili_uid,
     })
+}
+
+fn default_avatar_zoom() -> f32 {
+    1.0
 }
 
 fn normalized_email(value: &str) -> Result<String, ApiError> {
@@ -1245,15 +1359,22 @@ async fn persist_avatar_asset(
     })?;
 
     let asset_id = if let Some(asset_id) = current_asset_id {
-        sqlx::query("SELECT id FROM assets WHERE id = $1 FOR UPDATE")
-            .bind(asset_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|err| {
-                error!(error = %err, "avatar asset could not be locked");
-                ApiError::Internal
-            })?;
-        sqlx::query("UPDATE assets SET status = 'active' WHERE id = $1")
+        let old_upload: (i64, String) = sqlx::query_as(
+            "SELECT upload.id, upload.object_key
+             FROM assets asset
+             JOIN uploads upload ON upload.id = asset.upload_id
+             WHERE asset.id = $1
+             FOR UPDATE OF asset",
+        )
+        .bind(asset_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "avatar asset could not be locked");
+            ApiError::Internal
+        })?;
+        sqlx::query("UPDATE assets SET status = 'active', upload_id = $1 WHERE id = $2")
+            .bind(upload_id)
             .bind(asset_id)
             .execute(&mut *transaction)
             .await
@@ -1261,10 +1382,24 @@ async fn persist_avatar_asset(
                 error!(error = %err, "avatar asset could not be reactivated");
                 ApiError::Internal
             })?;
+        storage_gc::enqueue(&mut transaction, &old_upload.1, "avatar_replaced")
+            .await
+            .map_err(|err| {
+                error!(error = %err, "previous avatar cleanup could not be queued");
+                ApiError::Internal
+            })?;
+        sqlx::query("DELETE FROM uploads WHERE id = $1")
+            .bind(old_upload.0)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "previous avatar upload ledger could not be removed");
+                ApiError::Internal
+            })?;
         asset_id
     } else {
         sqlx::query_scalar::<_, i64>(
-            "INSERT INTO assets (name, media_type, origin_upload_id)
+            "INSERT INTO assets (name, media_type, upload_id)
              VALUES ($1, 'image', $2)
              RETURNING id",
         )
@@ -1277,41 +1412,6 @@ async fn persist_avatar_asset(
             ApiError::Internal
         })?
     };
-    let version_no = sqlx::query_scalar::<_, i32>(
-        "SELECT COALESCE(MAX(version_no), 0) + 1
-         FROM asset_versions
-         WHERE asset_id = $1",
-    )
-    .bind(asset_id)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|err| {
-        error!(error = %err, "next avatar asset version could not be calculated");
-        ApiError::Internal
-    })?;
-    let version_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO asset_versions (asset_id, version_no, upload_id)
-         VALUES ($1, $2, $3)
-         RETURNING id",
-    )
-    .bind(asset_id)
-    .bind(version_no)
-    .bind(upload_id)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|err| {
-        error!(error = %err, "avatar asset version could not be created");
-        ApiError::Internal
-    })?;
-    sqlx::query("UPDATE assets SET current_version_id = $1 WHERE id = $2")
-        .bind(version_id)
-        .bind(asset_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|err| {
-            error!(error = %err, "avatar current version could not be updated");
-            ApiError::Internal
-        })?;
     sqlx::query(
         "UPDATE admin_users
          SET avatar_url = $1, avatar_asset_id = $2
@@ -1416,8 +1516,9 @@ fn append_cookie(headers: &mut HeaderMap, cookie: String) -> Result<(), ApiError
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCESS_COOKIE, AccessClaims, JWT_ISSUER, authenticate, decode_access_token, decode_base32,
-        hash_token, normalized_bilibili_uid, normalized_email, validate_avatar_upload,
+        ACCESS_COOKIE, AccessClaims, ChangePasswordRequest, JWT_ISSUER, authenticate,
+        decode_access_token, decode_base32, hash_token, normalized_bilibili_uid, normalized_email,
+        validate_avatar_upload,
     };
     use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -1570,5 +1671,23 @@ mod tests {
             "png"
         );
         assert!(validate_avatar_upload(&headers, b"not-an-image").is_err());
+    }
+
+    #[test]
+    fn password_change_requires_an_explicit_choice_to_revoke_other_sessions() {
+        let default_request: ChangePasswordRequest = serde_json::from_value(serde_json::json!({
+            "current_password": "old-password",
+            "new_password": "new-password-long-enough"
+        }))
+        .unwrap();
+        assert!(!default_request.revoke_other_sessions);
+
+        let revoke_request: ChangePasswordRequest = serde_json::from_value(serde_json::json!({
+            "current_password": "old-password",
+            "new_password": "new-password-long-enough",
+            "revoke_other_sessions": true
+        }))
+        .unwrap();
+        assert!(revoke_request.revoke_other_sessions);
     }
 }

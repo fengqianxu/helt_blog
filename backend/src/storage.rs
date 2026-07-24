@@ -76,6 +76,23 @@ impl ObjectStorage {
         Ok(())
     }
 
+    pub async fn get_public_object(&self, client: &Client, object_key: &str) -> Result<Vec<u8>> {
+        let request =
+            self.signed_request(client, Method::GET, object_key, None, &[], Utc::now())?;
+        let response = client
+            .execute(request)
+            .await
+            .context("MinIO download request failed")?;
+        if !response.status().is_success() {
+            bail!("MinIO rejected object download with {}", response.status());
+        }
+        Ok(response
+            .bytes()
+            .await
+            .context("MinIO object body could not be read")?
+            .to_vec())
+    }
+
     fn signed_request(
         &self,
         client: &Client,

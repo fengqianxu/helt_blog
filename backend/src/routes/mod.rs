@@ -1,3 +1,4 @@
+mod assets;
 pub mod contract;
 mod health;
 
@@ -23,6 +24,7 @@ struct HealthLinks {
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(auth::router())
+        .merge(assets::router())
         // 业务处理器尚未实现时先注册契约占位路由；每个占位端点返回统一 501。
         // 后续按业务域替换时，契约测试会继续校验路径和 HTTP 方法不发生漂移。
         .merge(contract::router())

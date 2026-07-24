@@ -27,8 +27,12 @@ test("server-renders the finished blog", async () => {
 });
 
 test("keeps project assets and mock front-end routes in place", async () => {
-  const [app, packageJson, viteConfig, styles] = await Promise.all([
+  const [shell, login, account, assets, shared, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
+    readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
+    readFile(new URL("app/admin/AdminAccountCenter.tsx", root), "utf8"),
+    readFile(new URL("app/admin/AssetManager.tsx", root), "utf8"),
+    readFile(new URL("app/admin/shared.ts", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL("vite.config.ts", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
@@ -36,6 +40,7 @@ test("keeps project assets and mock front-end routes in place", async () => {
     access(new URL("public/saber-night.png", root)),
     access(new URL("public/og.png", root)),
   ]);
+  const app = [shell, login, account, assets, shared].join("\n");
   assert.match(app, /const posts = \[/);
   assert.match(app, /function AdminLayout/);
   assert.match(app, /function FriendsPage/);
@@ -47,10 +52,15 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.match(app, /\/storage\/voice\/login\/alter-saber\.mp3/);
   assert.match(app, /\/storage\/voice\/login\/blue-saber-success\.mp3/);
   assert.match(app, /\/storage\/voice\/login\/alter-saber-success\.mp3/);
-  assert.match(app, /await playLoginSuccessVoice\(\)/);
+  assert.doesNotMatch(app, /playLoginSuccessVoice|15_000/);
+  assert.match(app, /sessionStorage\.setItem\("helt-login-success-voice"/);
+  assert.match(app, /window\.location\.replace\("\/admin"\)/);
   assert.match(app, /停止播放/);
   assert.match(app, /requestAnimationFrame\(syncVoiceState\)/);
   assert.match(app, /!audio\.paused && !audio\.ended/);
+  assert.match(app, /音频预览/);
+  assert.match(app, /asset-reference-tag/);
+  assert.doesNotMatch(app, /点击素材查看详情 · 选择模式可批量下载 \/ 删除/);
   assert.match(app, /修改密码/);
   assert.match(app, /保存 Passkey/);
   assert.match(app, /注销登录/);
@@ -59,24 +69,22 @@ test("keeps project assets and mock front-end routes in place", async () => {
   assert.doesNotMatch(app, /个人中心|账户安全|会清除此设备上的后台会话/);
   assert.match(app, /\/api\/v1\/admin\/auth\/change-password/);
   assert.match(app, /\/api\/v1\/admin\/auth\/profile/);
-  assert.match(app, /\/api\/v1\/admin\/auth\/avatar/);
+  assert.match(app, /\/api\/v1\/admin\/assets\?media_type=image/);
+  assert.match(app, /avatar_asset_id/);
+  assert.match(app, /更换头像/);
+  assert.doesNotMatch(app, /头像从素材库引用，替换素材版本后会自动同步/);
   assert.match(app, /\/api\/v1\/profile/);
-  assert.match(app, /URL\.createObjectURL/);
-  assert.match(app, /renderCroppedAvatar/);
-  assert.match(app, /imageSmoothingQuality = "high"/);
-  assert.match(app, /MAX_AVATAR_SOURCE_BYTES = 10 \* 1024 \* 1024/);
-  assert.match(app, /type="range"/);
+  assert.doesNotMatch(app, /\/api\/v1\/admin\/auth\/avatar/);
   assert.match(app, /admin-avatar-crop-dialog/);
-  assert.match(app, /头像裁剪/);
-  assert.match(app, />确定<\/button>/);
-  assert.doesNotMatch(app, /框定头像区域|使用此区域/);
+  assert.match(app, /框定头像范围/);
   assert.match(app, /DEFAULT_PROFILE_AVATAR_URL = "\/storage\/avatars\/default\/admin-avatar\.webp"/);
   assert.match(app, /admin\.avatar_url \|\| DEFAULT_PROFILE_AVATAR_URL/);
   assert.match(app, /profile\.avatar_url \|\| DEFAULT_PROFILE_AVATAR_URL/);
-  assert.match(app, /dialog === "profile" && !avatarCropOpen/);
-  const cropDialog = app.match(/\{avatarCropOpen && avatarSource && \([\s\S]*?\{dialog === "password"/)?.[0] ?? "";
-  assert.match(cropDialog, /头像裁剪/);
-  assert.doesNotMatch(cropDialog, /profileEmail|profileBilibiliUid|邮箱地址|B 站 UID/);
+  assert.match(app, /dialog === "profile"/);
+  assert.match(app, /className="admin-avatar-library"/);
+  assert.match(app, />替换素材<\/button>/);
+  assert.match(app, /asset-detail-image/);
+  assert.doesNotMatch(app, /当前版本|历史版本|替换版本|素材 ID|素材ID|版本回滚|current_version/);
   const sidebarUser = app.match(/<div className="admin-user">[\s\S]*?<\/aside>/)?.[0] ?? "";
   assert.match(sidebarUser, /<small>\{currentAdmin\.email \|\| "ADMINISTRATOR"\}<\/small>/);
   assert.doesNotMatch(app, /这组资料用于后台身份展示|仅用于后台资料展示|留空会停止使用当前账号同步追番数据/);
@@ -116,15 +124,13 @@ test("server-renders the admin login design and real authentication form", async
   const response = await render("/admin/login");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /契约仪式/);
+  assert.match(html, /ADMIN ACCESS/);
   assert.match(html, /契 约 · 成 立/);
   assert.match(html, /语音放送/);
-  assert.match(html, /灵衣切换/);
-  assert.doesNotMatch(html, /☀|☾/);
+  assert.match(html, /切换至(?:夜间|日间)灵衣/);
   assert.match(html, /問おう。貴方が私のマスターか？|召喚に応じ参上した。貴様が私のマスターという奴か？/);
   assert.match(html, /试问。你是我的御主吗？|应召唤前来。你这家伙就是我的御主吗？/);
   assert.match(html, /\/storage\/voice\/login\/(?:blue-saber|alter-saber)\.mp3/);
-  assert.match(html, /autoplay|autoPlay/);
   assert.match(html, /name="username"/);
   assert.match(html, /name="password"/);
   assert.doesNotMatch(html, /忘记密码|通行密钥|Passkey|MASTER AUTHENTICATION|SECURE ADMIN GATEWAY|NIGHT CONTRACT|SYSTEM TIME|恢复自动/);
@@ -144,4 +150,55 @@ test("renders the selected article and rejects unknown article slugs", async () 
   const missingHtml = await missingResponse.text();
   assert.match(missingHtml, /前方并非约定之地/);
   assert.doesNotMatch(missingHtml, /<h1>重构博客的一些思考<\/h1>/);
+});
+
+test("wires every account-security request to a credentialed front-end flow", async () => {
+  const app = (await Promise.all([
+    readFile(new URL("app/BlogApp.tsx", root), "utf8"),
+    readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
+    readFile(new URL("app/admin/AdminAccountCenter.tsx", root), "utf8"),
+  ])).join("\n");
+  const expected = [
+    ["/api/v1/admin/auth/me", /credentials:\s*"include"/],
+    ["/api/v1/admin/auth/refresh", /method:\s*"POST"/],
+    ["/api/v1/admin/auth/login", /method:\s*"POST"/],
+    ["/api/v1/admin/auth/profile", /method:\s*"PATCH"/],
+    ["/api/v1/admin/auth/change-password", /method:\s*"POST"/],
+    ["/api/v1/admin/auth/passkeys", /credentials:\s*"include"/],
+    ["/api/v1/admin/auth/passkeys/options", /method:\s*"POST"/],
+    ["/api/v1/admin/auth/logout", /method:\s*"POST"/],
+  ];
+  for (const [path] of expected) assert.ok(app.includes(path), `missing front-end flow for ${path}`);
+  assert.match(app, /navigator\.credentials\.create/);
+  assert.match(app, /window\.location\.replace\("\/admin\/login"\)/);
+  assert.match(app, /newPassword !== confirmPassword/);
+  assert.match(app, /newPassword\.length < 12/);
+  assert.match(app, /revoke_other_sessions:\s*revokeOtherSessions/);
+  assert.match(app, /撤销其他设备会话/);
+});
+
+test("wires the complete asset-library API and destructive-action guards", async () => {
+  const app = await readFile(new URL("app/admin/AssetManager.tsx", root), "utf8");
+  for (const endpoint of [
+    "/api/v1/admin/assets?",
+    "/api/v1/admin/assets/${id}",
+    "/api/v1/admin/assets/${detail.asset.id}",
+    "/api/v1/admin/assets/${detail.asset.id}/replace",
+    "/api/v1/admin/assets/${path}",
+  ]) {
+    assert.ok(app.includes(endpoint), `missing asset front-end flow for ${endpoint}`);
+  }
+  assert.match(app, /path:\s*"batch-delete"\s*\|\s*"batch-download"/);
+  assert.match(app, /method:\s*"PATCH"/);
+  assert.match(app, /method:\s*"DELETE"/);
+  assert.match(app, /detail\.references\.length > 0/);
+  assert.match(app, /file\.size <= MAX_FILE_BYTES/);
+  assert.match(app, /URL\.revokeObjectURL/);
+  assert.match(app, /MAX_CONCURRENT_UPLOADS = 3/);
+  assert.match(app, /new XMLHttpRequest\(\)/);
+  assert.match(app, /request\.upload\.addEventListener\("progress"/);
+  assert.match(app, /cancelUpload/);
+  assert.match(app, /retryUpload/);
+  assert.match(app, /确认批量删除/);
+  assert.doesNotMatch(app, /window\.prompt/);
 });

@@ -6,6 +6,7 @@ pub mod error;
 pub mod routes;
 pub mod state;
 pub mod storage;
+pub mod storage_gc;
 pub mod telemetry;
 
 use std::time::Duration;

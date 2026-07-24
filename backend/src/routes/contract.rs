@@ -334,9 +334,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         NO_CONTENT,
         "修改当前管理员密码",
-        "JSON: current_password、new_password；新密码长度为 12–128 个字符",
+        "JSON: current_password、new_password、revoke_other_sessions?；新密码长度为 12–128 个字符",
         "204 无响应体并清除当前认证 cookie",
-        "必须复核当前密码；更新 Argon2id 哈希后吊销全部 refresh token，并要求当前会话重新登录"
+        "必须复核当前密码；当前 refresh token 始终吊销；revoke_other_sessions=true 时额外吊销其他设备 refresh token"
     ),
     endpoint!(
         "AUTH-13",
@@ -362,7 +362,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "上传或替换当前管理员头像",
         "请求体为 PNG、JPEG 或 WebP 原始字节，Content-Type 必须匹配，最大 512 KB",
         "200 JSON username、role、email、avatar_url、bilibili_uid；avatar_url 为 /storage/ 下的 MinIO 资源",
-        "服务端校验文件签名后写入公共 MinIO 桶，并原子创建 uploads/asset_versions 记录；后续替换沿用同一逻辑资源追加版本"
+        "服务端校验文件签名后写入公共 MinIO 桶，并原子创建 uploads/assets 记录；替换直接交换唯一文件并将旧对象加入清理队列"
     ),
     endpoint!(
         "AUTH-15",
@@ -375,7 +375,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "移除当前管理员头像绑定",
         "无请求体",
         "200 JSON username、role、email、avatar_url=null、bilibili_uid",
-        "只解除当前管理员头像并归档逻辑资源，历史 MinIO 版本继续由素材库管理"
+        "只解除当前管理员头像并归档逻辑资源，MinIO 文件继续由素材库管理"
     ),
     endpoint!(
         "PROFILE-01",
@@ -536,7 +536,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "读取已通过友链",
         "Query: page/per_page",
         "200 分页 items[{name,url,avatar_url,description}]",
-        "仅返回 approved，avatar_url 由当前 MinIO 素材版本派生；按 sort_order/created_at 排序；total 用于前台计数"
+        "仅返回 approved，avatar_url 由 MinIO 素材文件派生；按 sort_order/created_at 排序；total 用于前台计数"
     ),
     endpoint!(
         "FRIEND-02",
@@ -1060,7 +1060,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "审核或编辑友链",
         "路径 id；JSON 可包含 name、url、avatar_url、avatar_asset_id、description、status",
         "200 返回更新后的完整友链",
-        "至少一个字段；已通过友链必须引用 active 图片素材，公开 avatar_url 由 MinIO 当前版本派生；外链头像仅作为待审核来源；URL 冲突返回 409"
+        "至少一个字段；已通过友链必须引用 active 图片素材，公开 avatar_url 由 MinIO 文件派生；外链头像仅作为待审核来源；URL 冲突返回 409"
     ),
     endpoint!(
         "ADMIN-FRIEND-03",
@@ -1088,7 +1088,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 JSON items 为新顺序",
         "只排序 approved；完整覆盖当前集合；失败整体回滚"
     ),
-    // 素材库：二进制全部存 MinIO，数据库只管理逻辑素材、版本和引用。
+    // 素材库：二进制全部存 MinIO，数据库管理稳定的逻辑素材和引用。
     endpoint!(
         "ASSET-01",
         "素材库",
@@ -1100,7 +1100,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "分页搜索素材库",
         "Query: page/per_page、media_type=image|audio|video|live2d|font|other?、search?、sort=uploaded_at|name|size?、order=asc|desc?、usable_for?",
         "200 分页 items；meta 包含各类型计数、total_size_bytes、quota_bytes",
-        "只返回 active 素材；usable_for 按目标接受类型过滤；列表返回当前版本和 reference_count"
+        "只返回 active 素材；usable_for 按目标接受类型过滤；列表返回当前文件"
     ),
     asset_upload_endpoint!(
         "ASSET-02",
@@ -1112,7 +1112,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         CREATED,
         "上传新素材到 MinIO",
         "multipart: file、name?、media_type?；单文件最大 200MB",
-        "201 返回素材及 v1 当前版本、公开或受控访问 URL",
+        "201 返回素材及文件访问 URL",
         "按内容嗅探而非扩展名确定类型；对象先写 MinIO 再原子登记，失败执行补偿清理"
     ),
     endpoint!(
@@ -1123,9 +1123,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/assets/1",
         AdminJwt,
         OK,
-        "读取素材详情、版本和引用",
+        "读取素材详情和引用",
         "路径 id",
-        "200 JSON asset、current_version、versions[]、references[]、preview",
+        "200 JSON asset、references[]、preview",
         "references 包含可读位置和后台跳转路径；不得返回 MinIO 密钥；不存在返回 404"
     ),
     endpoint!(
@@ -1145,27 +1145,14 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "ASSET-05",
         "素材库",
         Post,
-        "/api/v1/admin/assets/{id}/versions",
-        "/api/v1/admin/assets/1/versions",
+        "/api/v1/admin/assets/{id}/replace",
+        "/api/v1/admin/assets/1/replace",
         AdminJwt,
         CREATED,
-        "替换素材文件并创建新版本",
+        "替换素材文件",
         "路径 id；multipart: file；单文件最大 200MB",
-        "201 返回新版本和更新后的素材",
-        "新文件媒体类型必须兼容原素材；旧版本保留；切换 current_version 后所有逻辑引用自动生效"
-    ),
-    endpoint!(
-        "ASSET-06",
-        "素材库",
-        Post,
-        "/api/v1/admin/assets/{id}/versions/{version}/restore",
-        "/api/v1/admin/assets/1/versions/1/restore",
-        AdminJwt,
-        OK,
-        "回滚到历史素材版本",
-        "路径 id、version 为正整数版本号",
-        "200 返回素材和新的当前版本",
-        "历史版本必须属于该素材；只切换 current_version，不复制 MinIO 对象；重复回滚幂等"
+        "201 返回更新后的素材",
+        "新文件媒体类型必须兼容原素材；替换成功后删除旧数据库记录，旧 MinIO 对象进入异步清理队列，所有逻辑引用自动生效"
     ),
     endpoint!(
         "ASSET-07",
@@ -1175,10 +1162,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/assets/1",
         AdminJwt,
         NO_CONTENT,
-        "删除未被引用的素材及全部版本",
+        "删除未被引用的素材",
         "路径 id",
         "204 无响应体",
-        "reference_count>0 返回 409；先标记删除再清理 MinIO 全部版本；部分失败可重试且不可留下可见脏数据"
+        "reference_count>0 返回 409；数据库删除与垃圾回收登记处于同一事务，MinIO 清理失败会自动退避重试"
     ),
     endpoint!(
         "ASSET-08",
@@ -1201,10 +1188,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/assets/batch-download",
         AdminJwt,
         OK,
-        "打包下载素材当前版本",
+        "打包下载素材",
         "JSON: 非空 asset_ids，最多 100 个",
         "200 application/zip 流式响应，Content-Disposition 使用安全文件名",
-        "只读取各素材当前版本并从 MinIO 流式打包；限制总展开大小；临时文件必须清理"
+        "读取各素材文件并从 MinIO 流式打包；限制总展开大小；临时文件必须清理"
     ),
     // 后台灵衣与媒体域。
     //
@@ -1561,7 +1548,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
 pub fn router() -> Router<AppState> {
     ENDPOINT_CONTRACTS
         .iter()
-        .filter(|contract| !crate::auth::implements(contract.method, contract.path))
+        .filter(|contract| {
+            !crate::auth::implements(contract.method, contract.path)
+                && !super::assets::implements(contract.method, contract.path)
+        })
         .fold(Router::new(), |router, contract| {
             let route = match contract.authentication {
                 Authentication::AdminJwt => on(contract.method.filter(), protected_not_implemented),
@@ -1676,8 +1666,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_106_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 106);
+    fn catalog_contains_102_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 102);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1745,8 +1735,8 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 84);
-        assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 22);
+        assert_eq!(admin_count, 81);
+        assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 21);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
             .iter()
@@ -1757,7 +1747,7 @@ mod tests {
             large_body_endpoints,
             HashSet::from([
                 ("POST", "/api/v1/admin/assets"),
-                ("POST", "/api/v1/admin/assets/{id}/versions"),
+                ("POST", "/api/v1/admin/assets/{id}/replace"),
             ])
         );
     }
@@ -1792,7 +1782,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 9_370_780_074_650_664_659,
+            fingerprint, 9_286_054_270_994_941_890,
             "update only after reviewing the full catalog"
         );
     }
