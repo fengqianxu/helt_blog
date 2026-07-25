@@ -1,6 +1,8 @@
+mod articles;
 mod assets;
 pub mod contract;
 mod health;
+mod llm;
 
 use axum::{Json, Router, routing::get};
 use serde::Serialize;
@@ -25,8 +27,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(auth::router())
         .merge(assets::router())
-        // 业务处理器尚未实现时先注册契约占位路由；每个占位端点返回统一 501。
-        // 后续按业务域替换时，契约测试会继续校验路径和 HTTP 方法不发生漂移。
+        .merge(articles::router())
+        .merge(llm::router())
+        // 尚未实现的业务处理器继续注册契约占位路由；每个占位端点返回统一 501。
+        // 已实现的业务域会在 contract::router 中自动排除，契约测试仍校验路径和方法不漂移。
         .merge(contract::router())
         .route("/", get(index))
         .route("/api/v1", get(index))
@@ -74,6 +78,7 @@ mod tests {
             admin_username: "test".to_owned(),
             admin_initial_password: Some("test".to_owned()),
             auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
+            llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,

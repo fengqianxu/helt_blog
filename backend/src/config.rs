@@ -19,6 +19,7 @@ pub struct Config {
     pub admin_username: String,
     pub admin_initial_password: Option<String>,
     pub auth_jwt_secret: String,
+    pub llm_encryption_secret: String,
     pub public_origin: String,
     pub cors_allowed_origins: Vec<String>,
     pub request_timeout_secs: u64,
@@ -34,6 +35,8 @@ pub enum ConfigError {
     InvalidPoolSize,
     #[error("AUTH_JWT_SECRET must contain at least 32 characters")]
     WeakAuthSecret,
+    #[error("LLM_ENCRYPTION_KEY must contain at least 32 characters when provided")]
+    WeakLlmEncryptionSecret,
 }
 
 impl Config {
@@ -63,6 +66,13 @@ impl Config {
         if auth_jwt_secret.chars().count() < 32 {
             return Err(ConfigError::WeakAuthSecret);
         }
+        let llm_encryption_secret = env::var("LLM_ENCRYPTION_KEY")
+            .ok()
+            .filter(|secret| !secret.trim().is_empty())
+            .unwrap_or_else(|| auth_jwt_secret.clone());
+        if llm_encryption_secret.chars().count() < 32 {
+            return Err(ConfigError::WeakLlmEncryptionSecret);
+        }
 
         Ok(Self {
             environment: env::var("APP_ENV").unwrap_or_else(|_| "development".to_owned()),
@@ -84,6 +94,7 @@ impl Config {
                 .ok()
                 .filter(|password| !password.trim().is_empty()),
             auth_jwt_secret,
+            llm_encryption_secret,
             public_origin: env::var("PUBLIC_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost".to_owned()),
             cors_allowed_origins,

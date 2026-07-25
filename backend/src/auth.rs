@@ -1539,6 +1539,7 @@ mod tests {
             admin_username: "test".to_owned(),
             admin_initial_password: Some("test".to_owned()),
             auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
+            llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,

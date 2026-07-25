@@ -468,7 +468,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "提交游客评论或回复",
         "JSON: article_slug|moment_id 二选一、parent_id?、author_name/email/site?、content",
         "201 JSON id、status=pending、created_at",
-        "按 IP+visitor 限流 3/分钟；校验长度与父子同目标；AI 预审只写判定，游客初始状态仍为 pending"
+        "按 IP+visitor 限流 3/分钟；校验长度与父子同目标；仅通过统一 LLM 的 comment_review 场景写入预审建议，游客初始状态仍为 pending"
     ),
     // 说说公开域：HTTP 负责展示、点赞和评论；内容维护走下方后台接口。
     endpoint!(
@@ -619,7 +619,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
     ),
     // 公开灵衣、音乐和看板娘域。
     //
-    // 灵衣（raiment）是主题色、全站封面、开屏媒体、看板娘人格和 Live2D
+    // 灵衣（raiment）是主题色、全站封面、开屏媒体、角色展示和 Live2D
     // 引用的聚合边界。前端不得再分别拉取 theme 与 kanban profile 后自行拼装，
     // 否则两个请求处于不同配置版本时会出现封面和人格错配。
     //
@@ -635,8 +635,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取公开灵衣目录与当前模式绑定",
         "无查询参数",
-        "200 JSON items[{id,name,cover_url,theme,persona,live2d,opening_voice}]、bindings{day:[id],night:[id]}、rule",
-        "资源 URL 均可公开访问；当前模式由前端本地决定；v1 每个 bindings 数组恰有一个 id；不得返回 prompt、密钥或内部 object metadata"
+        "200 JSON items[{id,name,cover_url,theme,character,live2d,opening_voice,llm_use_case}]、bindings{day:[id],night:[id]}、rule",
+        "资源 URL 均可公开访问；llm_use_case 固定引用统一 LLM 场景；不得返回提示词、模型、密钥或内部 object metadata"
     ),
     endpoint!(
         "THEME-02",
@@ -652,7 +652,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "features.music=false 返回 403；曲目按 sort_order/id 排序"
     ),
     // 旧 GET /themes 与 GET /kanban/profile 被 RAIMENT-01 取代并删除。
-    // 看板娘公开展示数据随灵衣一次下发；对话端点只接收稳定 raiment_id。
+    // 看板娘公开展示数据随灵衣一次下发；对话端点只接收稳定 raiment_id，
+    // 服务端固定引用统一 LLM 的 kanban_chat 场景。
     endpoint!(
         "KANBAN-02",
         "看板娘",
@@ -664,7 +665,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "代理一次看板娘对话",
         "JSON: session_id、message、article_slug?、raiment_id",
         "200 JSON reply、motion?、egg?、fallback",
-        "raiment_id 必须来自 RAIMENT-01 且当前可用；服务端据此选择人格与动作；限流 6/分钟；最多回复 3 句；LLM 故障时返回降级台词且 fallback=true"
+        "raiment_id 必须来自 RAIMENT-01 且当前可用；仅据此选择角色视觉上下文，不允许客户端覆盖模型或提示词；服务端引用 kanban_chat 场景；限流 6/分钟；最多回复 3 句；LLM 故障时返回降级台词且 fallback=true"
     ),
     // 后台文章域：草稿创建、编辑、发布和批量状态变更。
     endpoint!(
@@ -678,7 +679,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "查询后台文章列表",
         "Query: page/per_page、status?、is_pinned?、sort?、search?",
         "200 分页返回草稿和已发布文章，包含 status、view_count、updated_at",
-        "默认 updated_at 倒序；筛选枚举非法返回 422；后台可见全部状态"
+        "默认草稿优先、其次置顶，再按文章日期倒序；筛选枚举非法返回 422；后台可见全部状态"
     ),
     endpoint!(
         "ADMIN-ARTICLE-02",
@@ -1206,10 +1207,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/raiments",
         AdminJwt,
         OK,
-        "读取全部灵衣、共享 LLM 设置和模式绑定",
+        "读取全部灵衣和模式绑定",
         "无查询参数；v1 数据量小，免分页",
-        "200 JSON items[{id,name,cover_asset,theme,persona,prompt,live2d_model_id,opening_voice_asset}]、bindings、rule、llm",
-        "素材 URL/文件信息由服务端派生；LLM 密钥不下发；返回 revision 供写入时做乐观并发控制"
+        "200 JSON items[{id,name,cover_asset,theme,character,live2d_model_id,opening_voice_asset}]、bindings、rule",
+        "素材 URL/文件信息由服务端派生；不包含 LLM 模型、密钥或提示词；返回 revision 供写入时做乐观并发控制"
     ),
     endpoint!(
         "ADMIN-RAIMENT-02",
@@ -1220,7 +1221,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存单套灵衣",
-        "路径 id 为稳定 slug；JSON: revision、name、cover_asset_id、theme、persona、prompt、live2d_model_id?、opening_voice_asset_id?",
+        "路径 id 为稳定 slug；JSON: revision、name、cover_asset_id、theme、character、live2d_model_id?、opening_voice_asset_id?、llm_use_case='kanban_chat'",
         "200 返回规范化后的灵衣与新 revision",
         "只更新目标灵衣，禁止全量覆盖其它灵衣；revision 冲突返回 409；素材必须 active 且类型匹配；id 创建后不可修改"
     ),
@@ -1354,46 +1355,85 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 返回规范化后的 tts 配置",
         "两个 voice id 均须存在于枚举，允许相同；更新后看板娘 profile 立即按主题下发"
     ),
-    // 后台看板娘共享能力：人格、prompt 与 Live2D 选择已并入单套灵衣；
-    // 模型枚举、沙盒测试、在线状态和 Live2D 素材登记仍是跨灵衣共享能力。
+    // 后台统一 LLM 凭据域。长期运行的业务场景保存 use_case 引用；文章编辑器
+    // 则在每次润色时临时选择已保存的 Key、模型和提示词。
     endpoint!(
-        "ADMIN-KANBAN-03",
-        "后台看板娘",
+        "ADMIN-LLM-01",
+        "后台 LLM",
         Get,
-        "/api/v1/admin/kanban/models",
-        "/api/v1/admin/kanban/models",
+        "/api/v1/admin/llm",
+        "/api/v1/admin/llm",
         AdminJwt,
         OK,
-        "读取允许使用的 LLM 模型",
-        "无查询参数且免分页",
-        "200 JSON items[string]",
-        "只返回后端允许列表，不把任意客户端模型名直接透传到供应商"
+        "读取统一 LLM 配置与多 Key 列表",
+        "无查询参数；connections 为不分页的小规模连接集合",
+        "200 JSON connections[{id,display_name,base_url,api_key_configured,status,...}]、use_cases[{connection_id,model,...}]、revision",
+        "API Key 永不下发；文章编辑器只能取得连接元数据，并以 connection_id 发起润色"
     ),
     endpoint!(
-        "ADMIN-KANBAN-04",
-        "后台看板娘",
+        "ADMIN-LLM-02",
+        "后台 LLM",
+        Put,
+        "/api/v1/admin/llm",
+        "/api/v1/admin/llm",
+        AdminJwt,
+        OK,
+        "保存 Key 状态、删除操作与场景路由",
+        "JSON: revision、connections[{id,display_name,base_url,enabled,...}]、use_cases",
+        "200 返回规范化连接集合和新 revision，仍不返回 API Key",
+        "revision 冲突返回 409；所有启用场景必须显式绑定一个已启用 Key、模型和系统提示词"
+    ),
+    endpoint!(
+        "ADMIN-LLM-05",
+        "后台 LLM",
         Post,
-        "/api/v1/admin/kanban/test",
-        "/api/v1/admin/kanban/test",
+        "/api/v1/admin/llm/connections",
+        "/api/v1/admin/llm/connections",
         AdminJwt,
         OK,
-        "使用草稿配置进行沙盒对话",
-        "JSON: message、raiment_id、draft_raiment、draft_llm?",
-        "200 JSON reply、triggered_egg?、motion?",
-        "draft_raiment 采用 ADMIN-RAIMENT-02 的可编辑形状；不得落库草稿或正式聊天统计；仍执行参数校验和供应商超时保护"
+        "测试并保存新的 LLM Key",
+        "JSON: revision、display_name、base_url、api_key；无需也不接受模型",
+        "模型列表接口验证成功后返回包含新 Key 的规范化 LLM 配置",
+        "验证失败不落库；API Key 加密保存且永不下发；revision 冲突返回 409"
     ),
     endpoint!(
-        "ADMIN-KANBAN-05",
-        "后台看板娘",
-        Get,
-        "/api/v1/admin/kanban/status",
-        "/api/v1/admin/kanban/status",
+        "ADMIN-LLM-03",
+        "后台 LLM",
+        Post,
+        "/api/v1/admin/llm/test",
+        "/api/v1/admin/llm/test",
         AdminJwt,
         OK,
-        "读取 LLM 在线状态和耗时",
-        "无查询参数",
-        "200 JSON online、avg_ms",
-        "online 来自轻量健康探测/近期结果；avg_ms 由 assistant 日志聚合，无样本时为 null"
+        "重新验证已保存的 LLM Key",
+        "JSON: connection_id?；不接受模型或 API Key 草稿",
+        "200 JSON reply、latency_ms",
+        "通过该 Key 的模型列表接口验证；记录成功/失败、时间和耗时；模型 API 故障返回 502"
+    ),
+    endpoint!(
+        "ADMIN-LLM-04",
+        "后台 LLM",
+        Post,
+        "/api/v1/admin/llm/models",
+        "/api/v1/admin/llm/models",
+        AdminJwt,
+        OK,
+        "获取指定 Key 的可用模型",
+        "JSON: connection_id?、base_url、api_key?；API Key 只用于本次请求，不落库",
+        "200 JSON items[{id,name}]",
+        "只读取用户填写 API 地址的 /models 资源；不返回已保存的 API Key"
+    ),
+    endpoint!(
+        "ADMIN-LLM-06",
+        "后台 LLM",
+        Post,
+        "/api/v1/admin/llm/polish",
+        "/api/v1/admin/llm/polish",
+        AdminJwt,
+        OK,
+        "使用已保存的 Key 润色文章草稿",
+        "JSON: connection_id、model、prompt、target=summary|content、title?、summary、content_md",
+        "200 JSON target、text；前端必须先展示原文与候选稿差异，确认后才能替换",
+        "仅允许启用且已配置凭据的 Key；Key 明文不下发；摘要最多 120 字，正文保留 Markdown"
     ),
     endpoint!(
         "ADMIN-LIVE2D-01",
@@ -1551,6 +1591,8 @@ pub fn router() -> Router<AppState> {
         .filter(|contract| {
             !crate::auth::implements(contract.method, contract.path)
                 && !super::assets::implements(contract.method, contract.path)
+                && !super::articles::implements(contract.method, contract.path)
+                && !super::llm::implements(contract.method, contract.path)
         })
         .fold(Router::new(), |router, contract| {
             let route = match contract.authentication {
@@ -1652,6 +1694,7 @@ mod tests {
             admin_username: "test".to_owned(),
             admin_initial_password: Some("test".to_owned()),
             auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
+            llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,
@@ -1666,8 +1709,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_102_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 102);
+    fn catalog_contains_105_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 105);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1735,7 +1778,7 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 81);
+        assert_eq!(admin_count, 84);
         assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 21);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
@@ -1782,7 +1825,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 9_286_054_270_994_941_890,
+            fingerprint, 3_677_461_679_789_008_710,
             "update only after reviewing the full catalog"
         );
     }

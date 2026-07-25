@@ -26,12 +26,13 @@ test("server-renders the finished blog", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
-test("keeps project assets and mock front-end routes in place", async () => {
-  const [shell, login, account, assets, shared, packageJson, viteConfig, styles] = await Promise.all([
+test("keeps project assets and API-backed front-end routes in place", async () => {
+  const [shell, login, account, assets, llm, shared, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminAccountCenter.tsx", root), "utf8"),
     readFile(new URL("app/admin/AssetManager.tsx", root), "utf8"),
+    readFile(new URL("app/admin/LlmSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/shared.ts", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL("vite.config.ts", root), "utf8"),
@@ -40,9 +41,66 @@ test("keeps project assets and mock front-end routes in place", async () => {
     access(new URL("public/saber-night.png", root)),
     access(new URL("public/og.png", root)),
   ]);
-  const app = [shell, login, account, assets, shared].join("\n");
-  assert.match(app, /const posts = \[/);
+  const app = [shell, login, account, assets, llm, shared].join("\n");
+  assert.doesNotMatch(app, /const posts = \[/);
+  assert.match(app, /\/api\/v1\/articles/);
+  assert.match(app, /\/api\/v1\/admin\/articles/);
+  assert.match(app, /\/api\/v1\/admin\/articles\/batch/);
+  assert.match(app, /\/api\/v1\/admin\/categories/);
+  assert.match(app, /\/api\/v1\/admin\/tags/);
   assert.match(app, /function AdminLayout/);
+  assert.match(shell, /\["\/admin\/llm",\s*"✦",\s*"LLM"\]/);
+  assert.match(app, /\/api\/v1\/admin\/llm/);
+  assert.match(app, /\/api\/v1\/admin\/llm\/connections/);
+  assert.match(app, /\/api\/v1\/admin\/llm\/models/);
+  assert.match(app, /\/api\/v1\/admin\/llm\/test/);
+  assert.match(shell, /\/api\/v1\/admin\/llm\/polish/);
+  assert.match(shell, /AI 润色/);
+  assert.match(shell, /生成摘要候选/);
+  assert.match(shell, /生成正文候选/);
+  assert.match(shell, /还差一步：请选择模型/);
+  assert.match(shell, /editor-ai-wait-mark/);
+  assert.match(shell, /disabled=\{polishing\}/);
+  assert.doesNotMatch(shell, /disabled=\{polishing \|\| !polishSource\.trim\(\)/);
+  assert.match(shell, /不得超过 120 个字符/);
+  assert.match(shell, /不要扩写成正文/);
+  assert.match(shell, /DEFAULT_POLISH_PROMPTS/);
+  assert.match(shell, /saveInFlightRef/);
+  assert.match(shell, /data\.status === "published" \? "published" : "draft"/);
+  assert.match(shell, /admin-article-pagination/);
+  assert.match(shell, /for \(let page = 2; page <= pageCount; page \+= 1\)/);
+  assert.match(shell, /应用合并结果/);
+  assert.match(shell, /diffLines/);
+  assert.match(shell, /buildEditorMergeRows/);
+  assert.match(shell, /全部保留原文/);
+  assert.match(shell, /全部采用润色/);
+  assert.match(shell, /最终保留/);
+  assert.match(shell, /choosePolishLine/);
+  assert.match(shell, /createPortal/);
+  assert.match(shell, /document\.body/);
+  assert.match(shell, /localeCompare\(right\.id, "en"/);
+  assert.match(styles, /editor-merge-grid[^}]*grid-template-columns:\s*minmax\(0, \.92fr\)[^}]*minmax\(0, 1\.16fr\)/);
+  assert.match(styles, /editor-diff-modal > section[^}]*width:\s*100vw/);
+  assert.match(styles, /editor-diff-modal[^}]*z-index:\s*10000/);
+  assert.doesNotMatch(styles, /editor-diff-modal[^}]*backdrop-filter/);
+  assert.match(styles, /editor-merge-cell\.changed\.selected/);
+  assert.ok(shell.indexOf('editor-side-card editor-ai-card') > shell.indexOf('<aside className="editor-sidebar">'));
+  assert.doesNotMatch(shell, /update\("content_md", payload/);
+  assert.equal(JSON.parse(packageJson).dependencies.diff, "9.0.0");
+  assert.match(llm, /已保存的 Key/);
+  assert.match(llm, /测试并保存/);
+  assert.match(llm, /<select value=\{useCase\.model\}/);
+  assert.doesNotMatch(llm, /updateConnection\(connection\.id, "model"/);
+  assert.match(app, /kanban_chat/);
+  assert.match(app, /comment_review/);
+  assert.doesNotMatch(llm, /label: "文章助手"/);
+  assert.doesNotMatch(app, /供应商、模型、密钥和提示词只在这里维护|llm-source-banner|llm-policy-panel|服务商/);
+  assert.doesNotMatch(shell, /raiment-model-panel|人格提示词|api\.example\.com|ai-reference-note/);
+  assert.ok(shell.includes('<Link href="/admin" className="brand">helt<span>.</span> <small>ADMIN</small></Link>'));
+  assert.doesNotMatch(shell, /\["\/admin\/articles\/new",\s*"✎",\s*"撰写文章"\]/);
+  assert.match(shell, /data-color-mode=\{theme === "night" \? "dark" : "light"\}/);
+  assert.doesNotMatch(shell, /发布地址|固定链接|系统稳定地址|editor-slug-row|editor-slug-input/);
+  assert.doesNotMatch(styles, /editor-slug-row|editor-slug-input/);
   assert.match(app, /function FriendsPage/);
   assert.match(app, /問おう。貴方が私のマスターか？/);
   assert.match(app, /试问。你是我的御主吗？/);
@@ -138,19 +196,16 @@ test("server-renders the admin login design and real authentication form", async
   assert.doesNotMatch(html, /value="excalibur"/);
 });
 
-test("renders the selected article and rejects unknown article slugs", async () => {
+test("renders the article loading boundary and delegates slug resolution to the API", async () => {
   const articleResponse = await render("/posts/spring-anime-2026");
   assert.equal(articleResponse.status, 200);
   const articleHtml = await articleResponse.text();
-  assert.match(articleHtml, /2026 春季番剧总结：这季度我推的都完结了/);
-  assert.match(articleHtml, /这一季留下了什么/);
-  assert.doesNotMatch(articleHtml, /<h1>重构博客的一些思考<\/h1>/);
+  assert.match(articleHtml, /正在读取文章/);
 
   const missingResponse = await render("/posts/not-a-real-post");
   assert.equal(missingResponse.status, 200);
   const missingHtml = await missingResponse.text();
-  assert.match(missingHtml, /前方并非约定之地/);
-  assert.doesNotMatch(missingHtml, /<h1>重构博客的一些思考<\/h1>/);
+  assert.match(missingHtml, /正在读取文章/);
 });
 
 test("wires every account-security request to a credentialed front-end flow", async () => {

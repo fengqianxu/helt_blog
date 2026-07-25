@@ -2,19 +2,30 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import MDEditor from "@uiw/react-md-editor";
+import { diffLines } from "diff";
+import "@uiw/react-md-editor/markdown-editor.css";
+import "@uiw/react-markdown-preview/markdown.css";
 
 import { AdminAccountCenter, AdminProfileAvatar } from "./admin/AdminAccountCenter";
 import { AdminLogin } from "./admin/AdminLogin";
 import { AssetManager } from "./admin/AssetManager";
+import { LlmSettings } from "./admin/LlmSettings";
 import {
   AdminIdentity,
+  AdminAsset,
+  assetLabels,
   cx,
   DEFAULT_PROFILE_AVATAR_URL,
   isJsonResponse,
   Notify,
   PublicProfile,
+  responseMessage,
   Theme,
 } from "./admin/shared";
 
@@ -29,13 +40,11 @@ type Raiment = {
   colors: { primary: string; secondary: string; background: string };
   kanban: {
     displayName: string;
-    persona: string;
     greeting: string;
   };
 };
 
-// 灵衣是封面、主题和看板娘人格的唯一配置源。以后新增灵衣时只需扩展注册表，
-// 再将其 ID 绑定到展示模式；目前仍保持日间 / 夜间的一对一切换。
+// 灵衣只拥有封面、主题和角色展示数据；AI 配置统一由 /admin/llm 维护。
 const RAIMENTS: Record<RaimentId, Raiment> = {
   saber: {
     id: "saber",
@@ -47,7 +56,6 @@ const RAIMENTS: Record<RaimentId, Raiment> = {
     colors: { primary: "#2B5FB8", secondary: "#B99A3E", background: "#F5F7FB" },
     kanban: {
       displayName: "Saber",
-      persona: "你是 helt 博客的看板娘，人格原型为骑士王。称呼访客为「Master」，语气端正温和、略带古风骑士腔，偶尔提到晚餐。回答不超过三句话……",
       greeting: "Master，今日也请从容阅读。",
     },
   },
@@ -61,7 +69,6 @@ const RAIMENTS: Record<RaimentId, Raiment> = {
     colors: { primary: "#D84358", secondary: "#7B4B8E", background: "#0E0B16" },
     kanban: {
       displayName: "Alter",
-      persona: "你是 helt 博客夜间灵衣的看板娘 Alter。称呼访客为「Master」，语气冷静、简短而可靠，偶尔表现出对晚餐的执着。回答不超过三句话……",
       greeting: "夜深了，Master。继续前进吧。",
     },
   },
@@ -70,58 +77,43 @@ const RAIMENTS: Record<RaimentId, Raiment> = {
 const RAIMENT_BINDINGS: Record<Theme, RaimentId> = { day: "saber", night: "alter-saber" };
 const getRaiment = (theme: Theme) => RAIMENTS[RAIMENT_BINDINGS[theme]];
 
-const posts = [
-  { slug: "blog-rebuild", category: "技术", date: "2026-07-12", title: "重构博客的一些思考", excerpt: "从单薄的功能到一个完整的个人站点：开屏动画、日夜双主题、追番页与时间轴，这次重构想把「我喜欢的东西」都装进来。", time: "8 min", words: "3.2k 字", comments: 12, pinned: true },
-  { slug: "spring-anime-2026", category: "追番", date: "2026-07-02", title: "2026 春季番剧总结：这季度我推的都完结了", excerpt: "照例的季度总结，聊聊这个季度追完的六部番，以及为什么我又把 Fate/Zero 重刷了一遍。", time: "6 min", words: "2.4k 字", comments: 8 },
-  { slug: "wallpaper-engine", category: "折腾", date: "2026-06-20", title: "把 Wallpaper Engine 的动态壁纸搬到网页开屏", excerpt: "mp4 和 pkg 格式的壁纸怎么提取、压缩、再做成博客的开屏动画，顺便记录踩过的坑。", time: "10 min", words: "4.1k 字", comments: 23 },
-  { slug: "june-notes", category: "生活", date: "2026-06-08", title: "六月随笔：梅雨、键盘和一杯冰美式", excerpt: "没什么主题的一篇，写写最近的生活。", time: "4 min", words: "1.6k 字", comments: 5 },
-  { slug: "live2d-llm", category: "技术", date: "2026-05-24", title: "让看板娘真正听懂你：Live2D 与 LLM 的一次握手", excerpt: "从动作映射到上下文注入，记录一套不打扰阅读的角色交互方案。", time: "12 min", words: "5.2k 字", comments: 17 },
-  { slug: "keyboard-notes", category: "生活", date: "2026-05-12", title: "深夜键盘声：一把客制化键盘的诞生", excerpt: "轴体、定位板与声音包的取舍，以及我为什么最终选了偏安静的配置。", time: "7 min", words: "2.8k 字", comments: 9 },
-  { slug: "samurai-remnant", category: "游戏", date: "2026-04-28", title: "Fate/Samurai Remnant 二周目杂感", excerpt: "当结局已经知道，第二次走进江户反而看见了更多角色之间的微妙距离。", time: "9 min", words: "3.7k 字", comments: 14 },
-  { slug: "vite-migration", category: "折腾", date: "2026-04-15", title: "把旧博客迁到 Vite：一次克制的性能重构", excerpt: "不追逐漂亮的跑分，只处理真正影响阅读体验的加载、缓存与切页问题。", time: "11 min", words: "4.6k 字", comments: 20 },
-  { slug: "fate-zero-rewatch", category: "追番", date: "2026-03-30", title: "第七次重看 Fate/Zero，我开始理解切嗣了", excerpt: "同一部作品在不同年龄重看，会得到完全不同的答案。", time: "8 min", words: "3.4k 字", comments: 31 },
-  { slug: "spring-walk", category: "生活", date: "2026-03-18", title: "春日散步：胶片、河堤与晚风", excerpt: "带着相机漫无目的地走了一下午，顺便重新认识了居住多年的城市。", time: "5 min", words: "1.9k 字", comments: 6 },
-];
-
-type Post = (typeof posts)[number];
-
-const articleDetails: Record<string, { first: string; firstBody: string; second: string; secondBody: string; quote: string }> = {
-  技术: {
-    first: "问题与取舍",
-    firstBody: "真正影响体验的往往不是功能数量，而是加载、层级和反馈是否足够清楚。这次记录会把方案拆开，说明哪些部分值得做，哪些复杂度应该留到以后。",
-    second: "实现与复盘",
-    secondBody: "实现过程中优先保证内容可读、交互可预期，再逐步加入主题、动效和细节。技术选择只是手段，最终仍要回到读者能否顺畅理解内容。",
-    quote: "先把正确的反馈放在正确的位置，再考虑让它变得华丽。",
-  },
-  折腾: {
-    first: "从想法到可用",
-    firstBody: "这类折腾最有趣的部分，是把一个看似只适合桌面的效果变成稳定的网页体验。过程里需要同时照顾资源体积、兼容性和降级方案。",
-    second: "踩坑与边界",
-    secondBody: "不是每个效果都值得原样搬到浏览器。删掉高成本、低收益的部分，保留最能传达气氛的细节，反而更接近最终想要的体验。",
-    quote: "折腾的终点不是复杂，而是让复杂在使用时消失。",
-  },
-  追番: {
-    first: "这一季留下了什么",
-    firstBody: "比起罗列剧情，我更想记录角色、音乐和某些瞬间为什么会在完结后继续留在记忆里。评分只是索引，感受才是正文。",
-    second: "值得再次回看的片段",
-    secondBody: "有些作品第一次看的是情节，重看时才会注意到人物之间没有说出口的距离。它们也是我愿意持续做追番记录的原因。",
-    quote: "好的故事结束之后，仍会在观众心里继续生长。",
-  },
-  生活: {
-    first: "最近的日常",
-    firstBody: "这些片段没有明确的主题：天气、键盘声、路上的光，或者一杯慢慢融化的冰美式。写下来，是为了不让它们轻易从记忆里消失。",
-    second: "留给之后的自己",
-    secondBody: "日常文章不需要总结出结论。能在很久以后重新读到当时的气味和心情，就已经足够。",
-    quote: "把普通的一天认真记住，本身就是一件浪漫的事。",
-  },
-  游戏: {
-    first: "第二次进入这个世界",
-    firstBody: "当结局已经知道，注意力会从任务目标转向人物、环境和那些容易错过的支线。第二次体验往往比第一次更接近作品真正想说的内容。",
-    second: "系统之外的感受",
-    secondBody: "数值和机制决定是否好玩，角色与氛围决定一段旅程能否被记住。这篇记录更关心后者。",
-    quote: "通关不是结束，而是终于看清这段旅程的开始。",
-  },
+type ArticleCategory = { id: number; name: string; slug: string; color: string };
+type ArticleTag = { id: number; name: string; article_count?: number | null };
+type Post = {
+  id: number;
+  slug: string;
+  title: string;
+  summary: string;
+  content_md?: string | null;
+  status: "draft" | "published" | "hidden";
+  is_pinned: boolean;
+  allow_comment: boolean;
+  kanban_ref: boolean;
+  word_count: number;
+  read_minutes: number;
+  view_count: number;
+  comment_count: number;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+  category: ArticleCategory | null;
+  cover_url: string | null;
+  tags: ArticleTag[];
 };
+
+type ArticleListPayload = { page: number; per_page: number; total: number; items: Post[] };
+type ArticleDetailPayload = {
+  article: Post;
+  previous: Post | null;
+  next: Post | null;
+  related: Post[];
+  allow_comment: boolean;
+};
+
+const categoryName = (post: Post) => post.category?.name || "未分类";
+const articleDate = (post: Post) => (post.published_at || post.updated_at || post.created_at).slice(0, 10);
+const articleWords = (post: Post) => `${post.word_count.toLocaleString()} 字`;
+const articleTime = (post: Post) => `${Math.max(1, post.read_minutes)} min`;
 
 const navItems = [
   ["/", "首页"], ["/archives", "归档"], ["/moments", "时间轴"], ["/anime", "追番"], ["/about", "关于"], ["/friends", "友链"],
@@ -201,8 +193,7 @@ export function BlogApp() {
   if (pathname === "/") page = <HomePage theme={theme} toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
   else if (pathname.startsWith("/posts/")) {
     const slug = pathname.split("/").filter(Boolean)[1];
-    const post = posts.find((item) => item.slug === slug);
-    page = post ? <ArticlePage post={post} notify={notify} /> : <NotFound />;
+    page = <ArticlePage slug={slug} notify={notify} />;
   }
   else if (pathname === "/archives") page = <ArchivesPage />;
   else if (pathname === "/moments") page = <MomentsPage notify={notify} />;
@@ -270,12 +261,36 @@ function TopNav({ pathname, theme, toggleTheme, menuOpen, setMenuOpen, setSearch
 function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; toggleTheme: () => void; notify: Notify; onSearch: () => void }) {
   const raiment = getRaiment(theme);
   const [page, setPage] = useState(1);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [navElevated, setNavElevated] = useState(false);
   const [voicePlaying, setVoicePlaying] = useState(false);
   const [voiceSeconds, setVoiceSeconds] = useState(0);
-  const pageCount = Math.ceil(posts.length / 4);
-  const visiblePosts = posts.slice((page - 1) * 4, page * 4);
+  const pageCount = Math.max(1, Math.ceil(total / 4));
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`/api/v1/articles?page=${page}&per_page=4`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "文章列表加载失败"));
+        return response.json() as Promise<ArticleListPayload>;
+      })
+      .then((payload) => {
+        setPosts(payload.items);
+        setTotal(payload.total);
+        setError("");
+      })
+      .catch((reason) => {
+        if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+          setError(reason instanceof Error ? reason.message : "文章列表加载失败");
+        }
+      })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, [page]);
+  const visiblePosts = posts;
   const enter = () => document.getElementById("articles")?.scrollIntoView({ behavior: "smooth" });
   useEffect(() => {
     const updateNav = () => setNavElevated(window.scrollY > 56);
@@ -297,6 +312,11 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
     setPage(target);
     document.querySelector(".section-intro")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+  const latestLabel = posts[0]
+    ? `最近更新：《${posts[0].title}》 · ${articleDate(posts[0])}`
+    : loading
+      ? "正在读取最新文章…"
+      : "暂时还没有已发布文章。";
   return (
     <>
       <TopNav pathname="/" theme={theme} toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating elevated={navElevated} />
@@ -312,14 +332,19 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
             <button className="primary-button" onClick={enter}>ENTER · 进入博客 ▾</button>
           </div>
         </div>
-        <div className="dialog-box hero-dialog"><b>{theme === "day" ? "Saber" : "Alter"}</b><p>{theme === "day" ? "今日もいい天気ですね。最近更新：《重构博客的一些思考》 · 2026-07-12" : "夜已深，Master。仍要继续前行吗？最近更新：《重构博客的一些思考》"}</p><span>▼</span></div>
+        <div className="dialog-box hero-dialog"><b>{theme === "day" ? "Saber" : "Alter"}</b><p>{theme === "day" ? `今日もいい天気ですね。${latestLabel}` : `夜已深，Master。仍要继续前行吗？${latestLabel}`}</p><span>▼</span></div>
         <button className="scroll-cue" onClick={enter}>SCROLL ▼</button>
       </section>
       <section id="articles" className="home-content">
-        <Stats />
+        <Stats total={total} />
         <div className="section-intro reveal"><div><span>RECENT WRITING</span><h2>最近写下的东西</h2></div><p>技术、生活与热爱的作品。每一页都尽量留下真实的温度。</p></div>
         <div className="post-list">
-          <div className="post-page" key={page}>{visiblePosts.map((post) => <PostCard key={post.slug} post={post} />)}</div>
+          <div className="post-page" key={page}>
+            {loading && <div className="empty-panel">正在读取文章…</div>}
+            {!loading && error && <div className="empty-panel">{error}</div>}
+            {!loading && !error && !visiblePosts.length && <div className="empty-panel">暂时还没有已发布文章。</div>}
+            {!loading && !error && visiblePosts.map((post) => <PostCard key={post.id} post={post} />)}
+          </div>
           <div className="pagination" aria-label="文章分页"><button onClick={() => changePage(page - 1)} disabled={page === 1} aria-label="上一页">◀</button>{Array.from({ length: pageCount }, (_, i) => i + 1).map((item) => <button key={item} className={page === item ? "current" : ""} onClick={() => changePage(item)} aria-current={page === item ? "page" : undefined}>{item}</button>)}<button onClick={() => changePage(page + 1)} disabled={page === pageCount} aria-label="下一页">▶</button></div>
         </div>
       </section>
@@ -327,30 +352,45 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
   );
 }
 
-function Stats() {
-  return <div className="stats">{[["128", "文章"], ["42.6w", "总字数"], ["187,203", "访客"], ["2,048", "运行天数"]].map(([n, l]) => <div key={l}><b>{n}</b><span>{l}</span></div>)}</div>;
+function Stats({ total }: { total: number }) {
+  return <div className="stats">{[[total.toLocaleString(), "文章"], ["—", "总字数"], ["—", "访客"], ["—", "运行天数"]].map(([n, l]) => <div key={l}><b>{n}</b><span>{l}</span></div>)}</div>;
 }
 
-function PostCard({ post }: { post: typeof posts[number] }) {
+function PostCard({ post }: { post: Post }) {
   return (
-    <Link href={`/posts/${post.slug}`} className={cx("post-card", post.pinned && "pinned")}>
-      {post.pinned && <span className="pin">置顶 PINNED</span>}
-      <div className="post-main"><div className="post-meta"><span className={`tag tag-${post.category}`}>{post.category}</span><span>{post.date}</span></div><h2>{post.title}</h2><p>{post.excerpt}</p><div className="post-stats"><span>{post.time}</span><span>{post.words}</span><span>评论 {post.comments}</span></div></div>
-      {post.pinned && <Image src="/saber-day.png" width={5120} height={2160} sizes="240px" alt="文章封面" />}
+    <Link href={`/posts/${post.slug}`} className={cx("post-card", post.is_pinned && "pinned")}>
+      {post.is_pinned && <span className="pin">置顶 PINNED</span>}
+      <div className="post-main"><div className="post-meta"><span className="tag">{categoryName(post)}</span><span>{articleDate(post)}</span></div><h2>{post.title}</h2><p>{post.summary}</p><div className="post-stats"><span>{articleTime(post)}</span><span>{articleWords(post)}</span><span>评论 {post.comment_count}</span></div></div>
+      {post.cover_url && <Image src={post.cover_url} width={512} height={288} sizes="240px" alt={`${post.title} 封面`} unoptimized />}
     </Link>
   );
 }
 
 function PageHeading({ title, subtitle }: { title: string; subtitle: string }) { return <div className="page-heading"><h1>{title}</h1><span>{subtitle}</span></div>; }
 
-function ArticlePage({ post, notify }: { post: Post; notify: Notify }) {
+function ArticlePage({ slug, notify }: { slug: string; notify: Notify }) {
   const [progress, setProgress] = useState(0);
   const [liked, setLiked] = useState(false);
-  const detail = articleDetails[post.category] ?? articleDetails.技术;
-  const currentIndex = posts.findIndex((item) => item.slug === post.slug);
-  const previousPost = currentIndex < posts.length - 1 ? posts[currentIndex + 1] : null;
-  const nextPost = currentIndex > 0 ? posts[currentIndex - 1] : null;
-  const related = posts.filter((item) => item.slug !== post.slug && item.category === post.category).slice(0, 2);
+  const [payload, setPayload] = useState<ArticleDetailPayload | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`/api/v1/articles/${encodeURIComponent(slug)}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "文章不存在"));
+        return response.json() as Promise<ArticleDetailPayload>;
+      })
+      .then((value) => {
+        setPayload(value);
+        setError("");
+      })
+      .catch((reason) => {
+        if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+          setError(reason instanceof Error ? reason.message : "文章加载失败");
+        }
+      });
+    return () => controller.abort();
+  }, [slug]);
   useEffect(() => {
     const update = () => {
       const max = document.documentElement.scrollHeight - window.innerHeight;
@@ -368,32 +408,37 @@ function ArticlePage({ post, notify }: { post: Post; notify: Notify }) {
       notify("暂时无法复制，请从地址栏复制链接", "danger");
     }
   };
+  if (error) return <NotFound message={error} />;
+  if (!payload) return <main className="empty-state"><b>◆</b><h1>正在读取文章</h1><p>请稍候，Master。</p></main>;
+  const post = payload.article;
+  const previousPost = payload.previous;
+  const nextPost = payload.next;
+  const related = payload.related;
   return (
     <><div className="article-reading-bar"><i style={{ width: `${progress}%` }} /></div><main className="page-wrap article-layout page-enter">
       <article className="article-card">
-        <div className="breadcrumbs"><Link href="/">首页</Link> / <Link href="/archives">{post.category}</Link></div>
+        <div className="breadcrumbs"><Link href="/">首页</Link> / <Link href="/archives">{categoryName(post)}</Link></div>
         <h1>{post.title}</h1>
-        <div className="article-meta">{post.date} · {post.words} · {post.time} · 阅读 {1_284 - currentIndex * 73}</div>
-        <p>{post.excerpt}</p>
-        <SectionTitle id="first-section" index="一" title={detail.first} />
-        <p>{detail.firstBody}</p>
-        <div className="dialog-box quote"><b>{post.category === "追番" || post.category === "游戏" ? "helt" : "Saber"}</b><p>「{detail.quote}」</p></div>
-        {post.slug === "blog-rebuild" && <Image className="article-image" src="/saber-day.png" width={5120} height={2160} sizes="(max-width: 768px) 100vw, 680px" alt="Saber 日间主题封面" />}
-        <SectionTitle id="second-section" index="二" title={detail.second} />
-        <p>{detail.secondBody}</p>
-        {(post.category === "技术" || post.category === "折腾") && <pre><code>{`:root {\n  --accent: #2b5fb8;\n  --gold: #b99a3e;\n}`}</code></pre>}
-        <SectionTitle id="closing" index="三" title="写在最后" />
-        <p>界面可以有鲜明的性格，但每一次动作都应当回答用户的期待。装饰服务于方向感，动画服务于因果关系。</p>
-        <div className="article-actions"><button className={liked ? "liked" : ""} onClick={() => { setLiked(!liked); notify(liked ? "已取消喜欢" : "感谢你的喜欢", "success"); }}>{liked ? "♥ 已喜欢 · 129" : "♡ 喜欢 · 128"}</button><button onClick={shareArticle}>⌁ 分享文章</button></div>
+        <div className="article-meta">{articleDate(post)} · {articleWords(post)} · {articleTime(post)} · 阅读 {post.view_count}</div>
+        <p>{post.summary}</p>
+        {post.cover_url && <Image className="article-image" src={post.cover_url} width={1200} height={675} sizes="(max-width: 768px) 100vw, 680px" alt={`${post.title} 封面`} unoptimized />}
+        <MarkdownBody source={post.content_md || "这篇文章还没有正文。"} />
+        <div id="article-actions" className="article-actions"><button className={liked ? "liked" : ""} onClick={() => { setLiked(!liked); notify(liked ? "已取消喜欢" : "感谢你的喜欢", "success"); }}>{liked ? "♥ 已喜欢" : "♡ 喜欢"}</button><button onClick={shareArticle}>⌁ 分享文章</button></div>
         <div className="article-nav">{previousPost ? <Link href={`/posts/${previousPost.slug}`}>← 上一篇<br /><b>{previousPost.title}</b></Link> : <span />}{nextPost ? <Link href={`/posts/${nextPost.slug}`}>下一篇 →<br /><b>{nextPost.title}</b></Link> : <span />}</div>
-        <Comments count={post.comments} notify={notify} />
+        <Comments count={post.comment_count} notify={notify} />
       </article>
-      <aside className="article-aside"><div className="toc"><b>目录 CONTENTS <small>{Math.round(progress)}%</small></b><Link href="#first-section" className="active">一、{detail.first}</Link><Link href="#second-section">二、{detail.second}</Link><Link href="#closing">三、写在最后</Link></div><div className="recommend"><b>相关文章</b>{related.length ? related.map((item) => <Link key={item.slug} href={`/posts/${item.slug}`}>{item.title}</Link>) : <Link href="/archives">浏览全部文章</Link>}</div></aside>
+      <aside className="article-aside"><div className="toc"><b>目录 CONTENTS <small>{Math.round(progress)}%</small></b><Link href="#article-content" className="active">正文</Link><Link href="#article-actions">互动</Link></div><div className="recommend"><b>相关文章</b>{related.length ? related.map((item) => <Link key={item.id} href={`/posts/${item.slug}`}>{item.title}</Link>) : <Link href="/archives">浏览全部文章</Link>}</div></aside>
     </main></>
   );
 }
 
-function SectionTitle({ index, title, id }: { index: string; title: string; id?: string }) { return <h2 id={id} className="section-title"><i />{index}、{title}</h2>; }
+function MarkdownBody({ source }: { source: string }) {
+  return <div id="article-content" className="article-content markdown-renderer"><ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown></div>;
+}
+
+function SectionTitle({ index, title, id }: { index: string; title: string; id?: string }) {
+  return <h2 id={id} className="section-title"><i />{index}、{title}</h2>;
+}
 
 function Comments({ count, notify }: { count: number; notify: Notify }) {
   const [sent, setSent] = useState(false);
@@ -404,9 +449,45 @@ function Comments({ count, notify }: { count: number; notify: Notify }) {
 function ArchivesPage() {
   const [view, setView] = useState("time");
   const [selected, setSelected] = useState("");
-  const choices = view === "category" ? ["技术 45", "生活 32", "折腾 24", "追番 18", "游戏 9"] : ["React", "TypeScript", "Fate", "Live2D", "日常", "Vite", "动画", "游戏"];
-  const matchedPosts = selected ? posts.filter((post) => post.category === selected || `${post.title} ${post.excerpt}`.includes(selected)) : [];
-  return <main className="page-wrap page-enter"><PageHeading title="归档" subtitle="ARCHIVE · 128 篇" /><div className="view-tabs" role="tablist" aria-label="归档浏览方式"><button role="tab" aria-selected={view === "time"} className={view === "time" ? "active" : ""} onClick={() => { setView("time"); setSelected(""); }}>时间</button><button role="tab" aria-selected={view === "category"} className={view === "category" ? "active" : ""} onClick={() => { setView("category"); setSelected(""); }}>分类</button><button role="tab" aria-selected={view === "tag"} className={view === "tag" ? "active" : ""} onClick={() => { setView("tag"); setSelected(""); }}>标签</button></div>{view === "time" ? <div className="archive-grid"><div className="timeline-list"><h2>2026</h2>{posts.map((p) => <Link key={p.slug} href={`/posts/${p.slug}`}><time>{p.date.slice(5)}</time><b>{p.title}</b><span className={`tag tag-${p.category}`}>{p.category}</span></Link>)}</div><aside className="archive-side"><b>分类</b>{[["技术", 45], ["生活", 32], ["折腾", 24], ["追番", 18], ["游戏", 9]].map(([n, c]) => <button key={n} onClick={() => { setView("category"); setSelected(String(n)); }}><span>{n}</span><span>{c}</span></button>)}</aside></div> : <><div className="cloud-panel">{choices.map((item, i) => <button className={selected === item.split(" ")[0] ? "active" : ""} key={item} style={{ fontSize: `${14 + (i % 4) * 4}px` }} onClick={() => setSelected(item.split(" ")[0])}>{item}</button>)}</div>{selected && <div className="archive-selection"><span>正在浏览</span><b>{selected}</b><p>共找到 {matchedPosts.length} 篇相关内容</p><button onClick={() => setSelected("")}>清除筛选 ×</button></div>}{selected && <div className="archive-results">{matchedPosts.length ? matchedPosts.map((post) => <Link key={post.slug} href={`/posts/${post.slug}`}><span className={`tag tag-${post.category}`}>{post.category}</span><b>{post.title}</b><small>{post.date}</small></Link>) : <div className="empty-panel">当前演示内容中没有匹配文章。</div>}</div>}</>}</main>;
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [categories, setCategories] = useState<ArticleCategory[]>([]);
+  const [tags, setTags] = useState<ArticleTag[]>([]);
+  const [total, setTotal] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      const [articleResponse, categoryResponse, tagResponse] = await Promise.all([
+        fetch("/api/v1/articles?page=1&per_page=50", { signal: controller.signal }),
+        fetch("/api/v1/categories", { signal: controller.signal }),
+        fetch("/api/v1/tags", { signal: controller.signal }),
+      ]);
+      if (!articleResponse.ok || !categoryResponse.ok || !tagResponse.ok) throw new Error("归档数据加载失败");
+      const articles = await articleResponse.json() as ArticleListPayload;
+      const categoryPayload = await categoryResponse.json() as { items: ArticleCategory[] };
+      const tagPayload = await tagResponse.json() as { items: ArticleTag[] };
+      const allPosts = [...articles.items];
+      const pageCount = Math.ceil(articles.total / articles.per_page);
+      for (let page = 2; page <= pageCount; page += 1) {
+        const response = await fetch(`/api/v1/articles?page=${page}&per_page=${articles.per_page}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("归档文章加载失败");
+        allPosts.push(...((await response.json() as ArticleListPayload).items));
+      }
+      if (controller.signal.aborted) return;
+      setPosts(allPosts);
+      setTotal(articles.total);
+      setCategories(categoryPayload.items);
+      setTags(tagPayload.items);
+    };
+    void load().catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+  const choices = view === "category"
+    ? categories.map((item) => `${item.name} ${posts.filter((post) => post.category?.id === item.id).length}`)
+    : tags.map((item) => item.name);
+  const matchedPosts = selected
+    ? posts.filter((post) => categoryName(post) === selected || post.tags.some((tag) => tag.name === selected) || `${post.title} ${post.summary}`.includes(selected))
+    : [];
+  return <main className="page-wrap page-enter"><PageHeading title="归档" subtitle={`ARCHIVE · ${total} 篇`} /><div className="view-tabs" role="tablist" aria-label="归档浏览方式"><button role="tab" aria-selected={view === "time"} className={view === "time" ? "active" : ""} onClick={() => { setView("time"); setSelected(""); }}>时间</button><button role="tab" aria-selected={view === "category"} className={view === "category" ? "active" : ""} onClick={() => { setView("category"); setSelected(""); }}>分类</button><button role="tab" aria-selected={view === "tag"} className={view === "tag" ? "active" : ""} onClick={() => { setView("tag"); setSelected(""); }}>标签</button></div>{view === "time" ? <div className="archive-grid"><div className="timeline-list"><h2>文章</h2>{posts.map((p) => <Link key={p.id} href={`/posts/${p.slug}`}><time>{articleDate(p).slice(5)}</time><b>{p.title}</b><span className="tag">{categoryName(p)}</span></Link>)}</div><aside className="archive-side"><b>分类</b>{categories.map((item) => <button key={item.id} onClick={() => { setView("category"); setSelected(item.name); }}><span>{item.name}</span><span>{posts.filter((post) => post.category?.id === item.id).length}</span></button>)}</aside></div> : <><div className="cloud-panel">{choices.map((item, i) => { const label = item.split(" ")[0]; return <button className={selected === label ? "active" : ""} key={item} style={{ fontSize: `${14 + (i % 4) * 4}px` }} onClick={() => setSelected(label)}>{item}</button>; })}</div>{selected && <div className="archive-selection"><span>正在浏览</span><b>{selected}</b><p>共找到 {matchedPosts.length} 篇相关内容</p><button onClick={() => setSelected("")}>清除筛选 ×</button></div>}{selected && <div className="archive-results">{matchedPosts.length ? matchedPosts.map((post) => <Link key={post.id} href={`/posts/${post.slug}`}><span className="tag">{categoryName(post)}</span><b>{post.title}</b><small>{articleDate(post)}</small></Link>) : <div className="empty-panel">没有匹配的已发布文章。</div>}</div>}</>}</main>;
 }
 
 function MomentsPage({ notify }: { notify: Notify }) {
@@ -485,13 +566,29 @@ function FriendsPage({ notify }: { notify: Notify }) {
   return <main className="page-wrap page-enter"><PageHeading title="友情链接" subtitle="FRIENDS · 12 位" /><div className="friends-grid">{friends.map((f) => <button key={f.name} className="friend-card" onClick={() => setSelected(f)}><span className={`friend-avatar ${f.color}`}>{f.name[0]}</span><span><b>{f.name}</b><p>{f.desc}</p></span><i>→</i></button>)}</div><form className="friend-form dialog-box" onSubmit={submit}><b>申请友链</b><p>交换的不只是链接，也是彼此在网络世界留下的一盏灯。</p><div className="form-grid"><input aria-label="站点名称" placeholder="站点名称" required /><input aria-label="站点地址" placeholder="站点地址" type="url" required /><input aria-label="头像地址" placeholder="头像地址" type="url" /><input aria-label="联系邮箱" placeholder="联系邮箱" type="email" required /></div><textarea aria-label="站点介绍" placeholder="一句话介绍你的小站" required /><button className="primary-button">提交申请</button>{sent && <span className="success" role="status">申请已提交（Mock）</span>}</form>{selected && <div className="friend-drawer" role="dialog" aria-modal="true" aria-labelledby="friend-drawer-title"><button aria-label="关闭友链详情" onClick={() => setSelected(null)}>×</button><span className={`friend-avatar ${selected.color}`}>{selected.name[0]}</span><small>FRIEND PROFILE</small><h2 id="friend-drawer-title">{selected.name}</h2><p>{selected.desc}</p><button className="primary-button" onClick={() => notify("这是 Mock 友链，暂未配置外部地址")}>访问站点 ↗</button></div>}</main>;
 }
 
-function NotFound() { return <main className="empty-state"><b>404</b><h1>前方并非约定之地</h1><p>Master，这条路径似乎不存在。</p><Link href="/" className="primary-button">返回首页</Link></main>; }
+function NotFound({ message }: { message?: string } = {}) { return <main className="empty-state"><b>404</b><h1>前方并非约定之地</h1><p>{message || "Master，这条路径似乎不存在。"}</p><Link href="/" className="primary-button">返回首页</Link></main>; }
 
 function SearchOverlay({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
-  const result = useMemo(() => posts.filter((p) => `${p.title} ${p.category} ${p.excerpt}`.toLowerCase().includes(query.toLowerCase())), [query]);
+  const [result, setResult] = useState<Post[]>([]);
+  useEffect(() => {
+    if (!query.trim()) {
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetch(`/api/v1/articles?search=${encodeURIComponent(query.trim())}&page=1&per_page=6`, { signal: controller.signal })
+        .then((response) => response.ok ? response.json() as Promise<ArticleListPayload> : null)
+        .then((payload) => setResult(payload?.items || []))
+        .catch(() => undefined);
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
   useEffect(() => { const close = (e: KeyboardEvent) => e.key === "Escape" && onClose(); window.addEventListener("keydown", close); return () => window.removeEventListener("keydown", close); }, [onClose]);
-  return <div className="search-overlay" role="dialog" aria-modal="true" aria-label="搜索文章" onClick={onClose}><div className="search-panel" onClick={(e) => e.stopPropagation()}><div><span aria-hidden="true">⌕</span><input aria-label="搜索关键词" autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索标题、分类或关键词…" /><button onClick={onClose} aria-label="关闭搜索">×</button></div>{query ? <section aria-live="polite">{result.length ? result.slice(0, 6).map((p) => <Link key={p.slug} href={`/posts/${p.slug}`}><span className="tag">{p.category}</span><b>{p.title}</b><small>{p.date}</small></Link>) : <p>没有找到相关内容，换个关键词试试。</p>}</section> : <div className="search-suggestions"><small>热门关键词</small><div>{["React", "Fate", "Live2D", "博客重构"].map((item) => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div></div>}<small>ESC 关闭 · 输入关键词实时检索 Mock 数据</small></div></div>;
+  return <div className="search-overlay" role="dialog" aria-modal="true" aria-label="搜索文章" onClick={onClose}><div className="search-panel" onClick={(e) => e.stopPropagation()}><div><span aria-hidden="true">⌕</span><input aria-label="搜索关键词" autoFocus value={query} onChange={(e) => { setQuery(e.target.value); if (!e.target.value.trim()) setResult([]); }} placeholder="搜索标题、分类或关键词…" /><button onClick={onClose} aria-label="关闭搜索">×</button></div>{query ? <section aria-live="polite">{result.length ? result.map((p) => <Link key={p.id} href={`/posts/${p.slug}`}><span className="tag">{categoryName(p)}</span><b>{p.title}</b><small>{articleDate(p)}</small></Link>) : <p>没有找到相关内容，换个关键词试试。</p>}</section> : <div className="search-suggestions"><small>热门关键词</small><div>{["React", "Fate", "Live2D", "博客重构"].map((item) => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div></div>}<small>ESC 关闭 · 输入关键词实时检索文章库</small></div></div>;
 }
 
 function FloatingTools({ theme, toggleTheme, playerOpen, setPlayerOpen, notify }: { theme: Theme; toggleTheme: () => void; playerOpen: boolean; setPlayerOpen: (v: boolean) => void; notify: Notify }) {
@@ -560,7 +657,7 @@ function AdminSessionGate({ children }: { children: (admin: AdminIdentity) => Re
   return children(admin);
 }
 
-const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/articles/new", "✎", "撰写文章"], ["/admin/comments", "◫", "评论审核"], ["/admin/assets", "▧", "素材库"], ["/admin/raiments", "♙", "灵衣"], ["/admin/media", "♫", "音乐与语音"], ["/admin/settings", "⚙", "站点设置"]];
+const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/comments", "◫", "评论审核"], ["/admin/assets", "▧", "素材库"], ["/admin/raiments", "♙", "灵衣"], ["/admin/llm", "✦", "LLM"], ["/admin/media", "♫", "音乐与语音"], ["/admin/settings", "⚙", "站点设置"]];
 
 function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify; admin: AdminIdentity }) {
   const [commandOpen, setCommandOpen] = useState(false);
@@ -570,10 +667,11 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   let content: React.ReactNode;
   if (pathname === "/admin") content = <Dashboard notify={notify} />;
   else if (pathname === "/admin/articles") content = <ArticleManager notify={notify} />;
-  else if (pathname.includes("/admin/articles/")) content = <ArticleEditor notify={notify} />;
+  else if (pathname.includes("/admin/articles/")) content = <ArticleEditor pathname={pathname} theme={theme} notify={notify} />;
   else if (pathname === "/admin/comments") content = <CommentManager notify={notify} />;
   else if (pathname === "/admin/assets") content = <AssetManager notify={notify} />;
-  else if (pathname === "/admin/raiments" || pathname === "/admin/kanban" || pathname === "/admin/appearance") content = <RaimentSettings notify={notify} />;
+  else if (pathname === "/admin/raiments" || pathname === "/admin/appearance") content = <RaimentSettings notify={notify} />;
+  else if (pathname === "/admin/llm" || pathname === "/admin/kanban") content = <LlmSettings notify={notify} />;
   else if (pathname === "/admin/media") content = <MediaSettings notify={notify} />;
   else content = <SiteSettings notify={notify} />;
   useEffect(() => {
@@ -597,7 +695,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   return (
     <div className="admin-shell">
       <aside className="admin-sidebar">
-        <Link href="/" className="brand">helt<span>.</span> <small>ADMIN</small></Link>
+        <Link href="/admin" className="brand">helt<span>.</span> <small>ADMIN</small></Link>
         <nav aria-label="后台主导航">
           {adminNav.map(([href, icon, label]) => (
             <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}>
@@ -669,17 +767,737 @@ function Dashboard({ notify }: { notify: Notify }) {
 function ArticleManager({ notify }: { notify: Notify }) {
   const [filter, setFilter] = useState("全部");
   const [query, setQuery] = useState("");
-  const [rows, setRows] = useState(() => [...posts, { ...posts[0], slug: "llm-live2d-draft", title: "看板娘接入 LLM 实战：从 Live2D 到 Claude", category: "技术", date: "2026-07-16", comments: 0, pinned: false }]);
-  const visible = rows.filter((row, index) => row.title.toLowerCase().includes(query.toLowerCase()) && (filter === "全部" || filter === "草稿" && row.slug.endsWith("draft") || filter === "置顶" && index === 0 || filter === "已发布" && !row.slug.endsWith("draft")));
-  return <><AdminTitle title="文章管理" sub={`ARTICLES · ${visible.length} 条结果`} action={<Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>} /><div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => setFilter(x)}>{x}</button>)}</div><input aria-label="搜索文章标题" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索标题…" /></div><div className="admin-table"><div className="table-head"><span>选择</span><span>标题</span><span>分类</span><span>状态</span><span>数据</span><span>日期</span><span>操作</span></div>{visible.map((p) => { const originalIndex = rows.findIndex((row) => row.slug === p.slug); const draft = p.slug.endsWith("draft"); return <div className="table-row" key={p.slug}><span><input type="checkbox" aria-label={`选择 ${p.title}`} /></span><b>{originalIndex === 0 && <em>置顶</em>}{p.title}</b><span className="tag">{p.category}</span><span className={draft ? "draft" : "published"}>{draft ? "◐ 草稿" : "● 已发布"}</span><small>{draft ? "—" : `${1200 - originalIndex * 75} 阅 · ${p.comments} 评`}</small><small>{p.date.slice(5)}</small><span className="row-actions"><Link href={`/admin/articles/${p.slug}/edit`}>编辑</Link><Link href={`/posts/${p.slug}`}>预览</Link><button onClick={() => { setRows((items) => items.filter((row) => row.slug !== p.slug)); notify(`已删除《${p.title}》`, "danger"); }}>删除</button></span></div>; })}{!visible.length && <div className="empty-panel">没有符合当前筛选的文章。</div>}</div></>;
+  const [page, setPage] = useState(1);
+  const [rows, setRows] = useState<Post[]>([]);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{ ids: number[]; title?: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const loadSequenceRef = useRef(0);
+  const perPage = 20;
+  const load = useCallback(async () => {
+    const sequence = ++loadSequenceRef.current;
+    setLoading(true);
+    const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
+    if (filter === "已发布") params.set("status", "published");
+    if (filter === "草稿") params.set("status", "draft");
+    if (filter === "置顶") params.set("is_pinned", "true");
+    if (query.trim()) params.set("search", query.trim());
+    try {
+      const response = await fetch(`/api/v1/admin/articles?${params}`, { credentials: "include" });
+      if (!response.ok) throw new Error(await responseMessage(response, "文章列表加载失败"));
+      const payload = await response.json() as ArticleListPayload;
+      if (sequence !== loadSequenceRef.current) return;
+      setRows(payload.items);
+      setTotal(payload.total);
+      const lastPage = Math.max(1, Math.ceil(payload.total / perPage));
+      if (page > lastPage) setPage(lastPage);
+      setSelected([]);
+    } catch (error) {
+      if (sequence !== loadSequenceRef.current) return;
+      notify(error instanceof Error ? error.message : "文章列表加载失败", "danger");
+    } finally {
+      if (sequence === loadSequenceRef.current) setLoading(false);
+    }
+  }, [filter, notify, page, query]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 180);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+  const remove = (id: number, title: string) => setDeleteConfirmation({ ids: [id], title });
+  const batch = async (action: "publish" | "unpublish" | "delete" | "pin") => {
+    if (!selected.length) return;
+    if (action === "delete") {
+      setDeleteConfirmation({ ids: [...selected] });
+      return;
+    }
+    const response = await fetch("/api/v1/admin/articles/batch", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ article_ids: selected, action }),
+    });
+    if (!response.ok) {
+      notify(await responseMessage(response, "批量操作失败"), "danger");
+      return;
+    }
+    const payload = await response.json() as { affected: number; failed_ids: number[] };
+    notify(payload.failed_ids.length ? `${payload.affected} 篇已处理，${payload.failed_ids.length} 篇失败` : `已处理 ${payload.affected} 篇文章`, payload.failed_ids.length ? "danger" : "success");
+    void load();
+  };
+  const confirmDelete = async () => {
+    if (!deleteConfirmation || deleting) return;
+    const { ids, title } = deleteConfirmation;
+    setDeleting(true);
+    try {
+      if (ids.length === 1) {
+        const response = await fetch(`/api/v1/admin/articles/${ids[0]}`, { method: "DELETE", credentials: "include" });
+        if (!response.ok) throw new Error(await responseMessage(response, "删除失败"));
+        notify(`已删除《${title || "所选文章"}》`, "success");
+      } else {
+        const response = await fetch("/api/v1/admin/articles/batch", {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ article_ids: ids, action: "delete" }),
+        });
+        if (!response.ok) throw new Error(await responseMessage(response, "批量删除失败"));
+        const payload = await response.json() as { affected: number; failed_ids: number[] };
+        notify(payload.failed_ids.length ? `${payload.affected} 篇已删除，${payload.failed_ids.length} 篇失败` : `已删除 ${payload.affected} 篇文章`, payload.failed_ids.length ? "danger" : "success");
+      }
+      setDeleteConfirmation(null);
+      void load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "删除失败", "danger");
+    } finally {
+      setDeleting(false);
+    }
+  };
+  useEffect(() => {
+    if (!deleteConfirmation) return;
+    const close = (event: KeyboardEvent) => event.key === "Escape" && !deleting && setDeleteConfirmation(null);
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [deleteConfirmation, deleting]);
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
+  return <><AdminTitle title="文章管理" sub={`ARTICLES · ${total} 条结果`} action={<Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>} /><div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => { setFilter(x); setPage(1); }}>{x}</button>)}</div><input aria-label="搜索文章标题" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="搜索标题…" /></div>{selected.length > 0 && <div className="admin-toolbar"><span>已选择 {selected.length} 篇</span><button onClick={() => void batch("publish")}>发布</button><button onClick={() => void batch("unpublish")}>撤回</button><button onClick={() => void batch("pin")}>置顶</button><button onClick={() => void batch("delete")}>删除</button></div>}<div className="admin-table"><div className="table-head"><span>选择</span><span>标题</span><span>分类</span><span>状态</span><span>数据</span><span>日期</span><span>操作</span></div>{loading && <div className="empty-panel">正在加载文章…</div>}{!loading && rows.map((p) => <div className="table-row" key={p.id}><span><input type="checkbox" aria-label={`选择 ${p.title}`} checked={selected.includes(p.id)} onChange={(event) => setSelected((items) => event.target.checked ? [...items, p.id] : items.filter((id) => id !== p.id))} /></span><b>{p.is_pinned && <em>置顶</em>}{p.title}</b><span className="tag">{categoryName(p)}</span><span className={p.status === "published" ? "published" : "draft"}>{p.status === "published" ? "● 已发布" : p.status === "hidden" ? "◌ 隐藏" : "◐ 草稿"}</span><small>{p.view_count} 阅 · {p.comment_count} 评</small><small>{articleDate(p).slice(5)}</small><span className="row-actions"><Link href={`/admin/articles/${p.id}/edit`}>编辑</Link>{p.status === "published" && <Link href={`/posts/${p.slug}`}>预览</Link>}<button onClick={() => remove(p.id, p.title)}>删除</button></span></div>)}{!loading && !rows.length && <div className="empty-panel">没有符合当前筛选的文章。</div>}</div>{pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台文章分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}{deleteConfirmation && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteConfirmation(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="article-delete-title"><header><div><span>ARTICLES / DELETE</span><h2 id="article-delete-title">确认删除文章</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>×</button></header><p>{deleteConfirmation.ids.length === 1 && deleteConfirmation.title ? `确定删除《${deleteConfirmation.title}》？` : `确定删除选中的 ${deleteConfirmation.ids.length} 篇文章？`}此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}</>;
 }
 
-function ArticleEditor({ notify }: { notify: Notify }) {
+type ArticleEditPayload = {
+  title: string;
+  summary: string;
+  content_md: string;
+  category_id: number | null;
+  tag_ids: number[];
+  cover_asset_id: number | null;
+  content_asset_ids: number[];
+  is_pinned: boolean;
+  allow_comment: boolean;
+  kanban_ref: boolean;
+  status: Post["status"];
+  slug: string;
+};
+
+type EditorLlmConnection = {
+  id: number;
+  display_name: string;
+  model: string;
+  api_key_configured: boolean;
+  enabled: boolean;
+};
+type EditorModelOption = { id: string; name: string };
+type PolishTargetKey = "summary" | "content_md";
+type EditorMergeSide = "before" | "after";
+type EditorMergeRow = {
+  id: number;
+  beforeLine: number | null;
+  afterLine: number | null;
+  beforeText: string | null;
+  afterText: string | null;
+  changed: boolean;
+};
+type PolishCandidate = {
+  target: PolishTargetKey;
+  before: string;
+  after: string;
+  rows: EditorMergeRow[];
+};
+
+const DEFAULT_POLISH_PROMPTS: Record<PolishTargetKey, string> = {
+  summary: "将原摘要润色为简洁、准确、有吸引力的一段摘要。只返回摘要正文，不要标题、解释、换行或 Markdown；包含标点和空格在内不得超过 120 个字符，建议控制在 80–110 个字符。保持原意和事实，不要扩写成正文。",
+  content_md: "保持原意和事实，改善 Markdown 结构与表达，并补足必要的过渡和说明。不要虚构信息，只返回可直接替换的正文。",
+};
+
+function diffPartLines(value: string) {
+  const lines = value.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+function buildEditorMergeRows(before: string, after: string): EditorMergeRow[] {
+  const parts = diffLines(before, after);
+  const rows: EditorMergeRow[] = [];
+  let beforeLine = 1;
+  let afterLine = 1;
+  let partIndex = 0;
+  while (partIndex < parts.length) {
+    const part = parts[partIndex];
+    if (!part.added && !part.removed) {
+      diffPartLines(part.value).forEach((text) => {
+        rows.push({ id: rows.length, beforeLine: beforeLine++, afterLine: afterLine++, beforeText: text, afterText: text, changed: false });
+      });
+      partIndex += 1;
+      continue;
+    }
+    const beforeLines: string[] = [];
+    const afterLines: string[] = [];
+    while (partIndex < parts.length && (parts[partIndex].added || parts[partIndex].removed)) {
+      const changedPart = parts[partIndex];
+      const lines = diffPartLines(changedPart.value);
+      if (changedPart.removed) beforeLines.push(...lines);
+      if (changedPart.added) afterLines.push(...lines);
+      partIndex += 1;
+    }
+    const rowCount = Math.max(beforeLines.length, afterLines.length);
+    for (let index = 0; index < rowCount; index += 1) {
+      const beforeText = beforeLines[index] ?? null;
+      const afterText = afterLines[index] ?? null;
+      rows.push({
+        id: rows.length,
+        beforeLine: beforeText === null ? null : beforeLine++,
+        afterLine: afterText === null ? null : afterLine++,
+        beforeText,
+        afterText,
+        changed: true,
+      });
+    }
+  }
+  return rows;
+}
+
+function defaultMergeChoices(rows: EditorMergeRow[], side: EditorMergeSide = "after") {
+  return Object.fromEntries(rows.filter((row) => row.changed).map((row) => [row.id, side])) as Record<number, EditorMergeSide>;
+}
+
+function mergeEditorRows(candidate: PolishCandidate, choices: Record<number, EditorMergeSide>) {
+  const changedRows = candidate.rows.filter((row) => row.changed);
+  if (changedRows.every((row) => (choices[row.id] ?? "after") === "before")) return candidate.before;
+  if (changedRows.every((row) => (choices[row.id] ?? "after") === "after")) return candidate.after;
+  const result = candidate.rows.flatMap((row) => {
+    const side = row.changed ? (choices[row.id] ?? "after") : "after";
+    const text = side === "before" ? row.beforeText : row.afterText;
+    return text === null ? [] : [text];
+  }).join("\n");
+  return candidate.before.endsWith("\n") && candidate.after.endsWith("\n") ? `${result}\n` : result;
+}
+
+function sortEditorModels(items: EditorModelOption[]) {
+  return [...items].sort((left, right) => left.id.localeCompare(right.id, "en", { numeric: true, sensitivity: "base" }));
+}
+
+const emptyArticle: ArticleEditPayload = {
+  title: "",
+  summary: "",
+  content_md: "",
+  category_id: null,
+  tag_ids: [],
+  cover_asset_id: null,
+  content_asset_ids: [],
+  is_pinned: false,
+  allow_comment: true,
+  kanban_ref: true,
+  status: "draft",
+  slug: "待保存",
+};
+
+const editorDraftKey = (id: number | null) => id ? `helt-article-editor-${id}` : "helt-article-editor-new";
+
+function readEditorDraft(key: string) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) as Partial<ArticleEditPayload> : null;
+  } catch {
+    return null;
+  }
+}
+
+function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: Theme; notify: Notify }) {
+  const [initialArticleId] = useState<number | null>(() => {
+    const match = pathname.match(/\/admin\/articles\/(\d+)\/edit$/);
+    return match ? Number(match[1]) : null;
+  });
+  const [articleId, setArticleId] = useState<number | null>(initialArticleId);
+  const [data, setData] = useState<ArticleEditPayload | null>(null);
+  const [categories, setCategories] = useState<ArticleCategory[]>([]);
+  const [tags, setTags] = useState<ArticleTag[]>([]);
+  const [assets, setAssets] = useState<AdminAsset[]>([]);
   const [preview, setPreview] = useState(false);
-  const [body, setBody] = useState("# 重构博客的一些思考\n\n旧博客最大的问题是「功能单薄」……\n\n## 一、开屏与主题系统\n\n日间是蓝 Saber，夜间切换为 Alter。\n\n> [Saber]\n> 主题切换不是换一层皮，而是换一个人格。");
-  const insert = (snippet: string) => setBody((value) => `${value}\n\n${snippet}`);
-  const tools = [["B", "**粗体文字**"], ["I", "*斜体文字*"], ["H", "## 新标题"], ["❝", "> [Saber]\n> 对话内容"], ["⌁", "[链接文字](https://)"], ["</>", "```ts\n// code\n```"], ["▧", "![图片说明](/image.png)"]];
-  return <><AdminTitle title="文章编辑器" sub="EDITOR · 内容变更会保存在本地 Mock 状态" action={<div className="editor-actions"><button onClick={() => notify("草稿已保存", "success")}>保存草稿</button><button className="admin-primary" onClick={() => notify("文章已发布（Mock）", "success")}>发布文章</button></div>} /><div className="editor-meta"><input defaultValue="重构博客的一些思考" /><select defaultValue="技术"><option>技术</option><option>生活</option><option>追番</option></select><input placeholder="标签：React, UI" defaultValue="React, UI, 博客" /></div><div className="editor-toolbar">{tools.map(([label, snippet]) => <button key={label} onClick={() => insert(snippet)} title={`插入 ${label}`}>{label}</button>)}<span /><button className={preview ? "active" : ""} onClick={() => setPreview(!preview)}>{preview ? "关闭预览" : "分屏预览"}</button></div><div className={cx("editor-area", preview && "split")}><textarea value={body} onChange={(e) => setBody(e.target.value)} />{preview && <article><h1>重构博客的一些思考</h1><p>旧博客最大的问题是「功能单薄」……</p><h2>一、开屏与主题系统</h2><p>日间是蓝 Saber，夜间切换为 Alter。</p><div className="dialog-box"><b>Saber</b><p>主题切换不是换一层皮，而是换一个人格。</p></div></article>}</div></>;
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState("");
+  const [autoSavedAt, setAutoSavedAt] = useState("");
+  const [coverPickerOpen, setCoverPickerOpen] = useState(false);
+  const [newCategory, setNewCategory] = useState("");
+  const [newTag, setNewTag] = useState("");
+  const [creatingTaxonomy, setCreatingTaxonomy] = useState<"category" | "tag" | "">("");
+  const [llmConnections, setLlmConnections] = useState<EditorLlmConnection[]>([]);
+  const [llmLoading, setLlmLoading] = useState(true);
+  const [llmError, setLlmError] = useState("");
+  const [aiConnectionId, setAiConnectionId] = useState<number | null>(null);
+  const [aiModels, setAiModels] = useState<EditorModelOption[]>([]);
+  const [aiModel, setAiModel] = useState("");
+  const [aiPrompts, setAiPrompts] = useState<Record<PolishTargetKey, string>>(DEFAULT_POLISH_PROMPTS);
+  const [aiTarget, setAiTarget] = useState<PolishTargetKey>("content_md");
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [polishing, setPolishing] = useState(false);
+  const [polishCandidate, setPolishCandidate] = useState<PolishCandidate | null>(null);
+  const [polishChoices, setPolishChoices] = useState<Record<number, EditorMergeSide>>({});
+  const titleRef = useRef<HTMLInputElement>(null);
+  const saveInFlightRef = useRef(false);
+  const aiPrompt = aiPrompts[aiTarget];
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const [categoryResponse, tagResponse, assetResponse] = await Promise.all([
+          fetch("/api/v1/admin/categories", { credentials: "include", signal: controller.signal }),
+          fetch("/api/v1/admin/tags", { credentials: "include", signal: controller.signal }),
+          fetch("/api/v1/admin/assets?media_type=image&per_page=100", { credentials: "include", signal: controller.signal }),
+        ]);
+        let article = emptyArticle;
+        if (initialArticleId) {
+          const articleResponse = await fetch(`/api/v1/admin/articles/${initialArticleId}`, { credentials: "include", signal: controller.signal });
+          if (!articleResponse.ok) throw new Error(await responseMessage(articleResponse, "文章加载失败"));
+          article = await articleResponse.json() as ArticleEditPayload;
+        }
+        const categoryPayload = await categoryResponse.json() as { items: ArticleCategory[] };
+        const tagPayload = await tagResponse.json() as { items: ArticleTag[] };
+        const savedDraft = readEditorDraft(editorDraftKey(initialArticleId));
+        setData({ ...article, ...(savedDraft || {}) });
+        setCategories(categoryPayload.items);
+        setTags(tagPayload.items);
+        if (assetResponse.ok) {
+          const assetPayload = await assetResponse.json() as { items: AdminAsset[] };
+          setAssets(assetPayload.items);
+        }
+        setDirty(Boolean(savedDraft));
+        setAutoSavedAt(savedDraft ? "已恢复上次自动保存" : "");
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) notify(error instanceof Error ? error.message : "文章加载失败", "danger");
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [initialArticleId, notify]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/v1/admin/llm", { credentials: "include", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "无法读取 LLM Key"));
+        const payload = await response.json() as { connections?: EditorLlmConnection[] };
+        setLlmConnections((payload.connections ?? []).filter((connection) => connection.enabled && connection.api_key_configured));
+        setLlmError("");
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setLlmError(error instanceof Error ? error.message : "无法读取 LLM Key");
+        }
+      })
+      .finally(() => setLlmLoading(false));
+    return () => controller.abort();
+  }, []);
+
+  const draftKey = editorDraftKey(articleId ?? initialArticleId);
+  useEffect(() => {
+    if (!data || loading || !dirty) return;
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(draftKey, JSON.stringify(data));
+        setAutoSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      } catch {
+        // 浏览器禁用本地存储时仍可继续编辑和手动保存。
+      }
+    }, 900);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [data, dirty, draftKey, loading]);
+
+  const update = <K extends keyof ArticleEditPayload>(key: K, value: ArticleEditPayload[K]) => {
+    setDirty(true);
+    setData((current) => current ? { ...current, [key]: value } : current);
+  };
+  const loadAiModels = async (connectionId: number) => {
+    setModelsLoading(true);
+    setLlmError("");
+    try {
+      const response = await fetch("/api/v1/admin/llm/models", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ connection_id: connectionId }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "无法获取模型列表"));
+      const payload = await response.json() as { items: EditorModelOption[] };
+      const sortedModels = sortEditorModels(payload.items);
+      setAiModels(sortedModels);
+      if (!sortedModels.some((item) => item.id === aiModel)) setAiModel("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "无法获取模型列表";
+      setAiModels([]);
+      setAiModel("");
+      setLlmError(message);
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+  const selectAiConnection = (value: string) => {
+    const connectionId = value ? Number(value) : null;
+    setAiConnectionId(connectionId);
+    setAiModels([]);
+    setAiModel("");
+    setLlmError("");
+    if (connectionId) void loadAiModels(connectionId);
+  };
+  const polishArticle = async () => {
+    const source = aiTarget === "summary" ? data.summary : data.content_md;
+    const targetLabel = aiTarget === "summary" ? "摘要" : "正文";
+    if (!source.trim()) {
+      notify(`先写一点${targetLabel}草稿，再交给 AI 润色`, "danger");
+      return;
+    }
+    if (llmLoading) {
+      notify("正在读取可用 Key，请稍候", "danger");
+      return;
+    }
+    if (!aiConnectionId) {
+      notify("请先选择用于润色的 Key", "danger");
+      return;
+    }
+    if (modelsLoading) {
+      notify("正在读取模型列表，请稍候", "danger");
+      return;
+    }
+    if (!aiModel) {
+      notify("请先选择用于润色的模型", "danger");
+      return;
+    }
+    if (!aiPrompt.trim()) {
+      notify("请填写润色提示词", "danger");
+      return;
+    }
+    setPolishing(true);
+    setLlmError("");
+    try {
+      const apiTarget = aiTarget === "summary" ? "summary" : "content";
+      const response = await fetch("/api/v1/admin/llm/polish", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          connection_id: aiConnectionId,
+          model: aiModel,
+          prompt: aiPrompt,
+          target: apiTarget,
+          title: data.title,
+          summary: data.summary,
+          content_md: data.content_md,
+        }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "AI 润色失败"));
+      const payload = await response.json() as { target: "summary" | "content"; text: string };
+      if (payload.target !== apiTarget || !payload.text?.trim()) throw new Error(`模型没有返回可用${targetLabel}`);
+      if (payload.text === source) throw new Error(`模型返回的${targetLabel}与原文相同`);
+      const rows = buildEditorMergeRows(source, payload.text);
+      setPolishCandidate({ target: aiTarget, before: source, after: payload.text, rows });
+      setPolishChoices(defaultMergeChoices(rows));
+      notify(`${targetLabel}候选稿已生成，请对比后决定是否替换`, "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI 润色失败";
+      setLlmError(message);
+      notify(message, "danger");
+    } finally {
+      setPolishing(false);
+    }
+  };
+  const applyPolishCandidate = () => {
+    if (!polishCandidate) return;
+    const targetLabel = polishCandidate.target === "summary" ? "摘要" : "正文";
+    if (data[polishCandidate.target] !== polishCandidate.before) {
+      setPolishCandidate(null);
+      notify(`${targetLabel}已在对比期间发生变化，请重新生成候选稿`, "danger");
+      return;
+    }
+    const mergedText = mergeEditorRows(polishCandidate, polishChoices);
+    if (!mergedText.trim()) {
+      notify(`合并后的${targetLabel}为空，请至少保留一行内容`, "danger");
+      return;
+    }
+    update(polishCandidate.target, mergedText);
+    if (polishCandidate.target === "content_md") setPreview(false);
+    setPolishCandidate(null);
+    setPolishChoices({});
+    notify(`已应用${targetLabel}合并结果，保存文章后才会生效`, "success");
+  };
+  const closePolishComparison = () => {
+    setPolishCandidate(null);
+    setPolishChoices({});
+  };
+  const choosePolishLine = (rowId: number, side: EditorMergeSide) => {
+    setPolishChoices((current) => ({ ...current, [rowId]: side }));
+  };
+  const chooseAllPolishLines = (side: EditorMergeSide) => {
+    if (polishCandidate) setPolishChoices(defaultMergeChoices(polishCandidate.rows, side));
+  };
+  const save = useCallback(async (status: Post["status"]) => {
+    if (!data || saveInFlightRef.current) return;
+    if (!data.title.trim()) {
+      notify("先给文章写个标题", "danger");
+      titleRef.current?.focus();
+      return;
+    }
+    if (status === "published" && !data.content_md.trim()) {
+      notify("发布前先写一点正文", "danger");
+      return;
+    }
+    if (status === "published" && !data.category_id) {
+      notify("发布前请选择一个分类", "danger");
+      return;
+    }
+    saveInFlightRef.current = true;
+    setSaving(true);
+    try {
+      let id = articleId;
+      if (!id) {
+        const created = await fetch("/api/v1/admin/articles", {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: data.title }),
+        });
+        if (!created.ok) throw new Error(await responseMessage(created, "无法创建文章"));
+        id = (await created.json() as { id: number }).id;
+        setArticleId(id);
+        window.history.replaceState({}, "", `/admin/articles/${id}/edit`);
+      }
+      const response = await fetch(`/api/v1/admin/articles/${id}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...data, status }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "文章保存失败"));
+      const result = await response.json() as { status: Post["status"] };
+      try {
+        window.localStorage.removeItem(editorDraftKey(articleId));
+        window.localStorage.removeItem(editorDraftKey(id));
+      } catch {
+        // 本地存储不可用时不影响服务端保存结果。
+      }
+      setData((current) => current ? { ...current, status: result.status } : current);
+      setDirty(false);
+      setAutoSavedAt("");
+      setLastSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      notify(status === "published" ? "文章已发布" : "草稿已保存", "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "文章保存失败", "danger");
+    } finally {
+      saveInFlightRef.current = false;
+      setSaving(false);
+    }
+  }, [articleId, data, notify]);
+
+  const createCategory = async () => {
+    const name = newCategory.trim();
+    if (!name || creatingTaxonomy) return;
+    setCreatingTaxonomy("category");
+    try {
+      const slug = /^[a-z0-9](?:[a-z0-9-_]*[a-z0-9])?$/i.test(name) ? name.toLowerCase() : `category-${Date.now()}`;
+      const response = await fetch("/api/v1/admin/categories", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, slug }) });
+      if (!response.ok) throw new Error(await responseMessage(response, "分类创建失败"));
+      const item = await response.json() as ArticleCategory;
+      setCategories((items) => [...items, item].sort((left, right) => left.name.localeCompare(right.name, "zh-CN")));
+      update("category_id", item.id);
+      setNewCategory("");
+      notify(`已新增分类「${item.name}」`, "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "分类创建失败", "danger");
+    } finally {
+      setCreatingTaxonomy("");
+    }
+  };
+
+  const createTag = async () => {
+    const name = newTag.trim();
+    if (!name || creatingTaxonomy) return;
+    setCreatingTaxonomy("tag");
+    try {
+      const response = await fetch("/api/v1/admin/tags", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+      if (!response.ok) throw new Error(await responseMessage(response, "标签创建失败"));
+      const item = await response.json() as ArticleTag;
+      setTags((items) => [...items, item].sort((left, right) => left.name.localeCompare(right.name, "zh-CN")));
+      setDirty(true);
+      setData((current) => current ? { ...current, tag_ids: current.tag_ids.includes(item.id) ? current.tag_ids : [...current.tag_ids, item.id] } : current);
+      setNewTag("");
+      notify(`已新增标签「${item.name}」`, "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "标签创建失败", "danger");
+    } finally {
+      setCreatingTaxonomy("");
+    }
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (saving) return;
+        void save(data?.status === "published" ? "published" : "draft");
+      }
+      if (modifier && event.shiftKey && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        setPreview((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [data?.status, save, saving]);
+  useEffect(() => {
+    if (!coverPickerOpen) return;
+    const close = (event: KeyboardEvent) => event.key === "Escape" && setCoverPickerOpen(false);
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [coverPickerOpen]);
+  useEffect(() => {
+    if (!polishCandidate) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPolishCandidate(null);
+        setPolishChoices({});
+      }
+    };
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("keydown", close);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [polishCandidate]);
+  if (loading || !data) return <div className="empty-panel">正在加载文章编辑器…</div>;
+  const wordCount = data.content_md.replace(/\s/g, "").length;
+  const readingMinutes = Math.max(1, Math.ceil(wordCount / 350));
+  const statusLabel = data.status === "published" ? "已发布" : data.status === "hidden" ? "隐藏" : "草稿";
+  const toggleTag = (tagId: number) => update("tag_ids", data.tag_ids.includes(tagId) ? data.tag_ids.filter((id) => id !== tagId) : [...data.tag_ids, tagId]);
+  const cover = assets.find((asset) => asset.id === data.cover_asset_id);
+  const polishSource = aiTarget === "summary" ? data.summary : data.content_md;
+  const polishTargetLabel = aiTarget === "summary" ? "摘要" : "正文";
+  const polishHint = polishing
+    ? `正在生成${polishTargetLabel}候选稿，请稍候…`
+    : !polishSource.trim()
+      ? `先填写${polishTargetLabel}草稿`
+      : llmLoading
+        ? "正在读取可用 Key…"
+        : !aiConnectionId
+          ? "还差一步：请选择 Key"
+          : modelsLoading
+            ? "正在读取模型列表…"
+            : !aiModel
+              ? "还差一步：请选择模型"
+              : !aiPrompt.trim()
+                ? "还差一步：请填写润色提示词"
+                : "已就绪；生成后先查看 Diff，再决定是否替换。";
+  const candidateMergeRows = polishCandidate?.rows ?? [];
+  let mergedResultLine = 0;
+  const mergedPreviewRows = candidateMergeRows.map((row) => {
+    const side = row.changed ? (polishChoices[row.id] ?? "after") : "after";
+    const text = side === "before" ? row.beforeText : row.afterText;
+    return { row, side, text, resultLine: text === null ? null : ++mergedResultLine };
+  });
+  const addedLines = candidateMergeRows.filter((row) => row.changed && row.afterText !== null).length;
+  const removedLines = candidateMergeRows.filter((row) => row.changed && row.beforeText !== null).length;
+  const selectedBeforeLines = candidateMergeRows.filter((row) => row.changed && (polishChoices[row.id] ?? "after") === "before").length;
+  const selectedAfterLines = candidateMergeRows.filter((row) => row.changed && (polishChoices[row.id] ?? "after") === "after").length;
+  return (
+    <div className="article-editor-page">
+      <div className="editor-heading">
+        <div className="editor-breadcrumb"><Link href="/admin/articles">文章管理</Link><span>／</span><b>{articleId ? "编辑文章" : "新文章"}</b><span className={cx("editor-status", data.status)}>{statusLabel}</span></div>
+        <div className="editor-heading-row">
+          <div>
+            <h1>撰写文章</h1>
+            <p>EDITOR · {data.slug}</p>
+          </div>
+          <div className="editor-actions">
+            <span className={cx("editor-save-state", dirty && "is-dirty")} role="status">{saving ? "正在保存…" : dirty ? (autoSavedAt ? `已自动保存到本机 ${autoSavedAt}` : "将自动保存到本机…") : lastSavedAt ? `已保存 ${lastSavedAt}` : articleId ? "草稿已载入" : "尚未保存"}</span>
+            <button disabled={saving} onClick={() => void save(data.status === "published" ? "published" : "draft")}>{data.status === "published" ? "保存修改" : "保存草稿"} <kbd>⌘S</kbd></button>
+            <button disabled={saving} className="admin-primary" onClick={() => void save("published")}>{saving ? "处理中…" : data.status === "published" ? "更新文章" : "发布文章"} <span>↗</span></button>
+          </div>
+        </div>
+      </div>
+      <div className="editor-workbench">
+        <section className="editor-main-column">
+          <section className="editor-title-card">
+            <label className="editor-field-label" htmlFor="article-title">文章标题</label>
+            <input ref={titleRef} id="article-title" className="editor-title-input" value={data.title} onChange={(e) => update("title", e.target.value)} placeholder="给这篇文章起个标题…" />
+            <label className="editor-summary-field" htmlFor="article-summary"><span>摘要 <small>{data.summary.length}/120</small></span><textarea id="article-summary" maxLength={120} value={data.summary} onChange={(e) => update("summary", e.target.value)} placeholder="用一两句话告诉读者，这篇文章值得读什么…" /></label>
+          </section>
+          <section className="editor-writing-card">
+            <div className="editor-card-heading">
+              <div><span className="editor-kicker">CONTENT</span><h2>正文</h2></div>
+              <div className="editor-view-switch" role="tablist" aria-label="正文视图">
+                <button type="button" className={!preview ? "active" : ""} onClick={() => setPreview(false)} role="tab" aria-selected={!preview}>编辑</button>
+                <button type="button" className={preview ? "active" : ""} onClick={() => setPreview(true)} role="tab" aria-selected={preview}>预览</button>
+              </div>
+            </div>
+            <div className={cx("editor-area", preview && "split")}>
+              <div className="plugin-editor" data-color-mode={theme === "night" ? "dark" : "light"}><MDEditor value={data.content_md} onChange={(value) => update("content_md", value || "")} preview={preview ? "preview" : "edit"} height={500} visibleDragbar={false} textareaProps={{ "aria-label": "文章正文", placeholder: "从这里开始写下你的想法…" }} /></div>
+            </div>
+            <div className="editor-writing-footer"><span>Markdown 编辑器插件 · 支持表格、任务列表与代码块</span><span><b>{wordCount.toLocaleString()}</b> 字 · 约 {readingMinutes} 分钟阅读</span></div>
+          </section>
+        </section>
+        <aside className="editor-sidebar">
+          <section className="editor-side-card editor-ai-card">
+            <header><div><span>AI POLISH</span><h2>AI 润色</h2></div><small>本次文章专用</small></header>
+            <p>生成后先查看 Diff，确认前不会替换原文。</p>
+            <div className="editor-ai-target" role="group" aria-label="润色目标"><button type="button" className={aiTarget === "summary" ? "active" : ""} aria-pressed={aiTarget === "summary"} disabled={polishing} onClick={() => { setAiTarget("summary"); setLlmError(""); }}>摘要</button><button type="button" className={aiTarget === "content_md" ? "active" : ""} aria-pressed={aiTarget === "content_md"} disabled={polishing} onClick={() => { setAiTarget("content_md"); setLlmError(""); }}>正文</button></div>
+            <div className="editor-ai-fields">
+              <label>使用 Key<select value={aiConnectionId ?? ""} disabled={llmLoading || polishing} onChange={(event) => selectAiConnection(event.target.value)}><option value="">{llmLoading ? "正在读取 Key…" : "请选择已保存的 Key"}</option>{llmConnections.map((connection) => <option value={connection.id} key={connection.id}>{connection.display_name}</option>)}</select></label>
+              <label>使用模型<span className="editor-ai-model-row"><select value={aiModel} disabled={!aiConnectionId || modelsLoading || polishing} onChange={(event) => setAiModel(event.target.value)}><option value="">{modelsLoading ? "正在获取模型…" : aiConnectionId ? "请选择模型" : "先选择 Key"}</option>{aiModels.map((model) => <option value={model.id} key={model.id}>{model.name === model.id ? model.id : `${model.name} · ${model.id}`}</option>)}</select><button type="button" aria-label="刷新模型列表" disabled={!aiConnectionId || modelsLoading || polishing} onClick={() => aiConnectionId && void loadAiModels(aiConnectionId)}>↻</button></span></label>
+              <label className="editor-ai-prompt">润色提示词<textarea value={aiPrompt} maxLength={12000} disabled={polishing} onChange={(event) => setAiPrompts((current) => ({ ...current, [aiTarget]: event.target.value }))} placeholder="告诉 AI 希望保留什么、补充什么，以及想要的语气…" /></label>
+            </div>
+            {(!llmLoading && !llmConnections.length) && <div className="editor-ai-empty">还没有可用 Key。<Link href="/admin/llm">先去 LLM 管理新增并验证 →</Link></div>}
+            {llmError && <div className="editor-ai-error" role="alert">{llmError}</div>}
+            <footer><span role="status">{polishHint}</span><button className="admin-primary" type="button" aria-busy={polishing} onClick={() => void polishArticle()} disabled={polishing}>{polishing ? <><i className="editor-ai-wait-mark" aria-hidden="true">◆</i> 正在生成{polishTargetLabel}候选…</> : aiTarget === "summary" ? "✦ 生成摘要候选" : "✦ 生成正文候选"}</button></footer>
+          </section>
+          <section className="editor-side-card editor-publishing-card">
+            <div className="editor-side-heading"><h2>发布设置</h2><span className={cx("editor-status-dot", data.status)}>{statusLabel}</span></div>
+            <div className="editor-control"><span>分类 <small>选择已有或新增</small></span><div className="taxonomy-select-row"><select value={data.category_id ?? ""} onChange={(e) => update("category_id", e.target.value ? Number(e.target.value) : null)}><option value="">选择分类</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void createCategory()} placeholder="新增分类" aria-label="新增分类名称" /><button type="button" onClick={() => void createCategory()} disabled={!newCategory.trim() || creatingTaxonomy === "category"}>＋</button></div></div>
+            <div className="editor-side-divider" />
+            <div className="editor-control"><span>标签 <small>可多选、可新增</small></span><div className="editor-tag-picker">{tags.length ? tags.map((item) => <button type="button" key={item.id} className={data.tag_ids.includes(item.id) ? "selected" : ""} onClick={() => toggleTag(item.id)}>{item.name}<i>{data.tag_ids.includes(item.id) ? "✓" : "+"}</i></button>) : <em>暂无可用标签</em>}</div><div className="taxonomy-create-row"><input value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void createTag()} placeholder="新增标签" aria-label="新增标签名称" /><button type="button" onClick={() => void createTag()} disabled={!newTag.trim() || creatingTaxonomy === "tag"}>＋ 添加标签</button></div></div>
+          </section>
+          <section className="editor-side-card editor-article-options-card">
+            <div className="editor-side-heading"><h2>文章选项</h2><span>OPTIONS</span></div>
+            <label className="editor-toggle"><input type="checkbox" checked={data.is_pinned} onChange={(e) => update("is_pinned", e.target.checked)} /><span><b>置顶文章</b><small>在首页优先展示</small></span><i /></label>
+            <label className="editor-toggle"><input type="checkbox" checked={data.allow_comment} onChange={(e) => update("allow_comment", e.target.checked)} /><span><b>允许评论</b><small>读者可以在文章下留言</small></span><i /></label>
+            <label className="editor-toggle"><input type="checkbox" checked={data.kanban_ref} onChange={(e) => update("kanban_ref", e.target.checked)} /><span><b>看板娘参与</b><small>在文章页显示相关对话</small></span><i /></label>
+          </section>
+          <section className="editor-side-card editor-cover-card">
+            <div className="editor-side-heading"><h2>封面素材</h2><span>OPTIONAL</span></div>
+            <div className="editor-cover-picker-row">{cover ? <div className="editor-cover-preview"><Image src={cover.file.url} width={180} height={100} unoptimized alt={cover.name} /><button type="button" onClick={() => update("cover_asset_id", null)}>移除</button></div> : <div className="editor-cover-empty"><span>▧</span><p>还没有选择封面</p></div>}<button type="button" className="editor-cover-select" onClick={() => setCoverPickerOpen(true)}>从素材库选择</button></div>
+            <div className="editor-cover-note"><span>▧</span><p>封面会显示在首页文章卡片。支持在弹窗中预览并选择图片素材。</p></div>
+          </section>
+          <div className="editor-tip"><span>✦</span><div><b>写作小贴士</b><p>先写标题和摘要，再放心地进入正文。草稿随时可以保存，发布前记得打开预览检查排版。</p></div></div>
+        </aside>
+      </div>
+      {typeof document !== "undefined" && polishCandidate && createPortal(<div className="editor-diff-modal" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closePolishComparison()}>
+        <section role="dialog" aria-modal="true" aria-labelledby="polish-diff-title">
+          <header><div><span>AI POLISH / THREE-WAY MERGE</span><h2 id="polish-diff-title">逐行合并{polishCandidate.target === "summary" ? "摘要" : "正文"}</h2></div><button type="button" aria-label="关闭润色对比" onClick={closePolishComparison}>×</button></header>
+          <div className="editor-merge-toolbar">
+            <div><code>−{removedLines} / +{addedLines}</code><span>已选：原文 {selectedBeforeLines} 行 · 润色 {selectedAfterLines} 行</span></div>
+            <div><button type="button" onClick={() => chooseAllPolishLines("before")}>全部保留原文</button><button type="button" onClick={() => chooseAllPolishLines("after")}>全部采用润色</button></div>
+          </div>
+          <div className="editor-merge-grid" role="grid" aria-label="润色三方合并">
+            <div className="editor-merge-column-head before" role="columnheader"><b>原文</b><small>点击变化行，送入中间结果</small></div>
+            <div className="editor-merge-column-head result" role="columnheader"><b>最终保留</b><small>应用时写回编辑器</small></div>
+            <div className="editor-merge-column-head after" role="columnheader"><b>AI 润色</b><small>点击变化行，送入中间结果</small></div>
+            {mergedPreviewRows.map(({ row, side, text, resultLine }) => <div className="editor-merge-row" role="row" key={row.id}>
+              <button type="button" role="gridcell" className={cx("editor-merge-cell", "before", row.changed && "changed", row.changed && side === "before" && "selected", row.beforeText === null && "empty")} disabled={!row.changed} aria-label={row.changed ? `选择原文第 ${row.beforeLine ?? "空"} 行` : undefined} onClick={() => choosePolishLine(row.id, "before")}><code>{row.beforeLine ?? "·"}</code><i aria-hidden="true">{row.changed ? "→" : ""}</i><pre>{row.beforeText ?? "（不保留此行）"}</pre></button>
+              <div role="gridcell" className={cx("editor-merge-cell", "result", row.changed && "changed", row.changed && side)}><code>{resultLine ?? "·"}</code><i aria-hidden="true">{row.changed ? (side === "before" ? "L" : "R") : ""}</i><pre>{text ?? "（此行已从结果移除）"}</pre></div>
+              <button type="button" role="gridcell" className={cx("editor-merge-cell", "after", row.changed && "changed", row.changed && side === "after" && "selected", row.afterText === null && "empty")} disabled={!row.changed} aria-label={row.changed ? `选择润色稿第 ${row.afterLine ?? "空"} 行` : undefined} onClick={() => choosePolishLine(row.id, "after")}><code>{row.afterLine ?? "·"}</code><i aria-hidden="true">{row.changed ? "←" : ""}</i><pre>{row.afterText ?? "（删除原文此行）"}</pre></button>
+            </div>)}
+          </div>
+          <footer><p>点击左右两侧的变化行选择版本；中间栏就是最终写回内容，应用后仍需手动保存文章。</p><div><button type="button" onClick={closePolishComparison}>取消合并</button><button className="admin-primary" type="button" onClick={applyPolishCandidate}>应用合并结果</button></div></footer>
+        </section>
+      </div>, document.body)}
+      {coverPickerOpen && <div className="editor-cover-modal" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setCoverPickerOpen(false)}><section role="dialog" aria-modal="true" aria-labelledby="cover-picker-title"><header><div><span>ASSET LIBRARY</span><h2 id="cover-picker-title">选择封面素材</h2></div><button type="button" aria-label="关闭封面素材选择" onClick={() => setCoverPickerOpen(false)}>×</button></header><div className="editor-cover-grid">{assets.length ? assets.map((asset) => <button type="button" key={asset.id} className={cx(asset.id === data.cover_asset_id && "selected")} onClick={() => { update("cover_asset_id", asset.id); setCoverPickerOpen(false); }}><Image src={asset.file.url} width={180} height={105} unoptimized alt={asset.name} /><b>{asset.name}</b><small>{assetLabels[asset.media_type]}</small></button>) : <p>素材库中还没有图片，请先上传图片素材。</p>}</div><footer><Link href="/admin/assets">去素材库上传 →</Link><button type="button" onClick={() => setCoverPickerOpen(false)}>取消</button></footer></section></div>}
+    </div>
+  );
 }
 
 function CommentManager({ notify }: { notify: Notify }) {
@@ -691,11 +1509,8 @@ function CommentManager({ notify }: { notify: Notify }) {
 
 function RaimentSettings({ notify }: { notify: Notify }) {
   const [selected, setSelected] = useState<Theme>("day");
-  const [temperature, setTemperature] = useState(7);
-  const [testing, setTesting] = useState(false);
   const raiment = getRaiment(selected);
-  const test = () => { setTesting(true); window.setTimeout(() => { setTesting(false); notify("模型连通测试完成", "success"); }, 900); };
-  return <><AdminTitle title="灵衣" sub="RAIMENTS · COVER / THEME / KANBAN" action={<button className="admin-primary" onClick={() => notify(`${raiment.name} 灵衣已保存并同步到博客`, "success")}>保存并应用</button>} />
+  return <><AdminTitle title="灵衣" sub="RAIMENTS · COVER / THEME / CHARACTER" action={<button className="admin-primary" onClick={() => notify(`${raiment.name} 灵衣已保存并同步到博客`, "success")}>保存并应用</button>} />
     <div className="raiment-mode-switch" role="tablist" aria-label="灵衣模式">
       {(["day", "night"] as Theme[]).map((mode) => { const item = getRaiment(mode); return <button key={mode} role="tab" aria-selected={selected === mode} className={selected === mode ? "active" : ""} onClick={() => setSelected(mode)}><span>{mode === "day" ? "☀" : "☾"}</span><b>{item.modeLabel}</b><small>{item.name}</small></button>; })}
     </div>
@@ -705,9 +1520,9 @@ function RaimentSettings({ notify }: { notify: Notify }) {
     </section>
     <div className="raiment-settings-grid">
       <section className="admin-panel raiment-theme-panel"><h2>主题外观 <small>THEME TOKENS</small></h2><div className="color-token"><i style={{ background: raiment.colors.primary }} /><label>主色<input defaultValue={raiment.colors.primary} key={`${raiment.id}-primary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.secondary }} /><label>辅色<input defaultValue={raiment.colors.secondary} key={`${raiment.id}-secondary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.background }} /><label>背景色<input defaultValue={raiment.colors.background} key={`${raiment.id}-background`} /></label></div></section>
-      <section className="admin-panel"><h2>看板娘人格 <small>{raiment.kanban.displayName.toUpperCase()}</small></h2><label>显示名称<input defaultValue={raiment.kanban.displayName} key={`${raiment.id}-name`} /></label><label>人格提示词<textarea defaultValue={raiment.kanban.persona} key={`${raiment.id}-persona`} /></label><button className={testing ? "loading" : ""} onClick={test} disabled={testing}>{testing ? "正在召唤…" : "测试对话"}</button><div className={cx("test-chat", testing && "thinking")}><b>{raiment.kanban.displayName}</b><p>{testing ? "正在读取当前文章上下文……" : raiment.kanban.greeting}</p></div></section>
-      <section className="admin-panel raiment-model-panel"><h2>模型连接 <span className="live-dot">ONLINE</span></h2><label>服务商<select><option>OpenAI Compatible</option><option>Anthropic</option></select></label><label>模型<input defaultValue="gpt-4.1-mini" /></label><label>API 地址<input defaultValue="https://api.example.com/v1" /></label><label>Temperature <b>{temperature / 10}</b><input type="range" min="0" max="10" value={temperature} onChange={(e) => setTemperature(Number(e.target.value))} /></label><p className="raiment-shared-note">模型连接为所有灵衣共用；人格、封面与主题色由每套灵衣独立保存。</p></section>
+      <section className="admin-panel"><h2>角色展示 <small>{raiment.kanban.displayName.toUpperCase()}</small></h2><label>显示名称<input defaultValue={raiment.kanban.displayName} key={`${raiment.id}-name`} /></label><label>默认招呼语<textarea defaultValue={raiment.kanban.greeting} key={`${raiment.id}-greeting`} /></label><p className="raiment-shared-note">这里只保存角色外观和静态展示文案，不参与模型调用。</p></section>
     </div>
+    <section className="admin-panel raiment-llm-reference"><Link href="/admin/llm">LLM 设置 →</Link></section>
     <section className="admin-panel schedule"><h2>当前模式绑定 <small>暂按日间 / 夜间切换</small></h2><div className="raiment-bindings"><span><b>☀ 日间模式</b><small>Saber</small></span><i>⇄</i><span><b>☾ 夜间模式</b><small>Alter Saber</small></span></div><p>未来加入更多灵衣后，此处可升级为多选绑定；当前不改变访客熟悉的日夜切换方式。</p></section>
   </>;
 }
