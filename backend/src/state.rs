@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -32,6 +35,8 @@ struct Inner {
     pub auth_failures: Mutex<HashMap<String, Vec<Instant>>>,
     pub webauthn: Webauthn,
     pub passkey_registrations: Mutex<HashMap<i64, (Instant, PasskeyRegistration)>>,
+    pub bangumi_syncing: AtomicBool,
+    pub steam_syncing: AtomicBool,
 }
 
 impl AppState {
@@ -83,6 +88,8 @@ impl AppState {
             auth_failures: Mutex::new(HashMap::new()),
             webauthn,
             passkey_registrations: Mutex::new(HashMap::new()),
+            bangumi_syncing: AtomicBool::new(false),
+            steam_syncing: AtomicBool::new(false),
         })))
     }
 
@@ -128,6 +135,28 @@ impl AppState {
 
     pub fn webauthn(&self) -> &Webauthn {
         &self.0.webauthn
+    }
+
+    pub fn try_begin_bangumi_sync(&self) -> bool {
+        self.0
+            .bangumi_syncing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub fn finish_bangumi_sync(&self) {
+        self.0.bangumi_syncing.store(false, Ordering::Release);
+    }
+
+    pub fn try_begin_steam_sync(&self) -> bool {
+        self.0
+            .steam_syncing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub fn finish_steam_sync(&self) {
+        self.0.steam_syncing.store(false, Ordering::Release);
     }
 
     pub fn store_passkey_registration(&self, user_id: i64, registration: PasskeyRegistration) {

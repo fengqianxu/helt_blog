@@ -1,6 +1,8 @@
 mod articles;
 mod assets;
+pub mod bangumi;
 pub mod contract;
+pub mod games;
 mod health;
 mod llm;
 
@@ -28,6 +30,8 @@ pub fn router() -> Router<AppState> {
         .merge(auth::router())
         .merge(assets::router())
         .merge(articles::router())
+        .merge(bangumi::router())
+        .merge(games::router())
         .merge(llm::router())
         // 尚未实现的业务处理器继续注册契约占位路由；每个占位端点返回统一 501。
         // 已实现的业务域会在 contract::router 中自动排除，契约测试仍校验路径和方法不漂移。

@@ -103,6 +103,8 @@ export function AdminAccountCenter({
   const [passwordError, setPasswordError] = useState("");
   const [profileEmail, setProfileEmail] = useState(admin.email);
   const [profileBilibiliUid, setProfileBilibiliUid] = useState(admin.bilibili_uid);
+  const [profileSteamWebApiKey, setProfileSteamWebApiKey] = useState(admin.steam_web_api_key ?? "");
+  const [profileSteamId64, setProfileSteamId64] = useState(admin.steam_id64 ?? "");
   const [profileError, setProfileError] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState<number | null>(admin.avatar_asset_id);
   const [avatarAssets, setAvatarAssets] = useState<AdminAsset[]>([]);
@@ -123,6 +125,9 @@ export function AdminAccountCenter({
   const passkeySupported = typeof window !== "undefined"
     && "PublicKeyCredential" in window
     && Boolean(navigator.credentials);
+  const steamWebApiKeyPresent = Boolean(profileSteamWebApiKey.trim());
+  const steamId64Present = Boolean(profileSteamId64.trim());
+  const steamPairComplete = steamWebApiKeyPresent === steamId64Present;
 
   const closeDialog = useCallback(() => {
     if (busy) return;
@@ -200,6 +205,8 @@ export function AdminAccountCenter({
       profileOriginal.current = admin;
       setProfileEmail(admin.email);
       setProfileBilibiliUid(admin.bilibili_uid);
+      setProfileSteamWebApiKey(admin.steam_web_api_key ?? "");
+      setProfileSteamId64(admin.steam_id64 ?? "");
       setAvatarAssetId(admin.avatar_asset_id);
       setAvatarCrop({
         x: admin.avatar_crop_x || 0,
@@ -218,6 +225,16 @@ export function AdminAccountCenter({
       setProfileError("B 站 UID 只能包含数字，且不能超过 20 位。");
       return;
     }
+    const steamWebApiKey = profileSteamWebApiKey.trim();
+    const steamId64 = profileSteamId64.trim();
+    if (steamWebApiKey && !/^[a-f\d]{32}$/i.test(steamWebApiKey)) {
+      setProfileError("Steam Web API Key 应为 32 位十六进制字符。");
+      return;
+    }
+    if (steamId64 && !/^7656119\d{10}$/.test(steamId64)) {
+      setProfileError("请输入有效的 17 位 SteamID64。");
+      return;
+    }
     setBusy("profile");
     setProfileError("");
     try {
@@ -228,6 +245,8 @@ export function AdminAccountCenter({
         body: JSON.stringify({
           email: profileEmail,
           bilibili_uid: profileBilibiliUid,
+          steam_web_api_key: steamWebApiKey,
+          steam_id64: steamId64,
           avatar_asset_id: avatarAssetId,
           avatar_crop_x: avatarCrop.x,
           avatar_crop_y: avatarCrop.y,
@@ -389,9 +408,11 @@ export function AdminAccountCenter({
             <div className="admin-profile-fields">
               <label>邮箱地址<input type="email" autoComplete="email" maxLength={254} value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} placeholder="name@example.com" /></label>
               <label>B 站 UID<input inputMode="numeric" pattern="[0-9]*" maxLength={20} value={profileBilibiliUid} onChange={(event) => setProfileBilibiliUid(event.target.value)} placeholder="例如：12345678" /></label>
+              <label>Steam Web API Key<input type="password" autoComplete="off" spellCheck={false} maxLength={32} required={steamId64Present} aria-invalid={steamId64Present && !steamWebApiKeyPresent} value={profileSteamWebApiKey} onChange={(event) => setProfileSteamWebApiKey(event.target.value)} placeholder="32 位 Web API Key" /></label>
+              <label>SteamID64<input inputMode="numeric" pattern="[0-9]*" maxLength={17} required={steamWebApiKeyPresent} aria-invalid={steamWebApiKeyPresent && !steamId64Present} value={profileSteamId64} onChange={(event) => setProfileSteamId64(event.target.value)} placeholder="例如：76561198000000000" /></label>
             </div>
             {profileError && <div className="admin-account-error" role="alert">! {profileError}</div>}
-            <footer><button type="button" onClick={closeDialog}>取消</button><button className="admin-primary" disabled={busy === "profile"}>{busy === "profile" ? "正在保存…" : "保存资料"}</button></footer>
+            <footer><button type="button" onClick={closeDialog}>取消</button><button className="admin-primary" disabled={busy === "profile" || !steamPairComplete}>{busy === "profile" ? "正在保存…" : "保存资料"}</button></footer>
           </form>
         </div>
       )}

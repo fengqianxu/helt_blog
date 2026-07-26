@@ -357,6 +357,133 @@ async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
+async fn bangumi_mirror_is_public_paginated_and_filterable() {
+    let database = TestDatabase::create().await;
+    sqlx::query(
+        "UPDATE site_settings
+         SET settings = jsonb_set(settings, '{bangumi_sync,uid}', to_jsonb('123456'::text), true)",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("configure Bilibili UID");
+    sqlx::query(
+        "INSERT INTO bangumi (
+             bilibili_media_id, season_id, title, cover_key, status,
+             ep_current, ep_total, sort_order, metadata
+         ) VALUES
+         (1001, 2001, 'Watching fixture', 'bangumi/covers/1001', 'watching', 3, 12, 0,
+          '{\"season_type\":\"番剧\",\"summary\":\"Watching summary\",\"score\":9.5,\"url\":\"https://www.bilibili.com/bangumi/play/ss2001\",\"latest_episode\":\"更新至第4话\"}'::jsonb),
+         (1002, 2002, 'Finished fixture', NULL, 'finished', 12, 12, 0,
+          '{\"season_type\":\"国创\",\"summary\":\"Finished summary\",\"source_cover\":\"https://i0.hdslb.com/test.png\"}'::jsonb)",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("insert bangumi mirror fixtures");
+    let app = test_app(database.pool.clone());
+
+    let (status, all) = json_request(&app, Method::GET, "/api/v1/bangumi?per_page=100", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["total"], 2);
+    assert_eq!(all["meta"]["counts"]["watching"], 1);
+    assert_eq!(all["meta"]["counts"]["finished"], 1);
+    assert_eq!(all["meta"]["configured"], true);
+    assert_eq!(all["items"][0]["title"], "Watching fixture");
+    assert_eq!(all["items"][0]["cover_url"], "/storage/bangumi/covers/1001");
+    assert_eq!(
+        all["items"][1]["cover_url"],
+        "https://i0.hdslb.com/test.png"
+    );
+
+    let (status, finished) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/bangumi?status=finished&page=1&per_page=10",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(finished["total"], 1);
+    assert_eq!(finished["items"][0]["status"], "finished");
+
+    let (status, _) = json_request(&app, Method::GET, "/api/v1/bangumi?status=invalid", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
+async fn steam_game_mirror_is_public_paginated_and_reports_progress() {
+    let database = TestDatabase::create().await;
+    sqlx::query(
+        "UPDATE site_settings
+         SET settings = jsonb_set(
+             jsonb_set(settings, '{steam_sync,web_api_key}', to_jsonb('0123456789ABCDEF0123456789ABCDEF'::text), true),
+             '{steam_sync,steam_id64}', to_jsonb('76561198000000000'::text), true
+         )",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("configure Steam credentials");
+    sqlx::query(
+        "INSERT INTO games (
+             title, status, play_hours, sort_order, steam_app_id, icon_hash,
+             playtime_2weeks_minutes, playtime_forever_minutes,
+             playtime_windows_minutes, last_played_at, synced_at
+         ) VALUES
+         ('Recent fixture', 'playing', 12.5, 0, 1001, 'recent-icon', 90, 750, 750, now(), now()),
+         ('Library fixture', 'finished', 40, 1, 1002, '', 0, 2400, 2400, NULL, now())",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("insert Steam game mirror fixtures");
+    let app = test_app(database.pool.clone());
+
+    let (status, all) = json_request(&app, Method::GET, "/api/v1/games?per_page=100", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["total"], 2);
+    assert_eq!(all["meta"]["counts"]["total"], 2);
+    assert_eq!(all["meta"]["counts"]["recent"], 1);
+    assert_eq!(all["meta"]["configured"], true);
+    assert_eq!(all["items"][0]["title"], "Recent fixture");
+    assert_eq!(all["items"][0]["playtime_2weeks_minutes"], 90);
+    assert_eq!(all["items"][0]["playtime_forever_minutes"], 750);
+    assert_eq!(
+        all["items"][0]["steam_url"],
+        "https://store.steampowered.com/app/1001"
+    );
+
+    let (status, recent) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/games?status=playing&page=1&per_page=10",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(recent["total"], 1);
+    assert_eq!(recent["items"][0]["steam_app_id"], 1001);
+
+    let (status, by_playtime) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/games?sort=playtime&page=1&per_page=10",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(by_playtime["items"][0]["steam_app_id"], 1002);
+
+    let (status, _) = json_request(&app, Method::GET, "/api/v1/games?status=invalid", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, _) = json_request(&app, Method::GET, "/api/v1/games?sort=invalid", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
 async fn llm_rotation_key_delete_and_use_case_references_use_postgres() {
     let database = TestDatabase::create().await;
     let previous = LlmKeyring::new(1, PREVIOUS_LLM_SECRET, None).expect("previous keyring");

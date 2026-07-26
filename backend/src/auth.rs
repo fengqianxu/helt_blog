@@ -29,7 +29,7 @@ use webauthn_rs::prelude::{CredentialID, RegisterPublicKeyCredential, Uuid};
 
 use crate::{
     error::{ErrorBody, ErrorEnvelope},
-    routes::contract::HttpMethod,
+    routes::{bangumi, contract::HttpMethod, games},
     state::AppState,
     storage_gc,
 };
@@ -112,6 +112,10 @@ struct ChangePasswordRequest {
 struct UpdateProfileRequest {
     email: String,
     bilibili_uid: String,
+    #[serde(default)]
+    steam_web_api_key: String,
+    #[serde(default)]
+    steam_id64: String,
     avatar_asset_id: Option<i64>,
     #[serde(default)]
     avatar_crop_x: f32,
@@ -146,6 +150,8 @@ struct AdminIdentity {
     avatar_crop_y: f32,
     avatar_crop_zoom: f32,
     bilibili_uid: String,
+    steam_web_api_key: String,
+    steam_id64: String,
 }
 
 #[derive(Debug, FromRow, Serialize)]
@@ -165,6 +171,8 @@ struct AdminProfileRow {
     avatar_crop_y: f32,
     avatar_crop_zoom: f32,
     bilibili_uid: String,
+    steam_web_api_key: String,
+    steam_id64: String,
 }
 
 struct AvatarMedia {
@@ -382,7 +390,6 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         error!(error = %err, "refresh transaction could not start");
         ApiError::Internal
     })?;
-
     let row = sqlx::query_as::<_, (i64, i64, String)>(
         "SELECT rt.id, au.id, au.username
          FROM refresh_tokens rt
@@ -481,6 +488,8 @@ async fn update_profile(
     let claims = authenticate(&state, &headers)?;
     let email = normalized_email(&request.email)?;
     let bilibili_uid = normalized_bilibili_uid(&request.bilibili_uid)?;
+    let (steam_web_api_key, steam_id64) =
+        normalized_steam_credentials(&request.steam_web_api_key, &request.steam_id64)?;
     if !(-1.0..=1.0).contains(&request.avatar_crop_x)
         || !(-1.0..=1.0).contains(&request.avatar_crop_y)
         || !(1.0..=3.0).contains(&request.avatar_crop_zoom)
@@ -491,6 +500,26 @@ async fn update_profile(
         error!(error = %err, "profile update transaction could not start");
         ApiError::Internal
     })?;
+    let (previous_bilibili_uid, previous_steam_web_api_key, previous_steam_id64): (
+        String,
+        String,
+        String,
+    ) = sqlx::query_as(
+        "SELECT
+             COALESCE(settings #>> '{bangumi_sync,uid}', ''),
+             COALESCE(settings #>> '{steam_sync,web_api_key}', ''),
+             COALESCE(settings #>> '{steam_sync,steam_id64}', '')
+         FROM site_settings
+         WHERE id = 1
+         FOR UPDATE",
+    )
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "previous profile sync credentials could not be read");
+        ApiError::Internal
+    })?
+    .unwrap_or_default();
 
     let avatar_url = if let Some(asset_id) = request.avatar_asset_id {
         Some(
@@ -592,11 +621,116 @@ async fn update_profile(
         ApiError::Internal
     })?;
 
+    sqlx::query(
+        "UPDATE site_settings
+         SET settings = jsonb_set(
+             settings,
+             '{steam_sync}',
+             COALESCE(settings -> 'steam_sync', '{}'::jsonb)
+                 || jsonb_build_object(
+                     'web_api_key', $1::text,
+                     'steam_id64', $2::text
+                 ),
+             true
+         )
+         WHERE id = 1",
+    )
+    .bind(&steam_web_api_key)
+    .bind(&steam_id64)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "Steam credentials could not be stored in the administrator profile");
+        ApiError::Internal
+    })?;
+
+    if previous_bilibili_uid != bilibili_uid {
+        let cover_keys =
+            sqlx::query_scalar::<_, Option<String>>("DELETE FROM bangumi RETURNING cover_key")
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(|err| {
+                    error!(error = %err, "previous Bilibili mirror could not be cleared");
+                    ApiError::Internal
+                })?;
+        for cover_key in cover_keys.into_iter().flatten() {
+            storage_gc::enqueue(&mut transaction, &cover_key, "bangumi_uid_changed")
+                .await
+                .map_err(|err| {
+                    error!(error = %err, "previous Bilibili cover could not be queued for cleanup");
+                    ApiError::Internal
+                })?;
+        }
+        sqlx::query(
+            "UPDATE site_settings
+             SET settings = jsonb_set(
+                 jsonb_set(
+                     jsonb_set(settings, '{bangumi_sync,last_sync_at}', 'null'::jsonb, true),
+                     '{bangumi_sync,last_status}', to_jsonb($1::text), true
+                 ),
+                 '{bangumi_sync,last_counts}', '{\"watching\":0,\"finished\":0}'::jsonb, true
+             )
+             WHERE id = 1",
+        )
+        .bind(if bilibili_uid.is_empty() {
+            "disabled"
+        } else {
+            "queued"
+        })
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "Bilibili sync status could not be reset");
+            ApiError::Internal
+        })?;
+    }
+
+    let steam_credentials_changed =
+        previous_steam_web_api_key != steam_web_api_key || previous_steam_id64 != steam_id64;
+    if steam_credentials_changed {
+        sqlx::query("DELETE FROM games WHERE steam_app_id IS NOT NULL")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "previous Steam game mirror could not be cleared");
+                ApiError::Internal
+            })?;
+        sqlx::query(
+            "UPDATE site_settings
+             SET settings = jsonb_set(
+                 jsonb_set(
+                     jsonb_set(settings, '{steam_sync,last_sync_at}', 'null'::jsonb, true),
+                     '{steam_sync,last_status}', to_jsonb($1::text), true
+                 ),
+                 '{steam_sync,last_counts}', '{\"total\":0,\"recent\":0}'::jsonb, true
+             )
+             WHERE id = 1",
+        )
+        .bind(if steam_web_api_key.is_empty() {
+            "disabled"
+        } else {
+            "queued"
+        })
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "Steam sync status could not be reset");
+            ApiError::Internal
+        })?;
+    }
+
     transaction.commit().await.map_err(|err| {
         error!(error = %err, "profile update transaction could not commit");
         ApiError::Internal
     })?;
     info!(username = %claims.username, "administrator profile updated");
+
+    if !bilibili_uid.is_empty() {
+        let _ = bangumi::trigger_sync(state.clone());
+    }
+    if !steam_web_api_key.is_empty() {
+        let _ = games::trigger_sync(state.clone());
+    }
 
     Ok(Json(load_admin_identity(&state, claims.sub, &claims.username).await?).into_response())
 }
@@ -1175,7 +1309,9 @@ async fn load_admin_identity(
              au.avatar_crop_x,
              au.avatar_crop_y,
              au.avatar_crop_zoom,
-             COALESCE(ss.settings #>> '{bangumi_sync,uid}', '') AS bilibili_uid
+             COALESCE(ss.settings #>> '{bangumi_sync,uid}', '') AS bilibili_uid,
+             COALESCE(ss.settings #>> '{steam_sync,web_api_key}', '') AS steam_web_api_key,
+             COALESCE(ss.settings #>> '{steam_sync,steam_id64}', '') AS steam_id64
          FROM admin_users au
          LEFT JOIN site_settings ss ON ss.id = 1
          WHERE au.id = $1 AND au.username = $2",
@@ -1199,6 +1335,8 @@ async fn load_admin_identity(
         avatar_crop_y: profile.avatar_crop_y,
         avatar_crop_zoom: profile.avatar_crop_zoom,
         bilibili_uid: profile.bilibili_uid,
+        steam_web_api_key: profile.steam_web_api_key,
+        steam_id64: profile.steam_id64,
     })
 }
 
@@ -1233,6 +1371,50 @@ fn normalized_bilibili_uid(value: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(uid.to_owned())
+}
+
+fn normalized_steam_web_api_key(value: &str) -> Result<String, ApiError> {
+    let key = value.trim();
+    if key.is_empty() {
+        return Ok(String::new());
+    }
+    if key.len() != 32 || !key.bytes().all(|character| character.is_ascii_hexdigit()) {
+        return Err(ApiError::Validation(
+            "Steam Web API Key 应为 32 位十六进制字符",
+        ));
+    }
+    Ok(key.to_ascii_uppercase())
+}
+
+fn normalized_steam_id64(value: &str) -> Result<String, ApiError> {
+    const INDIVIDUAL_ACCOUNT_BASE: u64 = 76_561_197_960_265_728;
+    let steam_id = value.trim();
+    if steam_id.is_empty() {
+        return Ok(String::new());
+    }
+    if steam_id.len() != 17
+        || !steam_id.bytes().all(|character| character.is_ascii_digit())
+        || steam_id
+            .parse::<u64>()
+            .map_or(true, |value| value < INDIVIDUAL_ACCOUNT_BASE)
+    {
+        return Err(ApiError::Validation("请输入有效的 17 位 SteamID64"));
+    }
+    Ok(steam_id.to_owned())
+}
+
+fn normalized_steam_credentials(
+    web_api_key: &str,
+    steam_id64: &str,
+) -> Result<(String, String), ApiError> {
+    let web_api_key = normalized_steam_web_api_key(web_api_key)?;
+    let steam_id64 = normalized_steam_id64(steam_id64)?;
+    if web_api_key.is_empty() != steam_id64.is_empty() {
+        return Err(ApiError::Validation(
+            "Steam Web API Key 与 SteamID64 必须同时填写或同时留空",
+        ));
+    }
+    Ok((web_api_key, steam_id64))
 }
 
 fn validate_avatar_upload(headers: &HeaderMap, body: &[u8]) -> Result<AvatarMedia, ApiError> {
@@ -1514,6 +1696,7 @@ mod tests {
     use super::{
         ACCESS_COOKIE, AccessClaims, ChangePasswordRequest, JWT_ISSUER, authenticate,
         decode_access_token, decode_base32, hash_token, normalized_bilibili_uid, normalized_email,
+        normalized_steam_credentials, normalized_steam_id64, normalized_steam_web_api_key,
         validate_avatar_upload,
     };
     use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
@@ -1653,6 +1836,23 @@ mod tests {
         assert!(normalized_email("not-an-email").is_err());
         assert_eq!(normalized_bilibili_uid(" 123456 ").unwrap(), "123456");
         assert!(normalized_bilibili_uid("uid-123").is_err());
+        assert_eq!(
+            normalized_steam_web_api_key(" 0123456789abcdef0123456789abcdef ").unwrap(),
+            "0123456789ABCDEF0123456789ABCDEF"
+        );
+        assert!(normalized_steam_web_api_key("not-a-key").is_err());
+        assert_eq!(
+            normalized_steam_id64(" 76561198000000000 ").unwrap(),
+            "76561198000000000"
+        );
+        assert!(normalized_steam_id64("123456").is_err());
+        assert!(normalized_steam_credentials("", "").is_ok());
+        assert!(
+            normalized_steam_credentials("0123456789abcdef0123456789abcdef", "76561198000000000")
+                .is_ok()
+        );
+        assert!(normalized_steam_credentials("0123456789abcdef0123456789abcdef", "").is_err());
+        assert!(normalized_steam_credentials("", "76561198000000000").is_err());
     }
 
     #[test]

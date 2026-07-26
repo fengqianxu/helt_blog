@@ -74,6 +74,8 @@ async fn main() -> Result<ExitCode> {
 
     let state = AppState::new(pool, &config).context("failed to build application state")?;
     tokio::spawn(storage_gc::run(state.clone()));
+    tokio::spawn(blog_backend::routes::bangumi::run_scheduler(state.clone()));
+    tokio::spawn(blog_backend::routes::games::run_scheduler(state.clone()));
     let app = build_app(state, &config).context("failed to build router")?;
     let address = SocketAddr::new(config.host, config.port);
     let listener = TcpListener::bind(address)

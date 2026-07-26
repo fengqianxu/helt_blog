@@ -347,9 +347,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "更新当前管理员个人资料",
-        "JSON: email、bilibili_uid；头像资源必须通过 AUTH-14 单独上传",
-        "200 JSON username、email、avatar_url、bilibili_uid",
-        "只更新当前管理员；邮箱与 UID 服务端校验，Bilibili UID 写入 bangumi_sync 配置并从站点设置界面迁入账户中心"
+        "JSON: email、bilibili_uid、steam_web_api_key、steam_id64；头像资源必须通过 AUTH-14 单独上传",
+        "200 JSON 管理员身份、Bilibili UID 与 Steam 绑定配置",
+        "Steam Web API Key 与 SteamID64 必须同时填写或同时留空；凭据变化后清空旧镜像并异步同步"
     ),
     endpoint!(
         "AUTH-14",
@@ -489,13 +489,13 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "追番游戏",
         Get,
         "/api/v1/games",
-        "/api/v1/games?page=1&per_page=10",
+        "/api/v1/games?sort=playtime&page=1&per_page=10",
         Anonymous,
         OK,
-        "读取游戏列表",
-        "Query: status=playing|finished、page/per_page",
-        "200 分页 items，meta 包含 counts{playing,finished}",
-        "按 sort_order/id 排序；非法状态返回 422；没有详情端点"
+        "读取 Steam 游戏进程镜像",
+        "Query: status=playing|finished、sort=recent|playtime、page/per_page",
+        "200 分页 items，包含累计/近两周游玩分钟数和最后游玩时间；meta 包含 total/recent、同步状态",
+        "只读本地同步镜像，不在公开请求内访问 Steam；非法状态或排序返回 422；没有详情端点"
     ),
     // 友链公开域：公开提交只进入待审核状态，审核由下方后台接口完成。
     endpoint!(
@@ -1499,6 +1499,8 @@ pub fn router() -> Router<AppState> {
             !crate::auth::implements(contract.method, contract.path)
                 && !super::assets::implements(contract.method, contract.path)
                 && !super::articles::implements(contract.method, contract.path)
+                && !super::bangumi::implements(contract.method, contract.path)
+                && !super::games::implements(contract.method, contract.path)
                 && !super::llm::implements(contract.method, contract.path)
         })
         .fold(Router::new(), |router, contract| {
@@ -1741,7 +1743,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 15_877_613_657_808_461_984,
+            fingerprint, 1_872_908_587_633_731_006,
             "update only after reviewing the full catalog"
         );
     }
