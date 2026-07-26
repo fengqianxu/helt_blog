@@ -103,7 +103,8 @@ export function AdminAccountCenter({
   const [passwordError, setPasswordError] = useState("");
   const [profileEmail, setProfileEmail] = useState(admin.email);
   const [profileBilibiliUid, setProfileBilibiliUid] = useState(admin.bilibili_uid);
-  const [profileSteamWebApiKey, setProfileSteamWebApiKey] = useState(admin.steam_web_api_key ?? "");
+  const [profileSteamWebApiKey, setProfileSteamWebApiKey] = useState("");
+  const [clearSteamWebApiKey, setClearSteamWebApiKey] = useState(false);
   const [profileSteamId64, setProfileSteamId64] = useState(admin.steam_id64 ?? "");
   const [profileError, setProfileError] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState<number | null>(admin.avatar_asset_id);
@@ -125,9 +126,10 @@ export function AdminAccountCenter({
   const passkeySupported = typeof window !== "undefined"
     && "PublicKeyCredential" in window
     && Boolean(navigator.credentials);
-  const steamWebApiKeyPresent = Boolean(profileSteamWebApiKey.trim());
+  const steamWebApiKeyPresent = !clearSteamWebApiKey
+    && (admin.steam_web_api_key_configured || Boolean(profileSteamWebApiKey.trim()));
   const steamId64Present = Boolean(profileSteamId64.trim());
-  const steamPairComplete = steamWebApiKeyPresent === steamId64Present;
+  const steamPairComplete = clearSteamWebApiKey || steamWebApiKeyPresent === steamId64Present;
 
   const closeDialog = useCallback(() => {
     if (busy) return;
@@ -205,7 +207,8 @@ export function AdminAccountCenter({
       profileOriginal.current = admin;
       setProfileEmail(admin.email);
       setProfileBilibiliUid(admin.bilibili_uid);
-      setProfileSteamWebApiKey(admin.steam_web_api_key ?? "");
+      setProfileSteamWebApiKey("");
+      setClearSteamWebApiKey(false);
       setProfileSteamId64(admin.steam_id64 ?? "");
       setAvatarAssetId(admin.avatar_asset_id);
       setAvatarCrop({
@@ -226,13 +229,19 @@ export function AdminAccountCenter({
       return;
     }
     const steamWebApiKey = profileSteamWebApiKey.trim();
-    const steamId64 = profileSteamId64.trim();
+    const steamId64 = clearSteamWebApiKey ? "" : profileSteamId64.trim();
     if (steamWebApiKey && !/^[a-f\d]{32}$/i.test(steamWebApiKey)) {
       setProfileError("Steam Web API Key 应为 32 位十六进制字符。");
       return;
     }
     if (steamId64 && !/^7656119\d{10}$/.test(steamId64)) {
       setProfileError("请输入有效的 17 位 SteamID64。");
+      return;
+    }
+    if (!clearSteamWebApiKey && !steamPairComplete) {
+      setProfileError(admin.steam_web_api_key_configured
+        ? "保留 Steam Web API Key 时必须保留 SteamID64。"
+        : "首次配置 Steam 同步时必须同时填写 Key 与 SteamID64。");
       return;
     }
     setBusy("profile");
@@ -246,6 +255,7 @@ export function AdminAccountCenter({
           email: profileEmail,
           bilibili_uid: profileBilibiliUid,
           steam_web_api_key: steamWebApiKey,
+          clear_steam_web_api_key: clearSteamWebApiKey,
           steam_id64: steamId64,
           avatar_asset_id: avatarAssetId,
           avatar_crop_x: avatarCrop.x,
@@ -257,6 +267,8 @@ export function AdminAccountCenter({
       const updated = await response.json() as AdminIdentity;
       profileOriginal.current = updated;
       onAdminChange(updated);
+      setProfileSteamWebApiKey("");
+      setClearSteamWebApiKey(false);
       setDialog(null);
       notify("个人资料已更新", "success");
     } catch (error) {
@@ -408,8 +420,9 @@ export function AdminAccountCenter({
             <div className="admin-profile-fields">
               <label>邮箱地址<input type="email" autoComplete="email" maxLength={254} value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} placeholder="name@example.com" /></label>
               <label>B 站 UID<input inputMode="numeric" pattern="[0-9]*" maxLength={20} value={profileBilibiliUid} onChange={(event) => setProfileBilibiliUid(event.target.value)} placeholder="例如：12345678" /></label>
-              <label>Steam Web API Key<input type="password" autoComplete="off" spellCheck={false} maxLength={32} required={steamId64Present} aria-invalid={steamId64Present && !steamWebApiKeyPresent} value={profileSteamWebApiKey} onChange={(event) => setProfileSteamWebApiKey(event.target.value)} placeholder="32 位 Web API Key" /></label>
-              <label>SteamID64<input inputMode="numeric" pattern="[0-9]*" maxLength={17} required={steamWebApiKeyPresent} aria-invalid={steamWebApiKeyPresent && !steamId64Present} value={profileSteamId64} onChange={(event) => setProfileSteamId64(event.target.value)} placeholder="例如：76561198000000000" /></label>
+              <label>Steam Web API Key<input type="password" autoComplete="new-password" spellCheck={false} maxLength={32} disabled={clearSteamWebApiKey} required={steamId64Present && !admin.steam_web_api_key_configured} aria-invalid={steamId64Present && !steamWebApiKeyPresent} value={profileSteamWebApiKey} onChange={(event) => setProfileSteamWebApiKey(event.target.value)} placeholder={admin.steam_web_api_key_configured ? "留空保留已保存的 Key" : "32 位 Web API Key"} /><small>{admin.steam_web_api_key_configured ? `${admin.steam_web_api_key_masked} · 已加密保存` : "尚未配置"}</small></label>
+              <label>SteamID64<input inputMode="numeric" pattern="[0-9]*" maxLength={17} disabled={clearSteamWebApiKey} required={steamWebApiKeyPresent} aria-invalid={steamWebApiKeyPresent && !steamId64Present} value={profileSteamId64} onChange={(event) => setProfileSteamId64(event.target.value)} placeholder="例如：76561198000000000" /></label>
+              <label className="admin-secret-clear"><span><input type="checkbox" checked={clearSteamWebApiKey} onChange={(event) => { setClearSteamWebApiKey(event.target.checked); if (event.target.checked) setProfileSteamWebApiKey(""); }} /> 清除已保存的 Steam 凭据</span><small>只有勾选此项才会删除 Key；Key 输入框留空会保留原值。</small></label>
             </div>
             {profileError && <div className="admin-account-error" role="alert">! {profileError}</div>}
             <footer><button type="button" onClick={closeDialog}>取消</button><button className="admin-primary" disabled={busy === "profile" || !steamPairComplete}>{busy === "profile" ? "正在保存…" : "保存资料"}</button></footer>

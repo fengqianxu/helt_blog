@@ -387,6 +387,7 @@ async fn bangumi_mirror_is_public_paginated_and_filterable() {
     assert_eq!(all["meta"]["counts"]["watching"], 1);
     assert_eq!(all["meta"]["counts"]["finished"], 1);
     assert_eq!(all["meta"]["configured"], true);
+    assert_eq!(all["meta"]["sync_status"], "queued");
     assert_eq!(all["items"][0]["title"], "Watching fixture");
     assert_eq!(all["items"][0]["cover_url"], "/storage/bangumi/covers/1001");
     assert_eq!(
@@ -415,13 +416,30 @@ async fn bangumi_mirror_is_public_paginated_and_filterable() {
 #[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
 async fn steam_game_mirror_is_public_paginated_and_reports_progress() {
     let database = TestDatabase::create().await;
+    let keyring = LlmKeyring::new(
+        2,
+        CURRENT_LLM_SECRET,
+        Some((1, PREVIOUS_LLM_SECRET)),
+    )
+    .expect("Steam test keyring");
+    let encrypted_steam_key = keyring
+        .encrypt("0123456789ABCDEF0123456789ABCDEF")
+        .expect("encrypt Steam fixture key");
     sqlx::query(
         "UPDATE site_settings
          SET settings = jsonb_set(
-             jsonb_set(settings, '{steam_sync,web_api_key}', to_jsonb('0123456789ABCDEF0123456789ABCDEF'::text), true),
-             '{steam_sync,steam_id64}', to_jsonb('76561198000000000'::text), true
-         )",
+                 settings #- '{steam_sync,web_api_key}'::text[],
+                 '{steam_sync,steam_id64}',
+                 to_jsonb('76561198000000000'::text),
+                 true
+             ),
+             steam_web_api_key_ciphertext = $1,
+             steam_web_api_key_nonce = $2,
+             steam_encryption_key_version = $3",
     )
+    .bind(encrypted_steam_key.ciphertext)
+    .bind(encrypted_steam_key.nonce)
+    .bind(encrypted_steam_key.key_version)
     .execute(&database.pool)
     .await
     .expect("configure Steam credentials");
@@ -445,6 +463,7 @@ async fn steam_game_mirror_is_public_paginated_and_reports_progress() {
     assert_eq!(all["meta"]["counts"]["total"], 2);
     assert_eq!(all["meta"]["counts"]["recent"], 1);
     assert_eq!(all["meta"]["configured"], true);
+    assert_eq!(all["meta"]["sync_status"], "queued");
     assert_eq!(all["items"][0]["title"], "Recent fixture");
     assert_eq!(all["items"][0]["playtime_2weeks_minutes"], 90);
     assert_eq!(all["items"][0]["playtime_forever_minutes"], 750);

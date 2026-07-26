@@ -118,7 +118,8 @@ docker compose logs backend | grep "initial administrator"
 docker compose exec backend blog-admin reset-password
 ```
 
-LLM Key 加密密钥使用显式版本。轮换时先保留旧密钥窗口，再原子重加密数据库：
+LLM 与 Steam Web API Key 共用独立于认证密钥的加密密钥环，并使用显式版本。
+轮换时先保留旧密钥窗口，再原子重加密数据库中的两类密钥：
 
 ```dotenv
 LLM_ENCRYPTION_KEY=新的至少32字符随机值
@@ -132,13 +133,30 @@ docker compose up -d backend
 docker compose exec backend blog-admin rotate-llm-encryption-key
 ```
 
-命令成功后可清空两个 `LLM_ENCRYPTION_PREVIOUS_*` 变量并重建后端。曾依赖旧版
+命令成功后可清空两个 `LLM_ENCRYPTION_PREVIOUS_*` 变量并重建后端。Steam Key
+只以 XChaCha20-Poly1305 密文保存，管理员接口只返回掩码；资料表单中的空 Key
+表示保留原值，必须显式勾选清除才会删除。曾依赖旧版
 JWT 回退的部署，首次拆分密钥时应把原 `AUTH_JWT_SECRET` 作为版本 1 的 previous
 key，把独立 LLM 密钥设为版本 2 后执行同一命令。
 
 生产环境默认仅允许 HTTPS 公网 LLM 地址。确需访问私有 LLM 时，只在
 `LLM_PRIVATE_HOST_ALLOWLIST` 中填写逗号分隔的精确域名或 IP；该配置会显式允许
 对应私网地址（以及该主机的 HTTP），请保持最小范围。
+
+### 已有卷的 0015 校验和修复
+
+早期部署可能记录了旧版 `0015_bangumi_sync_details.sql` 校验和。只有在启动日志明确
+出现 `migration 15 was previously applied but has been modified` 时，才从仓库根目录
+执行：
+
+```powershell
+Get-Content -Raw scripts/repair-migration-0015.sql |
+  docker compose exec -T postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+docker compose up -d --build
+```
+
+修复脚本会在事务中锁定迁移记录，核对已知旧校验和、两列的类型/默认值以及两条
+约束定义；任一结构不符都会回滚，禁止用它掩盖真实的 schema 分叉。脚本可重复执行。
 
 ### 5. 登录评论控制台
 

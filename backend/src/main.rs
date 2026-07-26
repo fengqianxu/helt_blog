@@ -5,7 +5,9 @@ use blog_backend::{
     admin, build_app,
     config::Config,
     db,
-    llm_crypto::{LlmKeyring, rotate_llm_encryption_keys},
+    llm_crypto::{
+        LlmKeyring, migrate_legacy_steam_web_api_key, rotate_llm_encryption_keys,
+    },
     state::AppState,
     storage_gc, telemetry,
 };
@@ -38,27 +40,33 @@ async fn main() -> Result<ExitCode> {
             .await
             .context("database migration failed")?;
     }
+    let keyring = LlmKeyring::new(
+        config.llm_encryption_key_version,
+        &config.llm_encryption_secret,
+        config
+            .llm_encryption_previous_key_version
+            .zip(config.llm_encryption_previous_secret.as_deref()),
+    )
+    .context("invalid encryption keyring")?;
+    if migrate_legacy_steam_web_api_key(&pool, &keyring)
+        .await
+        .context("legacy Steam Web API key encryption failed")?
+    {
+        info!("legacy Steam Web API key encrypted and plaintext removed");
+    }
 
     if command.as_deref() == Some("reset-password") {
         admin::reset_password(&pool, &config).await?;
         return Ok(ExitCode::SUCCESS);
     }
     if command.as_deref() == Some("rotate-llm-encryption-key") {
-        let keyring = LlmKeyring::new(
-            config.llm_encryption_key_version,
-            &config.llm_encryption_secret,
-            config
-                .llm_encryption_previous_key_version
-                .zip(config.llm_encryption_previous_secret.as_deref()),
-        )
-        .context("invalid LLM encryption keyring")?;
         let rotated = rotate_llm_encryption_keys(&pool, &keyring)
             .await
-            .context("LLM encryption key rotation failed")?;
+            .context("managed encryption key rotation failed")?;
         info!(
             rotated,
             current_version = keyring.current_version(),
-            "LLM encryption key rotation complete"
+            "LLM and Steam encryption key rotation complete"
         );
         return Ok(ExitCode::SUCCESS);
     }

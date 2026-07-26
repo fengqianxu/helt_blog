@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import MDEditor from "@uiw/react-md-editor";
 import { diffLines } from "diff";
 import "@uiw/react-md-editor/markdown-editor.css";
 import "@uiw/react-markdown-preview/markdown.css";
@@ -109,67 +109,6 @@ type ArticleDetailPayload = {
   allow_comment: boolean;
 };
 
-type BangumiStatus = "watching" | "finished";
-type BangumiItem = {
-  id: number;
-  bilibili_media_id: number;
-  season_id: number | null;
-  title: string;
-  cover_url: string | null;
-  status: BangumiStatus;
-  ep_current: number;
-  ep_total: number;
-  synced_at: string;
-  season_type: string;
-  summary: string;
-  score: number | null;
-  url: string;
-  latest_episode: string;
-};
-type BangumiListPayload = {
-  page: number;
-  per_page: number;
-  total: number;
-  items: BangumiItem[];
-  meta: {
-    counts: Record<BangumiStatus, number>;
-    synced_at: string | null;
-    configured: boolean;
-  };
-};
-
-type SteamGameItem = {
-  id: number;
-  steam_app_id: number;
-  title: string;
-  status: "playing" | "finished";
-  cover_url: string;
-  icon_url: string | null;
-  playtime_2weeks_minutes: number;
-  playtime_forever_minutes: number;
-  playtime_windows_minutes: number;
-  playtime_mac_minutes: number;
-  playtime_linux_minutes: number;
-  last_played_at: string | null;
-  synced_at: string;
-  steam_url: string;
-};
-type GameListPayload = {
-  page: number;
-  per_page: number;
-  total: number;
-  items: SteamGameItem[];
-  meta: {
-    counts: { total: number; recent: number };
-    synced_at: string | null;
-    configured: boolean;
-    sync_status: "ok" | "queued" | "disabled" | "error";
-  };
-};
-
-const BANGUMI_PAGE_SIZE = 8;
-const GAME_PAGE_SIZE = 8;
-
 const ARTALK_SERVER = "/artalk";
 const ARTALK_SITE = "helt.";
 const articleCommentKey = (slug: string) => `/posts/${slug}`;
@@ -200,6 +139,10 @@ const articleTime = (post: Post) => `${Math.max(1, post.read_minutes)} min`;
 const navItems = [
   ["/", "首页"], ["/archives", "归档"], ["/moments", "时间轴"], ["/anime", "追番"], ["/about", "关于"], ["/friends", "友链"],
 ];
+const MediaPage = dynamic(() => import("./media/MediaPage"), {
+  loading: () => <main className="page-wrap page-enter"><div className="media-empty"><b>SYNC</b><p>正在加载追番与游戏页面…</p></div></main>,
+});
+const MDEditor = dynamic(() => import("@uiw/react-md-editor/nohighlight"), { ssr: false });
 
 export function BlogApp() {
   const pathname = usePathname() || "/";
@@ -279,7 +222,7 @@ export function BlogApp() {
   }
   else if (pathname === "/archives") page = <ArchivesPage />;
   else if (pathname === "/moments") page = <MomentsPage />;
-  else if (pathname === "/anime") page = <AnimePage />;
+  else if (pathname === "/anime") page = <MediaPage />;
   else if (pathname === "/about") page = <AboutPage notify={notify} />;
   else if (pathname === "/friends") page = <FriendsPage notify={notify} />;
   else page = <NotFound />;
@@ -622,173 +565,6 @@ function MomentsPage() {
   const [liked, setLiked] = useState<number[]>([]);
   const moments = [{ date: "07.21", text: "新博客的开屏动画调了一晚上，语音淡入的时机终于对了。就是这个感觉。", mood: "开发日志" }, { date: "07.14", text: "周末去了漫展，战利品合影。", mood: "日常" }, { date: "07.02", text: "博客运行满 2000 天了。谢谢每一个来过的人。", mood: "纪念" }];
   return <main className="page-wrap narrow page-enter"><PageHeading title="时间轴" subtitle="MOMENTS · 碎碎念" /><div className="moments">{moments.map((m, i) => <article key={m.date}><div className="moment-date"><b>{m.date}</b><span>2026</span></div><div className="moment-card"><span className="tag">{m.mood}</span><p>{m.text}</p>{i === 1 && <div className="photo-placeholder"><span>COMIC MARKET</span><b>MEMORY / 07.14</b></div>}<div className="moment-actions"><button className={liked.includes(i) ? "liked" : ""} onClick={() => setLiked((items) => items.includes(i) ? items.filter((x) => x !== i) : [...items, i])}>{liked.includes(i) ? "♥" : "♡"} {18 - i * 3 + (liked.includes(i) ? 1 : 0)}</button></div></div></article>)}</div></main>;
-}
-
-function AnimePage() {
-  const [tab, setTab] = useState<"anime" | "games">("anime");
-  const [animePage, setAnimePage] = useState(1);
-  const [gamePage, setGamePage] = useState(1);
-  const [gameSort, setGameSort] = useState<"recent" | "playtime">("recent");
-  const [gameRange, setGameRange] = useState<"all" | "recent">("all");
-  const [bangumi, setBangumi] = useState<BangumiItem[]>([]);
-  const [bangumiTotal, setBangumiTotal] = useState(0);
-  const [bangumiMeta, setBangumiMeta] = useState<BangumiListPayload["meta"]>({
-    counts: { watching: 0, finished: 0 },
-    synced_at: null,
-    configured: true,
-  });
-  const [games, setGames] = useState<SteamGameItem[]>([]);
-  const [gameTotal, setGameTotal] = useState(0);
-  const [gameMeta, setGameMeta] = useState<GameListPayload["meta"]>({
-    counts: { total: 0, recent: 0 },
-    synced_at: null,
-    configured: false,
-    sync_status: "disabled",
-  });
-  const [bangumiState, setBangumiState] = useState<"loading" | "ready" | "error">("loading");
-  const [gameState, setGameState] = useState<"loading" | "ready" | "error">("loading");
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      setBangumiState("loading");
-      const query = new URLSearchParams({
-        page: String(animePage),
-        per_page: String(BANGUMI_PAGE_SIZE),
-      });
-      const response = await fetch(`/api/v1/bangumi?${query.toString()}`, { signal: controller.signal });
-      if (!response.ok) throw new Error("追番数据加载失败");
-      const payload = await response.json() as BangumiListPayload;
-      if (controller.signal.aborted) return;
-      const pageCount = Math.max(1, Math.ceil(payload.total / payload.per_page));
-      setBangumiMeta(payload.meta);
-      setBangumiTotal(payload.total);
-      if (animePage > pageCount) {
-        setAnimePage(pageCount);
-        return;
-      }
-      setBangumi(payload.items);
-      setBangumiState("ready");
-    };
-    void load().catch((error: unknown) => {
-      if (!controller.signal.aborted && error instanceof Error && error.name !== "AbortError") {
-        setBangumiState("error");
-      }
-    });
-    return () => controller.abort();
-  }, [animePage]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      setGameState("loading");
-      const query = new URLSearchParams({
-        page: String(gamePage),
-        per_page: String(GAME_PAGE_SIZE),
-        sort: gameSort,
-      });
-      if (gameRange === "recent") query.set("status", "playing");
-      const response = await fetch(`/api/v1/games?${query.toString()}`, { signal: controller.signal });
-      if (!response.ok) throw new Error("Steam 游戏数据加载失败");
-      const payload = await response.json() as GameListPayload;
-      if (controller.signal.aborted) return;
-      const pageCount = Math.max(1, Math.ceil(payload.total / payload.per_page));
-      setGameMeta(payload.meta);
-      setGameTotal(payload.total);
-      if (gamePage > pageCount) {
-        setGamePage(pageCount);
-        return;
-      }
-      setGames(payload.items);
-      setGameState("ready");
-    };
-    void load().catch((error: unknown) => {
-      if (!controller.signal.aborted && error instanceof Error && error.name !== "AbortError") {
-        setGameState("error");
-      }
-    });
-    return () => controller.abort();
-  }, [gamePage, gameRange, gameSort]);
-
-  const animePageCount = Math.max(1, Math.ceil(bangumiTotal / BANGUMI_PAGE_SIZE));
-  const gamePageCount = Math.max(1, Math.ceil(gameTotal / GAME_PAGE_SIZE));
-  const pageOptions = (current: number, count: number) => {
-    const visible = Array.from(new Set([1, current - 1, current, current + 1, count]))
-      .filter((item) => item >= 1 && item <= count)
-      .sort((left, right) => left - right);
-    const options: Array<number | string> = [];
-    visible.forEach((item, index) => {
-      if (index > 0 && item - visible[index - 1] > 1) options.push(`ellipsis-${item}`);
-      options.push(item);
-    });
-    return options;
-  };
-  const animeProgress = (item: BangumiItem) => item.ep_current > 0
-    ? `${item.ep_current}${item.ep_total > 0 ? ` / ${item.ep_total}` : ""} 话`
-    : item.latest_episode || (item.ep_total > 0 ? `全 ${item.ep_total} 话` : "暂无进度");
-  const playtime = (minutes: number) => {
-    if (minutes <= 0) return "尚未游玩";
-    if (minutes < 60) return `${minutes} 分钟`;
-    const hours = minutes / 60;
-    return `${hours < 100 ? hours.toFixed(1) : Math.round(hours)} 小时`;
-  };
-  const lastPlayed = (value: string | null) => value
-    ? new Date(value).toLocaleDateString("zh-CN")
-    : "暂无记录";
-  const subtitle = `在看 ${bangumiMeta.counts.watching} · 看完 ${bangumiMeta.counts.finished} · 最近在玩 ${gameMeta.counts.recent}`;
-  const changePage = (kind: "anime" | "game", nextPage: number) => {
-    const pageCount = kind === "anime" ? animePageCount : gamePageCount;
-    const target = Math.min(pageCount, Math.max(1, nextPage));
-    if (kind === "anime") setAnimePage(target);
-    else setGamePage(target);
-    document.querySelector(".bangumi-filters")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
-  return (
-    <main className="page-wrap page-enter">
-      <PageHeading title="追番 · 游戏" subtitle={subtitle} />
-      <div className="view-tabs" role="tablist" aria-label="记录类型">
-        <button role="tab" aria-selected={tab === "anime"} className={tab === "anime" ? "active" : ""} onClick={() => setTab("anime")}>追番记录</button>
-        <button role="tab" aria-selected={tab === "games"} className={tab === "games" ? "active" : ""} onClick={() => setTab("games")}>游戏进程</button>
-      </div>
-
-      {tab === "games" && (
-        <div className="bangumi-filters" aria-label="Steam 游戏筛选、排序与同步状态">
-          <button className={cx("game-count", gameRange === "all" && "active")} aria-pressed={gameRange === "all"} onClick={() => { setGameRange("all"); setGamePage(1); }}>游戏库 {gameMeta.counts.total}</button>
-          <button className={cx("game-count recent", gameRange === "recent" && "active")} aria-pressed={gameRange === "recent"} onClick={() => { setGameRange("recent"); setGamePage(1); }}>最近两周 {gameMeta.counts.recent}</button>
-          <label className="game-sort-control">排序<select aria-label="游戏排序" value={gameSort} onChange={(event) => { setGameSort(event.target.value as "recent" | "playtime"); setGamePage(1); }}><option value="recent">最近游玩</option><option value="playtime">累计时长</option></select></label>
-          {gameMeta.sync_status === "error" && gameTotal > 0 && <span className="sync-warning">同步异常，正在展示上次数据</span>}
-          {gameMeta.synced_at && <time dateTime={gameMeta.synced_at}>同步于 {new Date(gameMeta.synced_at).toLocaleDateString("zh-CN")}</time>}
-        </div>
-      )}
-
-      {tab === "anime" ? (
-        bangumiState === "loading" ? <div className="media-empty"><b>SYNC</b><p>正在读取第 {animePage} 页追番记录…</p></div>
-          : bangumiState === "error" ? <div className="media-empty error"><b>OFFLINE</b><p>追番数据暂时无法读取，请稍后再试。</p></div>
-            : !bangumiMeta.configured ? <div className="media-empty"><b>UID</b><p>请先在后台个人资料中填写 B 站 UID，保存后会自动开始同步。</p></div>
-              : bangumi.length === 0 ? <div className="media-empty"><b>EMPTY</b><p>暂时没有公开的追番记录。</p></div>
-                : <>
-                  <div className="media-grid">
-                    {bangumi.map((item) => <a className="media-card" key={item.bilibili_media_id} href={item.url} target="_blank" rel="noreferrer"><span className={cx("media-cover", item.cover_url && "has-image")}>{item.cover_url && <Image src={item.cover_url} fill sizes="(max-width: 720px) 112px, 150px" unoptimized alt="" />}<span>{item.season_type || "ANIME"}</span></span><span className="media-copy"><h2>{item.title}</h2><p>{item.summary || `${animeProgress(item)} · 数据来自 Bilibili`}</p>{item.score !== null && <span className="score">★ {item.score.toFixed(1)}</span>}<small>前往 Bilibili 官网 ↗</small></span></a>)}
-                  </div>
-                  {animePageCount > 1 && <><nav className="pagination bangumi-pagination" aria-label="追番分页"><button onClick={() => changePage("anime", animePage - 1)} disabled={animePage === 1} aria-label="上一页">◀</button>{pageOptions(animePage, animePageCount).map((item) => typeof item === "number" ? <button key={item} className={animePage === item ? "current" : ""} onClick={() => changePage("anime", item)} aria-current={animePage === item ? "page" : undefined} aria-label={`第 ${item} 页`}>{item}</button> : <span className="pagination-ellipsis" key={item} aria-hidden="true">…</span>)}<button onClick={() => changePage("anime", animePage + 1)} disabled={animePage === animePageCount} aria-label="下一页">▶</button></nav><p className="bangumi-page-summary" aria-live="polite">第 {animePage} / {animePageCount} 页 · 共 {bangumiTotal} 部</p></>}
-                </>
-      ) : (
-        gameState === "loading" ? <div className="media-empty"><b>STEAM</b><p>正在读取第 {gamePage} 页游戏进程…</p></div>
-          : gameState === "error" ? <div className="media-empty error"><b>OFFLINE</b><p>Steam 游戏数据暂时无法读取，请稍后再试。</p></div>
-            : !gameMeta.configured ? <div className="media-empty"><b>STEAM</b><p>请先在后台个人资料中同时填写 Steam Web API Key 与 SteamID64。</p></div>
-              : games.length === 0 && gameMeta.sync_status === "queued" ? <div className="media-empty"><b>SYNC</b><p>Steam 游戏库正在首次同步，请稍后刷新。</p></div>
-                : games.length === 0 && gameMeta.sync_status === "error" ? <div className="media-empty error"><b>PRIVATE</b><p>同步失败，请检查 API Key、SteamID64，并确认 Steam“游戏详情”已公开。</p></div>
-                  : games.length === 0 ? <div className="media-empty"><b>EMPTY</b><p>Steam 暂未返回可公开展示的游戏记录。</p></div>
-                    : <>
-                      <div className="media-grid">
-                        {games.map((item) => <a className="media-card game-card" key={item.steam_app_id} href={item.steam_url} target="_blank" rel="noreferrer"><span className="media-cover has-image steam-cover"><Image src={item.cover_url} fill sizes="(max-width: 720px) 112px, 150px" unoptimized alt="" onError={(event) => { if (item.icon_url && event.currentTarget.src !== item.icon_url) event.currentTarget.src = item.icon_url; }} /><span>STEAM</span></span><span className="media-copy"><span className={cx("status", item.playtime_2weeks_minutes === 0 && "finished")}>{item.playtime_2weeks_minutes > 0 ? "● 最近在玩" : "◆ 游戏库"}</span><h2>{item.title}</h2><p>累计 {playtime(item.playtime_forever_minutes)}{item.playtime_2weeks_minutes > 0 ? ` · 最近两周 ${playtime(item.playtime_2weeks_minutes)}` : ""}</p><span className="game-hours">最后游玩 {lastPlayed(item.last_played_at)}</span><small>前往 Steam 官网 ↗</small></span></a>)}
-                      </div>
-                      {gamePageCount > 1 && <><nav className="pagination bangumi-pagination" aria-label="游戏分页"><button onClick={() => changePage("game", gamePage - 1)} disabled={gamePage === 1} aria-label="上一页">◀</button>{pageOptions(gamePage, gamePageCount).map((item) => typeof item === "number" ? <button key={item} className={gamePage === item ? "current" : ""} onClick={() => changePage("game", item)} aria-current={gamePage === item ? "page" : undefined} aria-label={`第 ${item} 页`}>{item}</button> : <span className="pagination-ellipsis" key={item} aria-hidden="true">…</span>)}<button onClick={() => changePage("game", gamePage + 1)} disabled={gamePage === gamePageCount} aria-label="下一页">▶</button></nav><p className="bangumi-page-summary" aria-live="polite">第 {gamePage} / {gamePageCount} 页 · 共 {gameTotal} 款</p></>}
-                    </>
-      )}
-    </main>
-  );
 }
 
 function AboutPage({ notify }: { notify: Notify }) {

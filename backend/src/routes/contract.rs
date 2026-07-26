@@ -347,9 +347,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "更新当前管理员个人资料",
-        "JSON: email、bilibili_uid、steam_web_api_key、steam_id64；头像资源必须通过 AUTH-14 单独上传",
-        "200 JSON 管理员身份、Bilibili UID 与 Steam 绑定配置",
-        "Steam Web API Key 与 SteamID64 必须同时填写或同时留空；凭据变化后清空旧镜像并异步同步"
+        "JSON: email、bilibili_uid、steam_web_api_key?、clear_steam_web_api_key?、steam_id64；头像资源必须通过 AUTH-14 单独上传",
+        "200 JSON 管理员身份、Bilibili UID、SteamID64、steam_web_api_key_configured 与掩码",
+        "Key 加密保存且不回显；空 Key 保留原值，显式 clear_steam_web_api_key 才删除；凭据变化后清空旧镜像并异步同步"
     ),
     endpoint!(
         "AUTH-14",
@@ -481,7 +481,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取 Bilibili 追番镜像",
         "Query: status=watching|finished、page/per_page",
-        "200 分页 items，meta 包含 counts{watching,finished} 和 synced_at",
+        "200 分页 items，meta 包含 counts{watching,finished}、synced_at 和同步状态",
         "只读本地同步镜像，不在请求内访问 Bilibili；非法状态返回 422"
     ),
     endpoint!(
@@ -493,7 +493,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         Anonymous,
         OK,
         "读取 Steam 游戏进程镜像",
-        "Query: status=playing|finished、sort=recent|playtime、page/per_page",
+        "Query: status=playing|finished|shelved、recent?、sort=recent|playtime、page/per_page",
         "200 分页 items，包含累计/近两周游玩分钟数和最后游玩时间；meta 包含 total/recent、同步状态",
         "只读本地同步镜像，不在公开请求内访问 Steam；非法状态或排序返回 422；没有详情端点"
     ),
@@ -876,72 +876,6 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "路径 id",
         "204 无响应体",
         "事务删除点赞和素材引用；素材本体保留；不存在返回 404"
-    ),
-    // 后台游戏：补齐游戏条目的网页维护与排序能力。
-    endpoint!(
-        "ADMIN-GAME-01",
-        "后台游戏",
-        Get,
-        "/api/v1/admin/games",
-        "/api/v1/admin/games?page=1&per_page=10",
-        AdminJwt,
-        OK,
-        "分页读取全部游戏",
-        "Query: page/per_page、status?、search?",
-        "200 分页 items，包含 cover_asset、status、play_hours、comment、sort_order",
-        "后台可见 playing/finished/shelved 全状态；按 sort_order/id 排序"
-    ),
-    endpoint!(
-        "ADMIN-GAME-02",
-        "后台游戏",
-        Post,
-        "/api/v1/admin/games",
-        "/api/v1/admin/games",
-        AdminJwt,
-        CREATED,
-        "新增游戏",
-        "JSON: title、cover_asset_id?、status、play_hours、comment?",
-        "201 返回完整游戏",
-        "封面必须是图片素材；追加到排序末尾；时长不得为负"
-    ),
-    endpoint!(
-        "ADMIN-GAME-03",
-        "后台游戏",
-        Put,
-        "/api/v1/admin/games/{id}",
-        "/api/v1/admin/games/1",
-        AdminJwt,
-        OK,
-        "编辑游戏与进度",
-        "路径 id；JSON 与创建字段同形",
-        "200 返回更新后的完整游戏",
-        "全量覆盖可编辑字段；封面引用原子替换；不存在返回 404"
-    ),
-    endpoint!(
-        "ADMIN-GAME-04",
-        "后台游戏",
-        Delete,
-        "/api/v1/admin/games/{id}",
-        "/api/v1/admin/games/1",
-        AdminJwt,
-        NO_CONTENT,
-        "删除游戏",
-        "路径 id",
-        "204 无响应体",
-        "删除记录和素材引用并压缩排序；素材本体保留；不存在返回 404"
-    ),
-    endpoint!(
-        "ADMIN-GAME-05",
-        "后台游戏",
-        Put,
-        "/api/v1/admin/games/order",
-        "/api/v1/admin/games/order",
-        AdminJwt,
-        OK,
-        "批量调整游戏顺序",
-        "JSON: order 为全部游戏 id 的无重复数组",
-        "200 JSON items 为新顺序",
-        "完整覆盖当前集合并事务更新连续 sort_order；缺失或重复 id 返回 422"
     ),
     // 后台友链：公开申请进入 pending，后台完成审核、编辑、排序和移除。
     endpoint!(
@@ -1627,8 +1561,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_98_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 98);
+    fn catalog_contains_93_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 93);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1696,7 +1630,7 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 79);
+        assert_eq!(admin_count, 74);
         assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 19);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
@@ -1743,7 +1677,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 1_872_908_587_633_731_006,
+            fingerprint, 12_010_064_267_420_805_291,
             "update only after reviewing the full catalog"
         );
     }

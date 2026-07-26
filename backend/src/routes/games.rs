@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use axum::{
@@ -36,6 +36,7 @@ pub fn implements(method: HttpMethod, path: &str) -> bool {
 #[derive(Debug, Deserialize)]
 struct ListQuery {
     status: Option<String>,
+    recent: Option<bool>,
     sort: Option<String>,
     page: Option<i64>,
     per_page: Option<i64>,
@@ -106,17 +107,19 @@ async fn list_games(
         None | Some("") => None,
         Some("playing") => Some("playing"),
         Some("finished") => Some("finished"),
+        Some("shelved") => Some("shelved"),
         Some(_) => {
-            return Err(GameError::Validation("游戏状态只能是 playing 或 finished"));
+            return Err(GameError::Validation(
+                "游戏状态只能是 playing、finished 或 shelved",
+            ));
         }
     };
+    let recent_only = query.recent.unwrap_or(false);
     let sort = match query.sort.as_deref() {
         None | Some("") | Some("recent") => "recent",
         Some("playtime") => "playtime",
         Some(_) => {
-            return Err(GameError::Validation(
-                "排序方式只能是 recent 或 playtime",
-            ));
+            return Err(GameError::Validation("排序方式只能是 recent 或 playtime"));
         }
     };
     let page = query.page.unwrap_or(1);
@@ -127,6 +130,7 @@ async fn list_games(
     if !(1..=MAX_PUBLIC_PAGE_SIZE).contains(&per_page) {
         return Err(GameError::Validation("per_page 必须在 1 到 100 之间"));
     }
+    let offset = pagination_offset(page, per_page).ok_or(GameError::Validation("page 数值过大"))?;
 
     let (total, library_total, recent, synced_at, configured, sync_status): (
         i64,
@@ -137,19 +141,23 @@ async fn list_games(
         String,
     ) = sqlx::query_as(
         "SELECT
-             COUNT(*) FILTER (WHERE steam_app_id IS NOT NULL AND ($1::text IS NULL OR status = $1)),
+             COUNT(*) FILTER (
+                 WHERE steam_app_id IS NOT NULL
+                   AND ($1::text IS NULL OR status = $1)
+                   AND ($2::bool IS NOT TRUE OR playtime_2weeks_minutes > 0)
+             ),
              COUNT(*) FILTER (WHERE steam_app_id IS NOT NULL),
              COUNT(*) FILTER (WHERE steam_app_id IS NOT NULL AND playtime_2weeks_minutes > 0),
              MAX(synced_at) FILTER (WHERE steam_app_id IS NOT NULL),
              COALESCE((
-                 SELECT btrim(settings #>> '{steam_sync,web_api_key}') <> ''
-                    AND btrim(settings #>> '{steam_sync,steam_id64}') <> ''
+                 SELECT steam_web_api_key_ciphertext IS NOT NULL
+                    AND COALESCE(btrim(settings #>> '{steam_sync,steam_id64}'), '') <> ''
                  FROM site_settings WHERE id = 1
              ), false),
              COALESCE((
                  SELECT CASE
-                     WHEN btrim(settings #>> '{steam_sync,web_api_key}') = ''
-                       OR btrim(settings #>> '{steam_sync,steam_id64}') = ''
+                     WHEN steam_web_api_key_ciphertext IS NULL
+                       OR COALESCE(btrim(settings #>> '{steam_sync,steam_id64}'), '') = ''
                          THEN 'disabled'
                      WHEN settings #>> '{steam_sync,last_status}' IN ('ok','queued','disabled')
                          THEN settings #>> '{steam_sync,last_status}'
@@ -162,6 +170,7 @@ async fn list_games(
          FROM games",
     )
     .bind(status)
+    .bind(recent_only)
     .fetch_one(state.pool())
     .await?;
 
@@ -171,20 +180,23 @@ async fn list_games(
                 playtime_windows_minutes, playtime_mac_minutes, playtime_linux_minutes,
                 last_played_at, synced_at
          FROM games
-         WHERE steam_app_id IS NOT NULL AND ($1::text IS NULL OR status = $1)
+         WHERE steam_app_id IS NOT NULL
+           AND ($1::text IS NULL OR status = $1)
+           AND ($2::bool IS NOT TRUE OR playtime_2weeks_minutes > 0)
          ORDER BY
-             CASE WHEN $2::text = 'playtime' THEN playtime_forever_minutes END DESC,
-             CASE WHEN $2::text = 'recent' AND playtime_2weeks_minutes > 0 THEN 0 ELSE 1 END,
-             CASE WHEN $2::text = 'recent' THEN playtime_2weeks_minutes END DESC,
-             CASE WHEN $2::text = 'recent' THEN last_played_at END DESC NULLS LAST,
+             CASE WHEN $3::text = 'playtime' THEN playtime_forever_minutes END DESC,
+             CASE WHEN $3::text = 'recent' AND playtime_2weeks_minutes > 0 THEN 0 ELSE 1 END,
+             CASE WHEN $3::text = 'recent' THEN playtime_2weeks_minutes END DESC,
+             CASE WHEN $3::text = 'recent' THEN last_played_at END DESC NULLS LAST,
              playtime_forever_minutes DESC,
              steam_app_id
-         LIMIT $3 OFFSET $4",
+         LIMIT $4 OFFSET $5",
     )
     .bind(status)
+    .bind(recent_only)
     .bind(sort)
     .bind(per_page)
-    .bind((page - 1) * per_page)
+    .bind(offset)
     .fetch_all(state.pool())
     .await?;
 
@@ -203,6 +215,10 @@ async fn list_games(
             sync_status,
         },
     }))
+}
+
+fn pagination_offset(page: i64, per_page: i64) -> Option<i64> {
+    (page - 1).checked_mul(per_page)
 }
 
 fn game_item(row: GameRow) -> GameItem {
@@ -236,24 +252,60 @@ fn game_item(row: GameRow) -> GameItem {
 struct SteamCredentials {
     web_api_key: String,
     steam_id64: String,
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    key_version: i32,
 }
 
-async fn configured_credentials(state: &AppState) -> Result<Option<SteamCredentials>, sqlx::Error> {
-    let credentials: Option<(String, String)> = sqlx::query_as(
+#[derive(Debug, FromRow)]
+struct SteamCredentialRow {
+    steam_web_api_key_ciphertext: Option<Vec<u8>>,
+    steam_web_api_key_nonce: Option<Vec<u8>>,
+    steam_encryption_key_version: Option<i32>,
+    steam_id64: String,
+}
+
+async fn configured_credentials(state: &AppState) -> Result<Option<SteamCredentials>> {
+    let credentials = sqlx::query_as::<_, SteamCredentialRow>(
         "SELECT
-             COALESCE(settings #>> '{steam_sync,web_api_key}', ''),
-             COALESCE(settings #>> '{steam_sync,steam_id64}', '')
+             steam_web_api_key_ciphertext,
+             steam_web_api_key_nonce,
+             steam_encryption_key_version,
+             COALESCE(settings #>> '{steam_sync,steam_id64}', '') AS steam_id64
          FROM site_settings WHERE id = 1",
     )
     .fetch_optional(state.pool())
     .await?;
-    Ok(credentials.and_then(|(web_api_key, steam_id64)| {
-        let web_api_key = web_api_key.trim().to_owned();
-        let steam_id64 = steam_id64.trim().to_owned();
-        (!web_api_key.is_empty() && !steam_id64.is_empty()).then_some(SteamCredentials {
-            web_api_key,
-            steam_id64,
-        })
+    let Some(credentials) = credentials else {
+        return Ok(None);
+    };
+    let Some(web_api_key) = state
+        .llm_keyring()
+        .decrypt_optional(
+            credentials.steam_encryption_key_version,
+            credentials.steam_web_api_key_ciphertext.as_deref(),
+            credentials.steam_web_api_key_nonce.as_deref(),
+        )
+        .context("Steam Web API key could not be decrypted")?
+    else {
+        return Ok(None);
+    };
+    let steam_id64 = credentials.steam_id64.trim().to_owned();
+    if web_api_key.trim().is_empty() || steam_id64.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(SteamCredentials {
+        web_api_key,
+        steam_id64,
+        ciphertext: credentials
+            .steam_web_api_key_ciphertext
+            .expect("decrypted Steam key has ciphertext"),
+        nonce: credentials
+            .steam_web_api_key_nonce
+            .expect("decrypted Steam key has nonce"),
+        key_version: credentials
+            .steam_encryption_key_version
+            .expect("decrypted Steam key has a version"),
     }))
 }
 
@@ -368,10 +420,28 @@ async fn fetch_owned_games(
         .json::<SteamEnvelope>()
         .await
         .context("Steam 游戏库响应格式无效")?;
-    if envelope.response.game_count.is_none() && envelope.response.games.is_none() {
-        bail!("Steam 未返回游戏库，请确认“游戏详情”已设为公开");
+    validated_owned_games(envelope.response)
+}
+
+fn validated_owned_games(response: SteamOwnedGames) -> Result<Vec<SteamGame>> {
+    let declared_count = response
+        .game_count
+        .context("Steam 未返回游戏数量，请确认“游戏详情”已设为公开")?;
+    if declared_count < 0 {
+        bail!("Steam 返回了无效的游戏数量");
     }
-    Ok(envelope.response.games.unwrap_or_default())
+    let games = response.games.unwrap_or_default();
+    if games.len() as i64 != declared_count {
+        bail!(
+            "Steam 游戏库不完整：声明 {declared_count} 款，实际返回 {} 款",
+            games.len()
+        );
+    }
+    let mut app_ids = HashSet::with_capacity(games.len());
+    if games.iter().any(|game| !app_ids.insert(game.appid)) {
+        bail!("Steam 游戏库返回了重复的 AppID");
+    }
+    Ok(games)
 }
 
 async fn sync_configured(state: &AppState) -> Result<()> {
@@ -391,22 +461,26 @@ async fn sync_configured(state: &AppState) -> Result<()> {
     });
 
     let mut transaction = state.pool().begin().await?;
-    let current: Option<(String, String)> = sqlx::query_as(
+    let current = sqlx::query_as::<_, SteamCredentialRow>(
         "SELECT
-             COALESCE(settings #>> '{steam_sync,web_api_key}', ''),
-             COALESCE(settings #>> '{steam_sync,steam_id64}', '')
+             steam_web_api_key_ciphertext,
+             steam_web_api_key_nonce,
+             steam_encryption_key_version,
+             COALESCE(settings #>> '{steam_sync,steam_id64}', '') AS steam_id64
          FROM site_settings WHERE id = 1 FOR SHARE",
     )
     .fetch_optional(&mut *transaction)
     .await?;
-    if current
+    let credentials_unchanged = current
         .as_ref()
-        .map(|(key, id)| (key.as_str(), id.as_str()))
-        != Some((
-            credentials.web_api_key.as_str(),
-            credentials.steam_id64.as_str(),
-        ))
-    {
+        .is_some_and(|current| {
+            current.steam_web_api_key_ciphertext.as_deref()
+                == Some(credentials.ciphertext.as_slice())
+                && current.steam_web_api_key_nonce.as_deref() == Some(credentials.nonce.as_slice())
+                && current.steam_encryption_key_version == Some(credentials.key_version)
+                && current.steam_id64.trim() == credentials.steam_id64
+        });
+    if !credentials_unchanged {
         transaction.rollback().await?;
         bail!("Steam credentials changed while a sync was running");
     }
@@ -447,11 +521,7 @@ async fn sync_configured(state: &AppState) -> Result<()> {
                  synced_at = EXCLUDED.synced_at",
         )
         .bind(&title)
-        .bind(if recent_minutes > 0 {
-            "playing"
-        } else {
-            "finished"
-        })
+        .bind(steam_library_status(total_minutes))
         .bind(total_minutes as f32 / 60.0)
         .bind(sort_order as i32)
         .bind(game.appid)
@@ -496,6 +566,14 @@ async fn sync_configured(state: &AppState) -> Result<()> {
     transaction.commit().await?;
     info!(steam_id64 = %credentials.steam_id64, total, recent, "Steam game mirror synchronized");
     Ok(())
+}
+
+fn steam_library_status(total_minutes: i32) -> &'static str {
+    if total_minutes > 0 {
+        "playing"
+    } else {
+        "shelved"
+    }
 }
 
 async fn record_sync_failure(state: &AppState, sync_error: &anyhow::Error) {
@@ -555,7 +633,9 @@ impl IntoResponse for GameError {
 
 #[cfg(test)]
 mod tests {
-    use super::{SteamEnvelope, game_item};
+    use super::{
+        SteamEnvelope, game_item, pagination_offset, steam_library_status, validated_owned_games,
+    };
 
     #[test]
     fn steam_owned_games_payload_accepts_optional_recent_playtime() {
@@ -575,6 +655,34 @@ mod tests {
         let game = &payload.response.games.unwrap()[0];
         assert_eq!(game.playtime_2weeks, 0);
         assert_eq!(game.playtime_forever, 601);
+    }
+
+    #[test]
+    fn rejects_incomplete_or_duplicate_steam_libraries() {
+        let incomplete: SteamEnvelope = serde_json::from_value(serde_json::json!({
+            "response": { "game_count": 1 }
+        }))
+        .unwrap();
+        assert!(validated_owned_games(incomplete.response).is_err());
+
+        let duplicate: SteamEnvelope = serde_json::from_value(serde_json::json!({
+            "response": {
+                "game_count": 2,
+                "games": [{ "appid": 10 }, { "appid": 10 }]
+            }
+        }))
+        .unwrap();
+        assert!(validated_owned_games(duplicate.response).is_err());
+        assert_eq!(pagination_offset(2, 8), Some(8));
+        assert_eq!(pagination_offset(i64::MAX, 100), None);
+    }
+
+    #[test]
+    fn inactivity_never_marks_a_steam_game_finished() {
+        assert_eq!(steam_library_status(600), "playing");
+        assert_eq!(steam_library_status(0), "shelved");
+        assert_ne!(steam_library_status(600), "finished");
+        assert_ne!(steam_library_status(0), "finished");
     }
 
     #[test]

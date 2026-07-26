@@ -53,6 +53,23 @@ struct EncryptedConnectionRow {
     encryption_key_version: i32,
 }
 
+#[derive(Debug, FromRow)]
+struct SteamSecretRow {
+    id: i16,
+    legacy_api_key: String,
+    steam_web_api_key_ciphertext: Option<Vec<u8>>,
+    steam_web_api_key_nonce: Option<Vec<u8>>,
+    steam_encryption_key_version: Option<i32>,
+}
+
+#[derive(Debug, FromRow)]
+struct EncryptedSteamSecretRow {
+    id: i16,
+    steam_web_api_key_ciphertext: Vec<u8>,
+    steam_web_api_key_nonce: Vec<u8>,
+    steam_encryption_key_version: i32,
+}
+
 impl LlmKeyring {
     pub fn new(
         current_version: i32,
@@ -162,6 +179,75 @@ fn decrypt_with_key(
     String::from_utf8(plaintext).map_err(|_| LlmCryptoError::InvalidPlaintext)
 }
 
+pub async fn migrate_legacy_steam_web_api_key(
+    pool: &PgPool,
+    keyring: &LlmKeyring,
+) -> anyhow::Result<bool> {
+    let mut transaction = pool.begin().await?;
+    let Some(row) = sqlx::query_as::<_, SteamSecretRow>(
+        "SELECT
+             id,
+             COALESCE(settings #>> '{steam_sync,web_api_key}', '') AS legacy_api_key,
+             steam_web_api_key_ciphertext,
+             steam_web_api_key_nonce,
+             steam_encryption_key_version
+         FROM site_settings
+         WHERE id = 1
+         FOR UPDATE",
+    )
+    .fetch_optional(&mut *transaction)
+    .await?
+    else {
+        transaction.commit().await?;
+        return Ok(false);
+    };
+
+    let legacy_api_key = row.legacy_api_key.trim();
+    let stored_api_key = keyring.decrypt_optional(
+        row.steam_encryption_key_version,
+        row.steam_web_api_key_ciphertext.as_deref(),
+        row.steam_web_api_key_nonce.as_deref(),
+    )?;
+    if let Some(stored_api_key) = stored_api_key.as_deref()
+        && !legacy_api_key.is_empty()
+        && stored_api_key != legacy_api_key
+    {
+        anyhow::bail!(
+            "legacy and encrypted Steam Web API keys differ; refusing to discard either value"
+        );
+    }
+
+    let encrypted = if stored_api_key.is_none() && !legacy_api_key.is_empty() {
+        Some(keyring.encrypt(legacy_api_key)?)
+    } else {
+        None
+    };
+    let removed_plaintext = !legacy_api_key.is_empty();
+    sqlx::query(
+        "UPDATE site_settings
+         SET settings = settings #- '{steam_sync,web_api_key}'::text[],
+             steam_web_api_key_ciphertext =
+                 COALESCE($1, steam_web_api_key_ciphertext),
+             steam_web_api_key_nonce =
+                 COALESCE($2, steam_web_api_key_nonce),
+             steam_encryption_key_version =
+                 COALESCE($3, steam_encryption_key_version),
+             updated_at = CASE
+                 WHEN settings #> '{steam_sync,web_api_key}' IS NOT NULL THEN now()
+                 ELSE updated_at
+             END
+         WHERE id = $4",
+    )
+    .bind(encrypted.as_ref().map(|secret| secret.ciphertext.as_slice()))
+    .bind(encrypted.as_ref().map(|secret| secret.nonce.as_slice()))
+    .bind(encrypted.as_ref().map(|secret| secret.key_version))
+    .bind(row.id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(removed_plaintext)
+}
+
 pub async fn rotate_llm_encryption_keys(
     pool: &PgPool,
     keyring: &LlmKeyring,
@@ -217,8 +303,56 @@ pub async fn rotate_llm_encryption_keys(
         .execute(&mut *transaction)
         .await?;
     }
+
+    let steam_rows = sqlx::query_as::<_, EncryptedSteamSecretRow>(
+        "SELECT id, steam_web_api_key_ciphertext, steam_web_api_key_nonce,
+                steam_encryption_key_version
+         FROM site_settings
+         WHERE steam_web_api_key_ciphertext IS NOT NULL
+         ORDER BY id
+         FOR UPDATE",
+    )
+    .fetch_all(&mut *transaction)
+    .await?;
+    let mut pending_steam = Vec::new();
+    for row in steam_rows {
+        if row.steam_encryption_key_version == keyring.current_version() {
+            continue;
+        }
+        if row.steam_encryption_key_version != previous_version {
+            anyhow::bail!(
+                "Steam setting {} uses unsupported encryption key version {}; configured versions are {} and {}",
+                row.id,
+                row.steam_encryption_key_version,
+                keyring.current_version(),
+                previous_version
+            );
+        }
+        let plaintext = keyring.decrypt(
+            row.steam_encryption_key_version,
+            &row.steam_web_api_key_ciphertext,
+            &row.steam_web_api_key_nonce,
+        )?;
+        pending_steam.push((row.id, keyring.encrypt(&plaintext)?));
+    }
+    for (id, encrypted) in &pending_steam {
+        sqlx::query(
+            "UPDATE site_settings
+             SET steam_web_api_key_ciphertext = $1,
+                 steam_web_api_key_nonce = $2,
+                 steam_encryption_key_version = $3,
+                 updated_at = now()
+             WHERE id = $4",
+        )
+        .bind(&encrypted.ciphertext)
+        .bind(&encrypted.nonce)
+        .bind(encrypted.key_version)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+    }
     transaction.commit().await?;
-    Ok(pending.len() as u64)
+    Ok((pending.len() + pending_steam.len()) as u64)
 }
 
 #[cfg(test)]

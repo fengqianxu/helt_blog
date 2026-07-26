@@ -115,6 +115,8 @@ struct UpdateProfileRequest {
     #[serde(default)]
     steam_web_api_key: String,
     #[serde(default)]
+    clear_steam_web_api_key: bool,
+    #[serde(default)]
     steam_id64: String,
     avatar_asset_id: Option<i64>,
     #[serde(default)]
@@ -150,7 +152,8 @@ struct AdminIdentity {
     avatar_crop_y: f32,
     avatar_crop_zoom: f32,
     bilibili_uid: String,
-    steam_web_api_key: String,
+    steam_web_api_key_configured: bool,
+    steam_web_api_key_masked: String,
     steam_id64: String,
 }
 
@@ -171,7 +174,16 @@ struct AdminProfileRow {
     avatar_crop_y: f32,
     avatar_crop_zoom: f32,
     bilibili_uid: String,
-    steam_web_api_key: String,
+    steam_web_api_key_configured: bool,
+    steam_id64: String,
+}
+
+#[derive(Debug, Default, FromRow)]
+struct StoredProfileSyncSettings {
+    bilibili_uid: String,
+    steam_web_api_key_ciphertext: Option<Vec<u8>>,
+    steam_web_api_key_nonce: Option<Vec<u8>>,
+    steam_encryption_key_version: Option<i32>,
     steam_id64: String,
 }
 
@@ -488,8 +500,6 @@ async fn update_profile(
     let claims = authenticate(&state, &headers)?;
     let email = normalized_email(&request.email)?;
     let bilibili_uid = normalized_bilibili_uid(&request.bilibili_uid)?;
-    let (steam_web_api_key, steam_id64) =
-        normalized_steam_credentials(&request.steam_web_api_key, &request.steam_id64)?;
     if !(-1.0..=1.0).contains(&request.avatar_crop_x)
         || !(-1.0..=1.0).contains(&request.avatar_crop_y)
         || !(1.0..=3.0).contains(&request.avatar_crop_zoom)
@@ -500,15 +510,13 @@ async fn update_profile(
         error!(error = %err, "profile update transaction could not start");
         ApiError::Internal
     })?;
-    let (previous_bilibili_uid, previous_steam_web_api_key, previous_steam_id64): (
-        String,
-        String,
-        String,
-    ) = sqlx::query_as(
+    let previous = sqlx::query_as::<_, StoredProfileSyncSettings>(
         "SELECT
-             COALESCE(settings #>> '{bangumi_sync,uid}', ''),
-             COALESCE(settings #>> '{steam_sync,web_api_key}', ''),
-             COALESCE(settings #>> '{steam_sync,steam_id64}', '')
+             COALESCE(settings #>> '{bangumi_sync,uid}', '') AS bilibili_uid,
+             steam_web_api_key_ciphertext,
+             steam_web_api_key_nonce,
+             steam_encryption_key_version,
+             COALESCE(settings #>> '{steam_sync,steam_id64}', '') AS steam_id64
          FROM site_settings
          WHERE id = 1
          FOR UPDATE",
@@ -520,6 +528,34 @@ async fn update_profile(
         ApiError::Internal
     })?
     .unwrap_or_default();
+    let previous_steam_web_api_key = state
+        .llm_keyring()
+        .decrypt_optional(
+            previous.steam_encryption_key_version,
+            previous.steam_web_api_key_ciphertext.as_deref(),
+            previous.steam_web_api_key_nonce.as_deref(),
+        )
+        .map_err(|err| {
+            error!(error = %err, "stored Steam Web API key could not be decrypted");
+            ApiError::Internal
+        })?;
+    let (supplied_steam_web_api_key, steam_id64, steam_key_configured) =
+        normalized_steam_update(
+            &request.steam_web_api_key,
+            &request.steam_id64,
+            request.clear_steam_web_api_key,
+            previous_steam_web_api_key.is_some(),
+        )?;
+    let encrypted_steam_web_api_key = supplied_steam_web_api_key
+        .as_deref()
+        .map(|api_key| state.llm_keyring().encrypt(api_key))
+        .transpose()
+        .map_err(|err| {
+            error!(error = %err, "Steam Web API key could not be encrypted");
+            ApiError::Internal
+        })?;
+    let steam_key_mutated =
+        supplied_steam_web_api_key.is_some() || request.clear_steam_web_api_key;
 
     let avatar_url = if let Some(asset_id) = request.avatar_asset_id {
         Some(
@@ -624,19 +660,46 @@ async fn update_profile(
     sqlx::query(
         "UPDATE site_settings
          SET settings = jsonb_set(
-             settings,
-             '{steam_sync}',
-             COALESCE(settings -> 'steam_sync', '{}'::jsonb)
-                 || jsonb_build_object(
-                     'web_api_key', $1::text,
-                     'steam_id64', $2::text
-                 ),
-             true
-         )
+                 settings #- '{steam_sync,web_api_key}'::text[],
+                 '{steam_sync}',
+                 COALESCE(
+                     (settings #- '{steam_sync,web_api_key}'::text[]) -> 'steam_sync',
+                     '{}'::jsonb
+                 ) || jsonb_build_object('steam_id64', $1::text),
+                 true
+             ),
+             steam_web_api_key_ciphertext = CASE
+                 WHEN $2::bool THEN $3
+                 ELSE steam_web_api_key_ciphertext
+             END,
+             steam_web_api_key_nonce = CASE
+                 WHEN $2::bool THEN $4
+                 ELSE steam_web_api_key_nonce
+             END,
+             steam_encryption_key_version = CASE
+                 WHEN $2::bool THEN $5
+                 ELSE steam_encryption_key_version
+             END,
+             updated_at = now()
          WHERE id = 1",
     )
-    .bind(&steam_web_api_key)
     .bind(&steam_id64)
+    .bind(steam_key_mutated)
+    .bind(
+        encrypted_steam_web_api_key
+            .as_ref()
+            .map(|secret| secret.ciphertext.as_slice()),
+    )
+    .bind(
+        encrypted_steam_web_api_key
+            .as_ref()
+            .map(|secret| secret.nonce.as_slice()),
+    )
+    .bind(
+        encrypted_steam_web_api_key
+            .as_ref()
+            .map(|secret| secret.key_version),
+    )
     .execute(&mut *transaction)
     .await
     .map_err(|err| {
@@ -644,7 +707,7 @@ async fn update_profile(
         ApiError::Internal
     })?;
 
-    if previous_bilibili_uid != bilibili_uid {
+    if previous.bilibili_uid != bilibili_uid {
         let cover_keys =
             sqlx::query_scalar::<_, Option<String>>("DELETE FROM bangumi RETURNING cover_key")
                 .fetch_all(&mut *transaction)
@@ -685,8 +748,7 @@ async fn update_profile(
         })?;
     }
 
-    let steam_credentials_changed =
-        previous_steam_web_api_key != steam_web_api_key || previous_steam_id64 != steam_id64;
+    let steam_credentials_changed = steam_key_mutated || previous.steam_id64 != steam_id64;
     if steam_credentials_changed {
         sqlx::query("DELETE FROM games WHERE steam_app_id IS NOT NULL")
             .execute(&mut *transaction)
@@ -706,10 +768,10 @@ async fn update_profile(
              )
              WHERE id = 1",
         )
-        .bind(if steam_web_api_key.is_empty() {
-            "disabled"
-        } else {
+        .bind(if steam_key_configured {
             "queued"
+        } else {
+            "disabled"
         })
         .execute(&mut *transaction)
         .await
@@ -728,7 +790,7 @@ async fn update_profile(
     if !bilibili_uid.is_empty() {
         let _ = bangumi::trigger_sync(state.clone());
     }
-    if !steam_web_api_key.is_empty() {
+    if steam_key_configured {
         let _ = games::trigger_sync(state.clone());
     }
 
@@ -1310,7 +1372,12 @@ async fn load_admin_identity(
              au.avatar_crop_y,
              au.avatar_crop_zoom,
              COALESCE(ss.settings #>> '{bangumi_sync,uid}', '') AS bilibili_uid,
-             COALESCE(ss.settings #>> '{steam_sync,web_api_key}', '') AS steam_web_api_key,
+             COALESCE(
+                 ss.steam_web_api_key_ciphertext IS NOT NULL
+                 AND ss.steam_web_api_key_nonce IS NOT NULL
+                 AND ss.steam_encryption_key_version IS NOT NULL,
+                 false
+             ) AS steam_web_api_key_configured,
              COALESCE(ss.settings #>> '{steam_sync,steam_id64}', '') AS steam_id64
          FROM admin_users au
          LEFT JOIN site_settings ss ON ss.id = 1
@@ -1335,7 +1402,12 @@ async fn load_admin_identity(
         avatar_crop_y: profile.avatar_crop_y,
         avatar_crop_zoom: profile.avatar_crop_zoom,
         bilibili_uid: profile.bilibili_uid,
-        steam_web_api_key: profile.steam_web_api_key,
+        steam_web_api_key_configured: profile.steam_web_api_key_configured,
+        steam_web_api_key_masked: if profile.steam_web_api_key_configured {
+            "********".to_owned()
+        } else {
+            String::new()
+        },
         steam_id64: profile.steam_id64,
     })
 }
@@ -1403,18 +1475,40 @@ fn normalized_steam_id64(value: &str) -> Result<String, ApiError> {
     Ok(steam_id.to_owned())
 }
 
-fn normalized_steam_credentials(
+fn normalized_steam_update(
     web_api_key: &str,
     steam_id64: &str,
-) -> Result<(String, String), ApiError> {
+    clear_web_api_key: bool,
+    previously_configured: bool,
+) -> Result<(Option<String>, String, bool), ApiError> {
     let web_api_key = normalized_steam_web_api_key(web_api_key)?;
     let steam_id64 = normalized_steam_id64(steam_id64)?;
-    if web_api_key.is_empty() != steam_id64.is_empty() {
+    if clear_web_api_key {
+        if !web_api_key.is_empty() {
+            return Err(ApiError::Validation(
+                "清除 Steam Web API Key 时不能同时提交新 Key",
+            ));
+        }
+        return Ok((None, String::new(), false));
+    }
+    if !web_api_key.is_empty() && steam_id64.is_empty() {
         return Err(ApiError::Validation(
-            "Steam Web API Key 与 SteamID64 必须同时填写或同时留空",
+            "提交 Steam Web API Key 时必须同时填写 SteamID64",
         ));
     }
-    Ok((web_api_key, steam_id64))
+    if web_api_key.is_empty() && !steam_id64.is_empty() && !previously_configured {
+        return Err(ApiError::Validation(
+            "首次配置 Steam 同步时必须填写 Steam Web API Key",
+        ));
+    }
+    if web_api_key.is_empty() && steam_id64.is_empty() && previously_configured {
+        return Err(ApiError::Validation(
+            "如需删除 Steam 凭据，请显式选择清除 Steam Web API Key",
+        ));
+    }
+    let supplied_key = (!web_api_key.is_empty()).then_some(web_api_key);
+    let configured = (previously_configured || supplied_key.is_some()) && !steam_id64.is_empty();
+    Ok((supplied_key, steam_id64, configured))
 }
 
 fn validate_avatar_upload(headers: &HeaderMap, body: &[u8]) -> Result<AvatarMedia, ApiError> {
@@ -1696,7 +1790,7 @@ mod tests {
     use super::{
         ACCESS_COOKIE, AccessClaims, ChangePasswordRequest, JWT_ISSUER, authenticate,
         decode_access_token, decode_base32, hash_token, normalized_bilibili_uid, normalized_email,
-        normalized_steam_credentials, normalized_steam_id64, normalized_steam_web_api_key,
+        normalized_steam_id64, normalized_steam_update, normalized_steam_web_api_key,
         validate_avatar_upload,
     };
     use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
@@ -1846,13 +1940,33 @@ mod tests {
             "76561198000000000"
         );
         assert!(normalized_steam_id64("123456").is_err());
-        assert!(normalized_steam_credentials("", "").is_ok());
+        assert!(normalized_steam_update("", "", false, false).is_ok());
         assert!(
-            normalized_steam_credentials("0123456789abcdef0123456789abcdef", "76561198000000000")
-                .is_ok()
+            normalized_steam_update(
+                "0123456789abcdef0123456789abcdef",
+                "76561198000000000",
+                false,
+                false
+            )
+            .is_ok()
         );
-        assert!(normalized_steam_credentials("0123456789abcdef0123456789abcdef", "").is_err());
-        assert!(normalized_steam_credentials("", "76561198000000000").is_err());
+        assert!(
+            normalized_steam_update(
+                "0123456789abcdef0123456789abcdef",
+                "",
+                false,
+                false
+            )
+            .is_err()
+        );
+        assert!(normalized_steam_update("", "76561198000000000", false, false).is_err());
+        let retained =
+            normalized_steam_update("", "76561198000000000", false, true).expect("retain key");
+        assert!(retained.0.is_none());
+        assert!(retained.2);
+        let cleared = normalized_steam_update("", "76561198000000000", true, true)
+            .expect("explicit clear");
+        assert_eq!(cleared, (None, String::new(), false));
     }
 
     #[test]

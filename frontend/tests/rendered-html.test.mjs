@@ -27,13 +27,19 @@ test("server-renders the finished blog", async () => {
 });
 
 test("keeps project assets and API-backed front-end routes in place", async () => {
-  const [shell, login, account, assets, llm, shared, packageJson, viteConfig, styles] = await Promise.all([
+  const [shell, login, account, assets, llm, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminAccountCenter.tsx", root), "utf8"),
     readFile(new URL("app/admin/AssetManager.tsx", root), "utf8"),
     readFile(new URL("app/admin/LlmSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/shared.ts", root), "utf8"),
+    readFile(new URL("app/media/MediaPage.tsx", root), "utf8"),
+    readFile(new URL("app/media/AnimePage.tsx", root), "utf8"),
+    readFile(new URL("app/media/GamesPage.tsx", root), "utf8"),
+    readFile(new URL("app/media/api.ts", root), "utf8"),
+    readFile(new URL("app/media/hooks.ts", root), "utf8"),
+    readFile(new URL("app/media/Pagination.tsx", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL("vite.config.ts", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
@@ -41,21 +47,26 @@ test("keeps project assets and API-backed front-end routes in place", async () =
     access(new URL("public/saber-night.png", root)),
     access(new URL("public/og.png", root)),
   ]);
-  const app = [shell, login, account, assets, llm, shared].join("\n");
+  const media = [mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination].join("\n");
+  const app = [shell, login, account, assets, llm, shared, media].join("\n");
   assert.doesNotMatch(app, /const posts = \[/);
   assert.match(app, /\/api\/v1\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles\/batch/);
-  assert.match(shell, /const BANGUMI_PAGE_SIZE = 8/);
-  assert.doesNotMatch(shell, /animeStatus|追番状态筛选/);
-  assert.match(shell, /className="pagination bangumi-pagination"/);
-  assert.match(shell, /bangumiMeta\.counts\.watching/);
-  assert.match(shell, /href=\{item\.url\} target="_blank" rel="noreferrer"/);
-  assert.match(shell, /前往 Bilibili 官网/);
-  assert.doesNotMatch(shell, /查看追番详情|BILIBILI WATCH LOG|className="detail-overlay"/);
-  assert.doesNotMatch(shell, /item\.status === "watching" \? "● 在看" : "✓ 看完"/);
-  assert.doesNotMatch(shell, /<dt>最近同步<\/dt>/);
-  assert.doesNotMatch(shell, /const anime = \["Fate\/strange Fake"/);
+  assert.match(mediaApi, /const BANGUMI_PAGE_SIZE = 8/);
+  assert.doesNotMatch(media, /animeStatus|追番状态筛选/);
+  assert.match(pagination, /className="pagination bangumi-pagination"/);
+  assert.match(mediaPage, /bangumi\.meta\.counts\.watching/);
+  assert.match(animePage, /href=\{item\.url\} target="_blank" rel="noreferrer"/);
+  assert.match(animePage, /前往 Bilibili 官网/);
+  assert.doesNotMatch(media, /查看追番详情|BILIBILI WATCH LOG|className="detail-overlay"/);
+  assert.match(animePage, /item\.status === "watching" \? "● 在看" : "◆ 看完"/);
+  assert.match(animePage, /观看进度未公开/);
+  assert.match(mediaPage, /role="tabpanel"/);
+  assert.match(mediaPage, /\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
+  assert.doesNotMatch(media, /<dt>最近同步<\/dt>/);
+  assert.doesNotMatch(media, /const anime = \["Fate\/strange Fake"/);
+  assert.match(shell, /dynamic\(\(\) => import\("\.\/media\/MediaPage"\)/);
   assert.match(packageJson, /"artalk": "2\.10\.0"/);
   assert.match(shell, /Artalk\.init/);
   assert.match(shell, /Artalk\.loadCountWidget/);
@@ -146,24 +157,27 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(app, /SteamID64/);
   assert.match(app, /steam_web_api_key/);
   assert.match(app, /steam_id64/);
-  assert.match(account, /required=\{steamId64Present\}/);
+  assert.match(account, /required=\{steamId64Present && !admin\.steam_web_api_key_configured\}/);
   assert.match(account, /required=\{steamWebApiKeyPresent\}/);
   assert.match(account, /disabled=\{busy === "profile" \|\| !steamPairComplete\}/);
+  assert.match(account, /留空保留已保存的 Key/);
+  assert.match(account, /clear_steam_web_api_key/);
   assert.doesNotMatch(account, /Steam 两项为绑定配置|必须同时填写或同时留空/);
   assert.match(app, /\/api\/v1\/games/);
   assert.match(app, /playtime_forever_minutes/);
   assert.match(app, /最近两周/);
-  assert.match(shell, /sort: gameSort/);
-  assert.match(shell, /<select aria-label="游戏排序" value=\{gameSort\}/);
-  assert.match(shell, /<option value="playtime">累计时长<\/option>/);
-  assert.match(shell, /href=\{item\.steam_url\} target="_blank" rel="noreferrer"/);
-  assert.match(shell, /前往 Steam 官网/);
-  assert.doesNotMatch(shell, /STEAM PLAY LOG|查看游戏进程|className="steam-link"/);
+  assert.match(mediaHooks, /fetchGamePage\(page, sort, range/);
+  assert.match(gamesPage, /<select aria-label="游戏排序" value=\{sort\}/);
+  assert.match(gamesPage, /<option value="playtime">累计时长<\/option>/);
+  assert.match(gamesPage, /href=\{item\.steam_url\} target="_blank" rel="noreferrer"/);
+  assert.match(gamesPage, /前往 Steam 官网/);
+  assert.doesNotMatch(media, /STEAM PLAY LOG|查看游戏进程|className="steam-link"/);
   assert.match(styles, /\.media-cover\.steam-cover\s*\{[^}]*padding:\s*0/);
   assert.match(styles, /\.steam-cover img\s*\{[^}]*width:\s*100%\s*!important[^}]*height:\s*100%\s*!important/);
-  assert.match(shell, /gameRange === "recent"\) query\.set\("status", "playing"\)/);
-  assert.match(shell, />游戏库 \{gameMeta\.counts\.total\}<\/button>/);
-  assert.match(shell, />最近两周 \{gameMeta\.counts\.recent\}<\/button>/);
+  assert.match(styles, /\.game-card \.media-copy p\s*\{[^}]*display:\s*block/);
+  assert.match(mediaApi, /range === "recent"\) query\.set\("recent", "true"\)/);
+  assert.match(gamesPage, />游戏库 \{meta\.counts\.total\}<\/button>/);
+  assert.match(gamesPage, />最近两周 \{meta\.counts\.recent\}<\/button>/);
   assert.doesNotMatch(app, /Fate\/Samurai Remnant|死亡搁浅 2/);
   assert.doesNotMatch(app, /个人中心|账户安全|会清除此设备上的后台会话/);
   assert.match(app, /\/api\/v1\/admin\/auth\/change-password/);

@@ -12,7 +12,8 @@ export type AdminIdentity = {
   avatar_crop_y: number;
   avatar_crop_zoom: number;
   bilibili_uid: string;
-  steam_web_api_key: string;
+  steam_web_api_key_configured: boolean;
+  steam_web_api_key_masked: string;
   steam_id64: string;
 };
 

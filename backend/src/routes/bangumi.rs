@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use axum::{
@@ -92,6 +95,7 @@ struct BangumiMeta {
     counts: BangumiCounts,
     synced_at: Option<DateTime<Utc>>,
     configured: bool,
+    sync_status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,19 +130,35 @@ async fn list_bangumi(
         return Err(BangumiError::Validation("per_page 必须在 1 到 100 之间"));
     }
 
-    let (total, watching, finished, synced_at, configured): (
+    let offset =
+        pagination_offset(page, per_page).ok_or(BangumiError::Validation("page 数值过大"))?;
+
+    let (total, watching, finished, synced_at, configured, sync_status): (
         i64,
         i64,
         i64,
         Option<DateTime<Utc>>,
         bool,
+        String,
     ) = sqlx::query_as(
         "SELECT
              COUNT(*) FILTER (WHERE $1::text IS NULL OR status = $1),
              COUNT(*) FILTER (WHERE status = 'watching'),
              COUNT(*) FILTER (WHERE status = 'finished'),
              MAX(synced_at),
-             COALESCE((SELECT btrim(settings #>> '{bangumi_sync,uid}') <> '' FROM site_settings WHERE id = 1), false)
+             COALESCE((SELECT btrim(settings #>> '{bangumi_sync,uid}') <> '' FROM site_settings WHERE id = 1), false),
+             COALESCE((
+                 SELECT CASE
+                     WHEN COALESCE(btrim(settings #>> '{bangumi_sync,uid}'), '') = ''
+                         THEN 'disabled'
+                     WHEN settings #>> '{bangumi_sync,last_status}' IN ('ok','queued','disabled')
+                         THEN settings #>> '{bangumi_sync,last_status}'
+                     WHEN settings #>> '{bangumi_sync,last_status}' IS NULL
+                         THEN 'queued'
+                     ELSE 'error'
+                 END
+                 FROM site_settings WHERE id = 1
+             ), 'disabled')
          FROM bangumi",
     )
     .bind(status)
@@ -155,7 +175,7 @@ async fn list_bangumi(
     )
     .bind(status)
     .bind(per_page)
-    .bind((page - 1) * per_page)
+    .bind(offset)
     .fetch_all(state.pool())
     .await?;
 
@@ -172,8 +192,13 @@ async fn list_bangumi(
             counts: BangumiCounts { watching, finished },
             synced_at,
             configured,
+            sync_status,
         },
     }))
+}
+
+fn pagination_offset(page: i64, per_page: i64) -> Option<i64> {
+    (page - 1).checked_mul(per_page)
 }
 
 fn bangumi_item(state: &AppState, row: BangumiRow) -> BangumiItem {
@@ -185,7 +210,11 @@ fn bangumi_item(state: &AppState, row: BangumiRow) -> BangumiItem {
             .to_owned()
     };
     let source_cover = text("source_cover");
-    let url = text("url");
+    let source_url = text("url");
+    let fallback_url = format!(
+        "https://www.bilibili.com/bangumi/media/md{}",
+        row.bilibili_media_id
+    );
     BangumiItem {
         id: row.id,
         bilibili_media_id: row.bilibili_media_id,
@@ -195,7 +224,7 @@ fn bangumi_item(state: &AppState, row: BangumiRow) -> BangumiItem {
             .cover_key
             .as_deref()
             .map(|key| state.object_storage().public_url(key))
-            .or_else(|| (!source_cover.is_empty()).then_some(source_cover)),
+            .or_else(|| validated_bilibili_cover_url(&source_cover).map(|url| url.to_string())),
         status: row.status,
         ep_current: row.ep_current,
         ep_total: row.ep_total,
@@ -203,14 +232,9 @@ fn bangumi_item(state: &AppState, row: BangumiRow) -> BangumiItem {
         season_type: text("season_type"),
         summary: text("summary"),
         score: row.metadata.get("score").and_then(Value::as_f64),
-        url: if url.is_empty() {
-            format!(
-                "https://www.bilibili.com/bangumi/media/md{}",
-                row.bilibili_media_id
-            )
-        } else {
-            url
-        },
+        url: validated_bilibili_page_url(&source_url)
+            .map(|url| url.to_string())
+            .unwrap_or(fallback_url),
         latest_episode: text("latest_episode"),
     }
 }
@@ -315,6 +339,10 @@ async fn sync_configured(state: &AppState) -> Result<()> {
         .context("Bilibili UID is not configured")?;
     let mut items = fetch_follow_list(state, &uid, 2, "watching").await?;
     items.extend(fetch_follow_list(state, &uid, 3, "finished").await?);
+    let mut media_ids = HashSet::with_capacity(items.len());
+    if items.iter().any(|item| !media_ids.insert(item.media_id)) {
+        bail!("Bilibili follow-list returned duplicate media IDs");
+    }
 
     let existing = sqlx::query_as::<_, ExistingCover>(
         "SELECT bilibili_media_id, cover_key, metadata #>> '{source_cover}' AS source_cover FROM bangumi",
@@ -562,11 +590,11 @@ async fn fetch_follow_list(
                 .map(|episode| episode.index_show.clone())
                 .unwrap_or_default();
             let score = item.rating.as_ref().map(|rating| rating.score);
-            let url = if item.url.is_empty() {
-                format!("https://www.bilibili.com/bangumi/play/ss{}", item.season_id)
-            } else {
-                item.url.clone()
-            };
+            let fallback_url =
+                format!("https://www.bilibili.com/bangumi/play/ss{}", item.season_id);
+            let url = validated_bilibili_page_url(&item.url)
+                .map(|url| url.to_string())
+                .unwrap_or(fallback_url);
             output.push(SyncedBangumi {
                 media_id: item.media_id,
                 season_id: item.season_id,
@@ -588,8 +616,17 @@ async fn fetch_follow_list(
                 cover_key: None,
             });
         }
-        if output.len() >= total || page_len < BILIBILI_PAGE_SIZE as usize || page >= 200 {
+        if output.len() >= total {
             break;
+        }
+        if page_len == 0 || page_len < BILIBILI_PAGE_SIZE as usize {
+            bail!(
+                "Bilibili follow-list ended after {} of {total} items",
+                output.len()
+            );
+        }
+        if page >= 200 {
+            bail!("Bilibili follow-list exceeded the 200-page safety limit");
         }
         page += 1;
     }
@@ -598,6 +635,20 @@ async fn fetch_follow_list(
 
 fn normalized_cover_url(raw: &str) -> String {
     raw.trim().replacen("http://", "https://", 1)
+}
+
+fn validated_bilibili_cover_url(raw: &str) -> Option<Url> {
+    let url = Url::parse(&normalized_cover_url(raw)).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    (url.scheme() == "https" && (host == "hdslb.com" || host.ends_with(".hdslb.com")))
+        .then_some(url)
+}
+
+fn validated_bilibili_page_url(raw: &str) -> Option<Url> {
+    let url = Url::parse(raw.trim()).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    (url.scheme() == "https" && (host == "bilibili.com" || host.ends_with(".bilibili.com")))
+        .then_some(url)
 }
 
 fn episode_number(progress: &str) -> i32 {
@@ -609,13 +660,8 @@ fn episode_number(progress: &str) -> i32 {
 }
 
 async fn cache_cover(state: &AppState, media_id: i64, source: &str) -> Result<String> {
-    let url = Url::parse(source).context("Bilibili cover URL was invalid")?;
-    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    if !matches!(url.scheme(), "http" | "https")
-        || !(host == "hdslb.com" || host.ends_with(".hdslb.com"))
-    {
-        bail!("Bilibili cover URL used an unexpected host");
-    }
+    let url = validated_bilibili_cover_url(source)
+        .context("Bilibili cover URL used an unexpected host")?;
     let response = state
         .http_client()
         .get(url)
@@ -733,7 +779,10 @@ impl IntoResponse for BangumiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{episode_number, normalized_cover_url};
+    use super::{
+        episode_number, normalized_cover_url, pagination_offset, validated_bilibili_cover_url,
+        validated_bilibili_page_url,
+    };
 
     #[test]
     fn normalizes_cover_urls_and_extracts_progress() {
@@ -743,5 +792,16 @@ mod tests {
         );
         assert_eq!(episode_number("看到第12话"), 12);
         assert_eq!(episode_number(""), 0);
+    }
+
+    #[test]
+    fn rejects_untrusted_public_media_urls_and_oversized_pages() {
+        assert!(validated_bilibili_cover_url("https://i0.hdslb.com/a.jpg").is_some());
+        assert!(validated_bilibili_cover_url("https://example.com/a.jpg").is_none());
+        assert!(validated_bilibili_page_url("https://www.bilibili.com/bangumi/play/ss1").is_some());
+        assert!(validated_bilibili_page_url("javascript:alert(1)").is_none());
+        assert!(validated_bilibili_page_url("https://bilibili.com.example.org/").is_none());
+        assert_eq!(pagination_offset(2, 8), Some(8));
+        assert_eq!(pagination_offset(i64::MAX, 100), None);
     }
 }
