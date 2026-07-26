@@ -1,6 +1,53 @@
 export type Theme = "day" | "night";
 export type Notify = (message: string, tone?: "normal" | "success" | "danger") => void;
 
+export type ThemeTokens = {
+  primary: string;
+  secondary: string;
+  background: string;
+  surface: string;
+  surface_alt: string;
+  text: string;
+  text_secondary: string;
+  muted: string;
+  faint: string;
+  border: string;
+  danger: string;
+  success: string;
+};
+
+export type RaimentSchedulePeriod = {
+  id: string;
+  start_at: string;
+  end_at: string;
+  raiment_id: string;
+};
+
+export type RaimentSchedule = {
+  revision: number;
+  periods: RaimentSchedulePeriod[];
+};
+
+export type PublicRaiment = {
+  id: string;
+  name: string;
+  cover_url: string;
+  theme: ThemeTokens;
+  color_scheme: Theme;
+  cover_title: string;
+  cover_subtitle: string;
+  cover_character_name: string;
+  cover_dialogue: string;
+  cover_voice_label: string;
+  cover_voice_url: string | null;
+  kanban_configured: boolean;
+};
+
+export type PublicRaimentPayload = {
+  items: PublicRaiment[];
+  schedule: RaimentSchedule;
+};
+
 export const DEFAULT_PROFILE_AVATAR_URL = "/storage/avatars/default/admin-avatar.webp";
 
 export type AdminIdentity = {

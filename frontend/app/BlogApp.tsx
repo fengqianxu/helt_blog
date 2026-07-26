@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import dynamic from "next/dynamic";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { createContext, FormEvent, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -16,6 +16,8 @@ import { AdminAccountCenter, AdminProfileAvatar } from "./admin/AdminAccountCent
 import { AdminLogin } from "./admin/AdminLogin";
 import { AssetManager } from "./admin/AssetManager";
 import { LlmSettings } from "./admin/LlmSettings";
+import { RaimentSettings } from "./admin/RaimentSettings";
+import { SiteSettings } from "./admin/SiteSettings";
 import {
   AdminIdentity,
   AdminAsset,
@@ -24,36 +26,60 @@ import {
   DEFAULT_PROFILE_AVATAR_URL,
   isJsonResponse,
   Notify,
+  PublicRaimentPayload,
   PublicProfile,
+  RaimentSchedule,
   responseMessage,
   Theme,
+  ThemeTokens,
 } from "./admin/shared";
 
-type RaimentId = "saber" | "alter-saber";
 type Raiment = {
-  id: RaimentId;
+  id: string;
   mode: Theme;
-  modeLabel: string;
   name: string;
   shortName: string;
   cover: string;
-  colors: { primary: string; secondary: string; background: string };
+  colors: ThemeTokens;
+  coverTitle: string;
+  coverSubtitle: string;
+  coverCharacterName: string;
+  coverDialogue: string;
+  coverVoiceLabel: string;
+  coverVoiceUrl: string | null;
   kanban: {
     displayName: string;
     greeting: string;
   };
 };
 
-// 灵衣只拥有封面、主题和角色展示数据；AI 配置统一由 /admin/llm 维护。
-const RAIMENTS: Record<RaimentId, Raiment> = {
+type RaimentCatalog = {
+  items: Record<string, Raiment>;
+  order: string[];
+  activeId: string;
+  schedule: RaimentSchedule;
+};
+
+// 看板娘展示文案仍是静态回退；目录已经为每套灵衣保留 kanban_asset_id 接口。
+const DEFAULT_RAIMENTS: Record<string, Raiment> = {
   saber: {
     id: "saber",
     mode: "day",
-    modeLabel: "日间模式",
-    name: "Saber",
+    name: "日间模式",
     shortName: "SABER",
     cover: "/saber-day.png",
-    colors: { primary: "#2B5FB8", secondary: "#B99A3E", background: "#F5F7FB" },
+    colors: {
+      primary: "#2B5FB8", secondary: "#B99A3E", background: "#F5F7FB",
+      surface: "#FFFFFF", surface_alt: "#F0EFE9", text: "#1F2534",
+      text_secondary: "#3A4155", muted: "#6B7284", faint: "#9AA1B3",
+      border: "#D9DCE3", danger: "#D84358", success: "#3D8455",
+    },
+    coverTitle: "「問おう。\n貴方が私のマスターか？」",
+    coverSubtitle: "—— 我问你，你就是我的 Master 吗？",
+    coverCharacterName: "Saber",
+    coverDialogue: "今日もいい天気ですね。",
+    coverVoiceLabel: "音声を再生 · 川澄綾子",
+    coverVoiceUrl: null,
     kanban: {
       displayName: "Saber",
       greeting: "Master，今日也请从容阅读。",
@@ -62,11 +88,21 @@ const RAIMENTS: Record<RaimentId, Raiment> = {
   "alter-saber": {
     id: "alter-saber",
     mode: "night",
-    modeLabel: "夜间模式",
-    name: "Alter Saber",
+    name: "夜间模式",
     shortName: "ALTER",
     cover: "/saber-night.png",
-    colors: { primary: "#D84358", secondary: "#7B4B8E", background: "#0E0B16" },
+    colors: {
+      primary: "#D84358", secondary: "#7B4B8E", background: "#0E0B16",
+      surface: "#171320", surface_alt: "#211B2B", text: "#EAE7F2",
+      text_secondary: "#C5BFD1", muted: "#9A94AD", faint: "#6F6A80",
+      border: "#3A3447", danger: "#F0718A", success: "#77B989",
+    },
+    coverTitle: "「問おう。\n貴方が私のマスターか？」",
+    coverSubtitle: "—— 我问你，你就是我的 Master 吗？",
+    coverCharacterName: "Alter",
+    coverDialogue: "夜已深，Master。仍要继续前行吗？",
+    coverVoiceLabel: "音声を再生 · Alter",
+    coverVoiceUrl: null,
     kanban: {
       displayName: "Alter",
       greeting: "夜深了，Master。继续前进吧。",
@@ -74,8 +110,72 @@ const RAIMENTS: Record<RaimentId, Raiment> = {
   },
 };
 
-const RAIMENT_BINDINGS: Record<Theme, RaimentId> = { day: "saber", night: "alter-saber" };
-const getRaiment = (theme: Theme) => RAIMENTS[RAIMENT_BINDINGS[theme]];
+const DEFAULT_RAIMENT_CATALOG: RaimentCatalog = {
+  items: DEFAULT_RAIMENTS,
+  order: ["saber", "alter-saber"],
+  activeId: "saber",
+  schedule: {
+    revision: 1,
+    periods: [
+      { id: "period-saber", start_at: "07:00", end_at: "19:00", raiment_id: "saber" },
+      { id: "period-alter-saber", start_at: "19:00", end_at: "07:00", raiment_id: "alter-saber" },
+    ],
+  },
+};
+
+const RaimentContext = createContext<RaimentCatalog>(DEFAULT_RAIMENT_CATALOG);
+
+const resolveRaiment = (catalog: RaimentCatalog): Raiment =>
+  catalog.items[catalog.activeId]
+  || catalog.items[catalog.order[0]]
+  || DEFAULT_RAIMENTS.saber;
+
+const useRaiment = () => resolveRaiment(useContext(RaimentContext));
+
+const catalogFromPayload = (payload: PublicRaimentPayload): RaimentCatalog => ({
+  items: Object.fromEntries(payload.items.map((item) => {
+    const fallback = DEFAULT_RAIMENTS[item.id];
+    return [item.id, {
+      id: item.id,
+      mode: item.color_scheme,
+      name: item.name,
+      shortName: item.name.toUpperCase(),
+      cover: item.cover_url,
+      colors: item.theme,
+      coverTitle: item.cover_title,
+      coverSubtitle: item.cover_subtitle,
+      coverCharacterName: item.cover_character_name,
+      coverDialogue: item.cover_dialogue,
+      coverVoiceLabel: item.cover_voice_label,
+      coverVoiceUrl: item.cover_voice_url,
+      kanban: fallback?.kanban || {
+        displayName: item.name,
+        greeting: "欢迎来到 helt.",
+      },
+    } satisfies Raiment];
+  })),
+  order: payload.items.map((item) => item.id),
+  activeId: payload.items[0]?.id || "saber",
+  schedule: payload.schedule,
+});
+
+const raimentFromSchedule = (catalog: RaimentCatalog): string => {
+  if (!catalog.order.length) return "saber";
+  const now = new Date();
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  const active = catalog.schedule.periods.find((period) => {
+    const [startHour, startMinute] = period.start_at.split(":").map(Number);
+    const [endHour, endMinute] = period.end_at.split(":").map(Number);
+    const start = startHour * 60 + startMinute;
+    const end = endHour * 60 + endMinute;
+    return start < end
+      ? minutes >= start && minutes < end
+      : minutes >= start || minutes < end;
+  });
+  return active && catalog.items[active.raiment_id]
+    ? active.raiment_id
+    : catalog.order[0];
+};
 
 type ArticleCategory = { id: number; name: string; slug: string; color: string };
 type ArticleTag = { id: number; name: string; article_count?: number | null };
@@ -146,7 +246,9 @@ const MDEditor = dynamic(() => import("@uiw/react-md-editor/nohighlight"), { ssr
 
 export function BlogApp() {
   const pathname = usePathname() || "/";
-  const [theme, setTheme] = useState<Theme>("day");
+  const [raimentCatalog, setRaimentCatalog] = useState<RaimentCatalog>(DEFAULT_RAIMENT_CATALOG);
+  const [activeRaimentId, setActiveRaimentId] = useState("saber");
+  const theme = raimentCatalog.items[activeRaimentId]?.mode || "day";
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(true);
@@ -154,24 +256,82 @@ export function BlogApp() {
   const [toast, setToast] = useState<{ message: string; tone: "normal" | "success" | "danger" } | null>(null);
   const [easterEgg, setEasterEgg] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const themeInitialized = useRef(false);
+  const storedRaimentPreference = useRef(false);
+  const storedRaimentId = useRef<string | null>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem("helt-theme") as Theme | null;
-    const nextTheme = saved === "day" || saved === "night"
-      ? saved
-      : window.matchMedia("(prefers-color-scheme: dark)").matches ? "night" : "day";
+    const saved = localStorage.getItem("helt-raiment");
+    const legacyTheme = localStorage.getItem("helt-theme") as Theme | null;
+    const fallbackId = legacyTheme === "night" ? "alter-saber" : "saber";
+    const nextId = saved || fallbackId;
+    storedRaimentPreference.current = Boolean(saved || legacyTheme);
+    storedRaimentId.current = nextId;
+    const nextTheme = DEFAULT_RAIMENTS[nextId]?.mode || "day";
     document.documentElement.dataset.theme = nextTheme;
     window.requestAnimationFrame(() => {
-      themeInitialized.current = true;
-      setTheme(nextTheme);
+      setActiveRaimentId(nextId);
     });
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    if (themeInitialized.current) localStorage.setItem("helt-theme", theme);
-  }, [theme]);
+    const controller = new AbortController();
+    const loadRaiments = () => {
+      void fetch("/api/v1/raiments", { signal: controller.signal, cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("灵衣目录加载失败");
+          return response.json() as Promise<PublicRaimentPayload>;
+        })
+        .then((payload) => {
+          const catalog = catalogFromPayload(payload);
+          setRaimentCatalog(catalog);
+          const saved = storedRaimentId.current;
+          const nextId = saved && catalog.items[saved]
+            ? saved
+            : raimentFromSchedule(catalog);
+          setActiveRaimentId(nextId);
+        })
+        .catch((error) => {
+          if (!(error instanceof DOMException && error.name === "AbortError")) {
+            console.warn("Falling back to bundled raiment configuration", error);
+          }
+        });
+    };
+    loadRaiments();
+    window.addEventListener("helt:raiments-updated", loadRaiments);
+    return () => {
+      controller.abort();
+      window.removeEventListener("helt:raiments-updated", loadRaiments);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (storedRaimentPreference.current) return;
+    const syncSchedule = () => setActiveRaimentId(raimentFromSchedule(raimentCatalog));
+    syncSchedule();
+    const timer = window.setInterval(syncSchedule, 60_000);
+    return () => window.clearInterval(timer);
+  }, [raimentCatalog]);
+
+  const activeCatalog = { ...raimentCatalog, activeId: activeRaimentId };
+
+  useEffect(() => {
+    const activeRaiment = resolveRaiment({ ...raimentCatalog, activeId: activeRaimentId });
+    document.documentElement.dataset.theme = activeRaiment.mode;
+    document.documentElement.style.setProperty("--accent", activeRaiment.colors.primary);
+    document.documentElement.style.setProperty("--gold", activeRaiment.colors.secondary);
+    document.documentElement.style.setProperty("--bg", activeRaiment.colors.background);
+    document.documentElement.style.setProperty("--surface", activeRaiment.colors.surface);
+    document.documentElement.style.setProperty("--surface-2", activeRaiment.colors.surface_alt);
+    document.documentElement.style.setProperty("--text", activeRaiment.colors.text);
+    document.documentElement.style.setProperty("--text-2", activeRaiment.colors.text_secondary);
+    document.documentElement.style.setProperty("--muted", activeRaiment.colors.muted);
+    document.documentElement.style.setProperty("--faint", activeRaiment.colors.faint);
+    document.documentElement.style.setProperty("--line", activeRaiment.colors.border);
+    document.documentElement.style.setProperty("--accent-soft", `color-mix(in srgb, ${activeRaiment.colors.primary} 15%, ${activeRaiment.colors.background})`);
+    document.documentElement.style.setProperty("--danger", activeRaiment.colors.danger);
+    document.documentElement.style.setProperty("--green", activeRaiment.colors.success);
+    document.documentElement.style.setProperty("--shadow", `0 14px 38px color-mix(in srgb, ${activeRaiment.colors.text} 14%, transparent)`);
+  }, [raimentCatalog, activeRaimentId]);
 
   useEffect(() => {
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -207,15 +367,25 @@ export function BlogApp() {
   const toggleTheme = () => {
     if (themeTransition) return;
     setThemeTransition(true);
-    window.setTimeout(() => setTheme((value) => value === "day" ? "night" : "day"), 310);
+    window.setTimeout(() => {
+      const currentIndex = raimentCatalog.order.indexOf(activeRaimentId);
+      const nextId = raimentCatalog.order[(currentIndex + 1) % raimentCatalog.order.length]
+        || raimentCatalog.order[0]
+        || "saber";
+      storedRaimentPreference.current = true;
+      storedRaimentId.current = nextId;
+      localStorage.setItem("helt-raiment", nextId);
+      localStorage.removeItem("helt-theme");
+      setActiveRaimentId(nextId);
+    }, 310);
     window.setTimeout(() => setThemeTransition(false), 760);
   };
   const common = { theme, toggleTheme, pathname, menuOpen, setMenuOpen, searchOpen, setSearchOpen };
 
-  if (pathname.startsWith("/admin")) return <><AdminRouter pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />{themeTransition && <ThemeBlade />}{toast && <Toast {...toast} />}</>;
+  if (pathname.startsWith("/admin")) return <RaimentContext.Provider value={activeCatalog}><AdminRouter pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />{themeTransition && <ThemeBlade />}{toast && <Toast {...toast} />}</RaimentContext.Provider>;
 
   let page: React.ReactNode;
-  if (pathname === "/") page = <HomePage theme={theme} toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
+  if (pathname === "/") page = <HomePage key={activeRaimentId} theme={theme} toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
   else if (pathname.startsWith("/posts/")) {
     const slug = pathname.split("/").filter(Boolean)[1];
     page = <ArticlePage slug={slug} theme={theme} notify={notify} />;
@@ -228,7 +398,7 @@ export function BlogApp() {
   else page = <NotFound />;
 
   return (
-    <div className="site-shell">
+    <RaimentContext.Provider value={activeCatalog}><div className="site-shell">
       {pathname !== "/" && <TopNav {...common} />}
       {page}
       {pathname !== "/" && <Footer />}
@@ -236,8 +406,8 @@ export function BlogApp() {
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
       {themeTransition && <ThemeBlade />}
       {toast && <Toast {...toast} />}
-      {easterEgg && <EasterEgg theme={theme} onClose={() => setEasterEgg(false)} />}
-    </div>
+      {easterEgg && <EasterEgg onClose={() => setEasterEgg(false)} />}
+    </div></RaimentContext.Provider>
   );
 }
 
@@ -247,22 +417,27 @@ function Toast({ message, tone }: { message: string; tone: "normal" | "success" 
   return <div className={cx("toast", `toast-${tone}`)} role="status"><span>{tone === "success" ? "✓" : tone === "danger" ? "!" : "◆"}</span>{message}</div>;
 }
 
-function EasterEgg({ theme, onClose }: { theme: Theme; onClose: () => void }) {
-  const raiment = getRaiment(theme);
+function EasterEgg({ onClose }: { onClose: () => void }) {
+  const raiment = useRaiment();
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
-  return <div className="easter-egg" role="dialog" aria-modal="true" aria-label="隐藏彩蛋" onClick={onClose}><div onClick={(e) => e.stopPropagation()}><Image src={raiment.cover} width={5120} height={2160} sizes="(max-width: 760px) 100vw, 760px" alt="" /><div className="dialog-box"><b>{raiment.kanban.displayName}</b><p>能抵达这里，说明你的意志相当坚定，Master。今晚的晚餐，就由胜者决定吧。</p></div><button onClick={onClose}>收起令咒</button></div></div>;
+  return <div className="easter-egg" role="dialog" aria-modal="true" aria-label="隐藏彩蛋" onClick={onClose}><div onClick={(e) => e.stopPropagation()}><Image src={raiment.cover} width={5120} height={2160} sizes="(max-width: 760px) 100vw, 760px" unoptimized alt="" /><div className="dialog-box"><b>{raiment.kanban.displayName}</b><p>能抵达这里，说明你的意志相当坚定，Master。今晚的晚餐，就由胜者决定吧。</p></div><button onClick={onClose}>收起令咒</button></div></div>;
 }
 
 function ThemeSwitch({ theme, onClick, compact = false }: { theme: Theme; onClick: () => void; compact?: boolean }) {
+  const catalog = useContext(RaimentContext);
+  const current = resolveRaiment(catalog);
+  const currentIndex = catalog.order.indexOf(current.id);
+  const nextId = catalog.order[(currentIndex + 1) % catalog.order.length] || catalog.order[0];
+  const next = catalog.items[nextId] || current;
   return (
-    <button className={cx("theme-switch", compact && "compact")} onClick={onClick} aria-label={`切换到${theme === "day" ? "夜间" : "日间"}主题`} aria-pressed={theme === "night"}>
-      <span className="theme-label active">{theme === "day" ? "☀ SABER" : "☾ ALTER"}</span>
+    <button className={cx("theme-switch", compact && "compact")} onClick={onClick} aria-label={`切换到${next.name}`} aria-pressed={theme === "night"}>
+      <span className="theme-label active">{current.name}</span>
       <span className="switch-track"><i /></span>
-      {!compact && <span className="theme-label muted">{theme === "day" ? "☾ ALTER" : "☀ SABER"}</span>}
+      {!compact && <span className="theme-label muted">{next.name}</span>}
     </button>
   );
 }
@@ -284,7 +459,7 @@ function TopNav({ pathname, theme, toggleTheme, menuOpen, setMenuOpen, setSearch
 }
 
 function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; toggleTheme: () => void; notify: Notify; onSearch: () => void }) {
-  const raiment = getRaiment(theme);
+  const raiment = useRaiment();
   const [page, setPage] = useState(1);
   const [posts, setPosts] = useState<Post[]>([]);
   const [total, setTotal] = useState(0);
@@ -294,6 +469,8 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
   const [navElevated, setNavElevated] = useState(false);
   const [voicePlaying, setVoicePlaying] = useState(false);
   const [voiceSeconds, setVoiceSeconds] = useState(0);
+  const [voiceDuration, setVoiceDuration] = useState(0);
+  const voiceRef = useRef<HTMLAudioElement | null>(null);
   const pageCount = Math.max(1, Math.ceil(total / 4));
   useEffect(() => {
     const controller = new AbortController();
@@ -325,14 +502,40 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
     window.addEventListener("scroll", updateNav, { passive: true });
     return () => window.removeEventListener("scroll", updateNav);
   }, []);
-  useEffect(() => {
-    if (!voicePlaying) return;
-    const timer = window.setInterval(() => setVoiceSeconds((value) => {
-      if (value >= 11) { setVoicePlaying(false); notify("语音播放完成", "success"); return 0; }
-      return value + 1;
-    }), 1000);
-    return () => window.clearInterval(timer);
-  }, [voicePlaying, notify]);
+  useEffect(() => () => {
+    voiceRef.current?.pause();
+    voiceRef.current = null;
+  }, [raiment.coverVoiceUrl]);
+  const toggleCoverVoice = () => {
+    if (!raiment.coverVoiceUrl) {
+      notify("当前灵衣还没有配置封面语音", "danger");
+      return;
+    }
+    let audio = voiceRef.current;
+    if (!audio || audio.src !== new URL(raiment.coverVoiceUrl, window.location.href).href) {
+      audio?.pause();
+      audio = new Audio(raiment.coverVoiceUrl);
+      audio.preload = "metadata";
+      audio.ontimeupdate = () => setVoiceSeconds(Math.floor(audio?.currentTime || 0));
+      audio.onloadedmetadata = () => setVoiceDuration(Math.floor(audio?.duration || 0));
+      audio.onended = () => {
+        setVoicePlaying(false);
+        setVoiceSeconds(0);
+        notify("语音播放完成", "success");
+      };
+      voiceRef.current = audio;
+    }
+    if (voicePlaying) {
+      audio.pause();
+      setVoicePlaying(false);
+      notify("语音已暂停");
+    } else {
+      void audio.play().then(() => {
+        setVoicePlaying(true);
+        notify("开始播放开屏语音");
+      }).catch(() => notify("浏览器阻止了语音播放，请再试一次", "danger"));
+    }
+  };
   const changePage = (next: number) => {
     const target = Math.min(pageCount, Math.max(1, next));
     if (target === page) return;
@@ -349,17 +552,17 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
       <TopNav pathname="/" theme={theme} toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating elevated={navElevated} />
       <section className="hero">
         <div className="hero-stripe stripe-one" /><div className="hero-stripe stripe-two" />
-        <Image className="hero-art" src={raiment.cover} width={5120} height={2160} sizes="(max-width: 768px) 100vw, 64vw" priority alt={`${raiment.name} 灵衣封面`} />
+        <Image className="hero-art" src={raiment.cover} width={5120} height={2160} sizes="(max-width: 768px) 100vw, 64vw" priority unoptimized alt={`${raiment.name} 灵衣封面`} />
         <div className="hero-copy">
           <div className="eyebrow"><i /> SINCE 2020 · HELT&apos;S BLOG</div>
-          <h1>「問おう。<br />貴方が私の<span>マスター</span>か？」</h1>
-          <p>—— 我问你，你就是我的 Master 吗？</p>
+          <h1>{raiment.coverTitle}</h1>
+          <p>{raiment.coverSubtitle}</p>
           <div className="hero-actions">
-            <button className={cx("voice-button", voicePlaying && "is-playing")} aria-pressed={voicePlaying} onClick={() => { setVoicePlaying((value) => !value); notify(voicePlaying ? "语音已暂停" : "开始播放开屏语音"); }}><b>{voicePlaying ? "Ⅱ" : "▶"}</b><span className="wave"><i /><i /><i /><i /><i /><i /></span><span>{voicePlaying ? `播放中 00:${String(voiceSeconds).padStart(2, "0")} / 00:12` : `音声を再生 · ${theme === "day" ? "川澄綾子" : "Alter"}`}</span></button>
+            <button className={cx("voice-button", voicePlaying && "is-playing")} aria-pressed={voicePlaying} onClick={toggleCoverVoice}><b>{voicePlaying ? "Ⅱ" : "▶"}</b><span className="wave"><i /><i /><i /><i /><i /><i /></span><span>{voicePlaying ? `播放中 ${Math.floor(voiceSeconds / 60)}:${String(voiceSeconds % 60).padStart(2, "0")} / ${Math.floor(voiceDuration / 60)}:${String(voiceDuration % 60).padStart(2, "0")}` : raiment.coverVoiceLabel}</span></button>
             <button className="primary-button" onClick={enter}>ENTER · 进入博客 ▾</button>
           </div>
         </div>
-        <div className="dialog-box hero-dialog"><b>{theme === "day" ? "Saber" : "Alter"}</b><p>{theme === "day" ? `今日もいい天気ですね。${latestLabel}` : `夜已深，Master。仍要继续前行吗？${latestLabel}`}</p><span>▼</span></div>
+        <div className="dialog-box hero-dialog"><b>{raiment.coverCharacterName}</b><p>{raiment.coverDialogue}{latestLabel}</p><span>▼</span></div>
         <button className="scroll-cue" onClick={enter}>SCROLL ▼</button>
       </section>
       <section id="articles" className="home-content">
@@ -648,7 +851,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
 }
 
 function FloatingTools({ theme, toggleTheme, playerOpen, setPlayerOpen, notify }: { theme: Theme; toggleTheme: () => void; playerOpen: boolean; setPlayerOpen: (v: boolean) => void; notify: Notify }) {
-  const raiment = getRaiment(theme);
+  const raiment = useRaiment();
   const tracks = [{ title: "THIS ILLUSION", artist: "LiSA · Fate OST" }, { title: "to the beginning", artist: "Kalafina" }, { title: "花の唄", artist: "Aimer" }];
   const [track, setTrack] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -659,7 +862,7 @@ function FloatingTools({ theme, toggleTheme, playerOpen, setPlayerOpen, notify }
   useEffect(() => { const watch = () => setShowTop(window.scrollY > 500); watch(); window.addEventListener("scroll", watch, { passive: true }); return () => window.removeEventListener("scroll", watch); }, []);
   const moveTrack = (delta: number) => { const next = (track + delta + tracks.length) % tracks.length; setTrack(next); setPlaying(true); notify(`正在播放：${tracks[next].title}`); };
   const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply({ theme, text: "我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。" }); setChatText(""); };
-  return <><div className={cx("music-player", !playerOpen && "collapsed", playing && "is-playing")}><button className="disc" onClick={() => playerOpen ? setPlaying(!playing) : setPlayerOpen(true)} aria-label={playerOpen ? (playing ? "暂停音乐" : "播放音乐") : "展开播放器"}><i /></button>{playerOpen && <><div><b>{tracks[track].title}</b><span>{tracks[track].artist}</span><i className="progress"><i /></i></div><button onClick={() => moveTrack(-1)} aria-label="上一首">⏮</button><button onClick={() => { setPlaying(!playing); notify(playing ? "音乐已暂停" : `正在播放：${tracks[track].title}`); }} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button><button onClick={() => moveTrack(1)} aria-label="下一首">⏭</button><button className="collapse-player" onClick={() => setPlayerOpen(false)} aria-label="收起播放器">−</button></>}</div>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.theme === theme ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label={`切换到${theme === "day" ? "夜间" : "日间"}主题`}>{theme === "day" ? "☾" : "☀"}</button></div></>;
+  return <><div className={cx("music-player", !playerOpen && "collapsed", playing && "is-playing")}><button className="disc" onClick={() => playerOpen ? setPlaying(!playing) : setPlayerOpen(true)} aria-label={playerOpen ? (playing ? "暂停音乐" : "播放音乐") : "展开播放器"}><i /></button>{playerOpen && <><div><b>{tracks[track].title}</b><span>{tracks[track].artist}</span><i className="progress"><i /></i></div><button onClick={() => moveTrack(-1)} aria-label="上一首">⏮</button><button onClick={() => { setPlaying(!playing); notify(playing ? "音乐已暂停" : `正在播放：${tracks[track].title}`); }} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button><button onClick={() => moveTrack(1)} aria-label="下一首">⏭</button><button className="collapse-player" onClick={() => setPlayerOpen(false)} aria-label="收起播放器">−</button></>}</div>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.theme === theme ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
 }
 
 function Footer() { return <footer><Link href="/" className="brand">helt<span>.</span></Link><p>写代码、追番、折腾博客的个人小站。</p><span>© 2020—2026 helt. · POWERED BY REACT</span></footer>; }
@@ -1580,26 +1783,6 @@ function CommentManager() {
   </>;
 }
 
-function RaimentSettings({ notify }: { notify: Notify }) {
-  const [selected, setSelected] = useState<Theme>("day");
-  const raiment = getRaiment(selected);
-  return <><AdminTitle title="灵衣" sub="RAIMENTS · COVER / THEME / CHARACTER" action={<button className="admin-primary" onClick={() => notify(`${raiment.name} 灵衣已保存并同步到博客`, "success")}>保存并应用</button>} />
-    <div className="raiment-mode-switch" role="tablist" aria-label="灵衣模式">
-      {(["day", "night"] as Theme[]).map((mode) => { const item = getRaiment(mode); return <button key={mode} role="tab" aria-selected={selected === mode} className={selected === mode ? "active" : ""} onClick={() => setSelected(mode)}><span>{mode === "day" ? "☀" : "☾"}</span><b>{item.modeLabel}</b><small>{item.name}</small></button>; })}
-    </div>
-    <section className="raiment-hero" style={{ "--raiment-primary": raiment.colors.primary, "--raiment-secondary": raiment.colors.secondary } as React.CSSProperties}>
-      <Image src={raiment.cover} width={5120} height={2160} sizes="(max-width: 900px) 100vw, 62vw" alt={`${raiment.name} 灵衣预览`} />
-      <div><span>{raiment.modeLabel} · 已启用</span><h2>{raiment.name}</h2><p>此封面同时用于开屏、博客首页与灵衣预览。文件必须先上传到素材库，再从素材库中选择。</p><Link href="/admin/assets">从素材库选择封面</Link></div>
-    </section>
-    <div className="raiment-settings-grid">
-      <section className="admin-panel raiment-theme-panel"><h2>主题外观 <small>THEME TOKENS</small></h2><div className="color-token"><i style={{ background: raiment.colors.primary }} /><label>主色<input defaultValue={raiment.colors.primary} key={`${raiment.id}-primary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.secondary }} /><label>辅色<input defaultValue={raiment.colors.secondary} key={`${raiment.id}-secondary`} /></label></div><div className="color-token"><i style={{ background: raiment.colors.background }} /><label>背景色<input defaultValue={raiment.colors.background} key={`${raiment.id}-background`} /></label></div></section>
-      <section className="admin-panel"><h2>角色展示 <small>{raiment.kanban.displayName.toUpperCase()}</small></h2><label>显示名称<input defaultValue={raiment.kanban.displayName} key={`${raiment.id}-name`} /></label><label>默认招呼语<textarea defaultValue={raiment.kanban.greeting} key={`${raiment.id}-greeting`} /></label><p className="raiment-shared-note">这里只保存角色外观和静态展示文案，不参与模型调用。</p></section>
-    </div>
-    <section className="admin-panel raiment-llm-reference"><Link href="/admin/llm">LLM 设置 →</Link></section>
-    <section className="admin-panel schedule"><h2>当前模式绑定 <small>暂按日间 / 夜间切换</small></h2><div className="raiment-bindings"><span><b>☀ 日间模式</b><small>Saber</small></span><i>⇄</i><span><b>☾ 夜间模式</b><small>Alter Saber</small></span></div><p>未来加入更多灵衣后，此处可升级为多选绑定；当前不改变访客熟悉的日夜切换方式。</p></section>
-  </>;
-}
-
 function MediaSettings({ notify }: { notify: Notify }) {
   const [tracks, setTracks] = useState(["THIS ILLUSION", "to the beginning", "oath sign", "花の唄"]);
   const [preview, setPreview] = useState("");
@@ -1611,9 +1794,4 @@ function MediaSettings({ notify }: { notify: Notify }) {
     { id: "night-success", kind: "night", name: "夜间 Alter · 契约成立", file: "alter-saber-success.mp3 · 固定资源" },
   ];
   return <><AdminTitle title="音乐与语音" sub={`AUDIO LIBRARY · ${tracks.length} BGM · 4 LOCKED VOICES`} action={<button className="admin-primary" onClick={() => notify("BGM 上传入口已打开（Mock）")}>＋ 上传 BGM</button>} /><div className="settings-grid media-settings"><section className="admin-panel"><h2>BGM 播放列表</h2>{tracks.map((t, i) => <div className="track" key={t}><span>0{i + 1}</span><div><b>{t}</b><small>Fate Series · Audio Track</small></div><button onClick={() => move(i, -1)} disabled={i === 0}>↑</button><button onClick={() => move(i, 1)} disabled={i === tracks.length - 1}>↓</button><button onClick={() => { setTracks((items) => items.filter((item) => item !== t)); notify(`已移除 ${t}`, "danger"); }}>×</button></div>)}</section><section className="admin-panel voice-cards"><h2>登录语音 <small>FIXED · MINIO</small></h2>{voices.map(({ id, kind, name, file }) => <div key={id}><i className={kind} /><b>{name}</b><span>{file}</span><button className={preview === id ? "active" : ""} onClick={() => { setPreview(preview === id ? "" : id); notify(preview === id ? "试听已暂停" : `正在试听 ${name}`); }}>{preview === id ? "Ⅱ 暂停" : "▶ 试听"}</button></div>)}</section></div></>;
-}
-
-function SiteSettings({ notify }: { notify: Notify }) {
-  const [saved, setSaved] = useState(false);
-  return <><AdminTitle title="站点设置" sub="SITE CONFIGURATION" action={<button className="admin-primary" onClick={() => { setSaved(true); notify("站点设置已保存", "success"); }}>保存设置</button>} />{saved && <div className="save-toast">✓ 设置已保存（Mock）</div>}<div className="settings-grid"><section className="admin-panel form-panel"><h2>基本信息</h2><label>站点名称<input defaultValue="helt." /></label><label>站点描述<textarea defaultValue="写代码、追番、折腾博客的个人小站。" /></label><label>站点地址<input defaultValue="https://helt.example.com" /></label></section><section className="admin-panel toggles"><h2>功能开关</h2>{[["开屏页", "关闭后直接进入文章流"], ["看板娘", "显示 Live2D 角色与对话"], ["背景音乐", "显示全局音乐播放器"], ["Konami 彩蛋", "启用键盘隐藏彩蛋"]].map(([a, b], i) => <div key={a}><span><b>{a}</b><small>{b}</small></span><label className="toggle"><input type="checkbox" defaultChecked={i !== 3} onChange={(e) => notify(`${a}已${e.target.checked ? "开启" : "关闭"}`)} /><i /></label></div>)}</section></div></>;
 }

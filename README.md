@@ -16,7 +16,7 @@ Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compo
 | `artalk` | Artalk 2.10 评论、审核、回复与反垃圾服务 | 由网关代理到 `/artalk/` |
 | `postgres` | PostgreSQL 16 业务数据库 | 仅 `database` 容器网络 |
 | `minio` | S3 兼容对象存储 | 仅 `storage` 容器网络 |
-| `minio-init` | 创建公开/私有桶并设置访问策略 | 一次性任务，成功后退出 |
+| `minio-init` | 创建公开/私有桶、设置访问策略并幂等写入默认灵衣封面 | 一次性任务，成功后退出 |
 
 浏览器和正式客户端只应访问 `gateway`。容器之间使用 Compose 服务名通信，
 不要把 `localhost` 写成容器内的 PostgreSQL 或 MinIO 地址。
@@ -88,7 +88,7 @@ docker compose ps
 ```
 
 首次构建需要下载基础镜像和依赖，耗时通常比后续启动长。`postgres` 和
-`minio` 健康后，`minio-init` 会创建桶，随后后端执行 SQL 迁移；前后端健康后
+`minio` 健康后，`minio-init` 会创建桶并写入默认灵衣封面，随后后端执行 SQL 迁移；前后端健康后
 `gateway` 才会启动。`minio-init` 显示 `Exited (0)` 是正常状态。
 
 所有长期运行服务都应显示 `Up ... (healthy)`。启动完成后访问：

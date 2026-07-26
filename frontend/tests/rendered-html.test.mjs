@@ -27,12 +27,14 @@ test("server-renders the finished blog", async () => {
 });
 
 test("keeps project assets and API-backed front-end routes in place", async () => {
-  const [shell, login, account, assets, llm, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
+  const [shell, login, account, assets, llm, raiments, siteSettings, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminAccountCenter.tsx", root), "utf8"),
     readFile(new URL("app/admin/AssetManager.tsx", root), "utf8"),
     readFile(new URL("app/admin/LlmSettings.tsx", root), "utf8"),
+    readFile(new URL("app/admin/RaimentSettings.tsx", root), "utf8"),
+    readFile(new URL("app/admin/SiteSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/shared.ts", root), "utf8"),
     readFile(new URL("app/media/MediaPage.tsx", root), "utf8"),
     readFile(new URL("app/media/AnimePage.tsx", root), "utf8"),
@@ -48,11 +50,28 @@ test("keeps project assets and API-backed front-end routes in place", async () =
     access(new URL("public/og.png", root)),
   ]);
   const media = [mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination].join("\n");
-  const app = [shell, login, account, assets, llm, shared, media].join("\n");
+  const app = [shell, login, account, assets, llm, raiments, siteSettings, shared, media].join("\n");
   assert.doesNotMatch(app, /const posts = \[/);
   assert.match(app, /\/api\/v1\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles\/batch/);
+  assert.match(shell, /\/api\/v1\/raiments/);
+  assert.match(raiments, /method: "POST"/);
+  assert.match(raiments, /method: "DELETE"/);
+  assert.match(raiments, /\/api\/v1\/admin\/raiments\/\$\{encodeURIComponent\(selected\.id\)\}/);
+  assert.match(raiments, /revision:\s*selected\.revision/);
+  assert.match(raiments, /cover_asset_id:\s*selected\.cover_asset_id/);
+  assert.doesNotMatch(raiments, /switch_at|启用时间|raiment-add-tab/);
+  assert.doesNotMatch(raiments, /外观基调|明亮外观|深色外观|ID ·|BUILT-IN|CUSTOM PROFILE|☀|☾/);
+  assert.doesNotMatch(siteSettings, /☀|☾/);
+  assert.match(raiments, /inferColorScheme\(selected\.theme\.background/);
+  assert.match(raiments, /cover_title:\s*selected\.cover_title/);
+  assert.match(raiments, /cover_voice_asset_id:\s*selected\.cover_voice_asset_id/);
+  assert.match(raiments, /kanban_asset_id:\s*selected\.kanban_asset_id/);
+  assert.match(siteSettings, /\/api\/v1\/admin\/site\/raiment-schedule/);
+  assert.match(siteSettings, /type="time"/);
+  assert.match(siteSettings, /新增时间段/);
+  assert.doesNotMatch(raiments, /Mock|角色展示|默认招呼语/);
   assert.match(mediaApi, /const BANGUMI_PAGE_SIZE = 8/);
   assert.doesNotMatch(media, /animeStatus|追番状态筛选/);
   assert.match(pagination, /className="pagination bangumi-pagination"/);

@@ -592,12 +592,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
     ),
     // 公开灵衣、音乐和看板娘域。
     //
-    // 灵衣（raiment）是主题色、全站封面、开屏媒体、角色展示和 Live2D
-    // 引用的聚合边界。前端不得再分别拉取 theme 与 kanban profile 后自行拼装，
-    // 否则两个请求处于不同配置版本时会出现封面和人格错配。
-    //
-    // v1 暂时只有 day -> saber、night -> alter-saber 两个绑定；响应使用稳定 id
-    // 和 bindings 映射，为未来同一模式绑定多套灵衣、由访客多选预留协议空间。
+    // 每套灵衣直接拥有完整主题色、封面图文与语音、明暗外观基调。
+    // 自动时间段属于站点设置并只引用灵衣；看板娘实现属于后续建设范围。
     endpoint!(
         "RAIMENT-01",
         "灵衣",
@@ -606,10 +602,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/raiments",
         Anonymous,
         OK,
-        "读取公开灵衣目录与当前模式绑定",
+        "读取公开灵衣目录与站点时间段",
         "无查询参数",
-        "200 JSON items[{id,name,cover_url,theme,character,live2d,opening_voice,llm_use_case}]、bindings{day:[id],night:[id]}、rule",
-        "资源 URL 均可公开访问；llm_use_case 固定引用统一 LLM 场景；不得返回提示词、模型、密钥或内部 object metadata"
+        "200 JSON items[{id,name,cover_url,theme,color_scheme,cover_title,cover_subtitle,cover_character_name,cover_dialogue,cover_voice_label,cover_voice_url?,kanban_configured}]、schedule{revision,periods[{id,start_at,end_at,raiment_id}]}",
+        "封面 URL 可公开访问；不得返回素材 object key、revision、管理字段或内部 object metadata"
     ),
     endpoint!(
         "THEME-02",
@@ -624,9 +620,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 JSON items[{id,title,artist,file_url,duration_s}]、autoplay、default_volume",
         "features.music=false 返回 403；曲目按 sort_order/id 排序"
     ),
-    // 旧 GET /themes 与 GET /kanban/profile 被 RAIMENT-01 取代并删除。
-    // 看板娘公开展示数据随灵衣一次下发；对话端点只接收稳定 raiment_id，
-    // 服务端固定引用统一 LLM 的 kanban_chat 场景。
+    // 旧 GET /themes 被 RAIMENT-01 取代并删除。看板娘接口仍是独立待办，
+    // 不复用或绕过灵衣已实现的封面/主题持久化。
     endpoint!(
         "KANBAN-02",
         "看板娘",
@@ -1037,9 +1032,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
     ),
     // 后台灵衣与媒体域。
     //
-    // 灵衣用稳定字符串 id 做身份，不再把 day/night 当作资源主键。bindings 只是
-    // 展示模式到灵衣 id 的关联：v1 每个模式单选，后续可直接放开为多选数组，
-    // 无需再次修改灵衣实体或看板娘聊天协议。
+    // 灵衣用稳定字符串 id 做身份；内置和后续新增的灵衣共用同一套 CRUD。
+    // 时间段在站点设置中引用灵衣，不能反向成为灵衣自身的生命周期字段。
     endpoint!(
         "ADMIN-RAIMENT-01",
         "后台灵衣",
@@ -1048,10 +1042,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/raiments",
         AdminJwt,
         OK,
-        "读取全部灵衣和模式绑定",
+        "读取全部灵衣",
         "无查询参数；v1 数据量小，免分页",
-        "200 JSON items[{id,name,cover_asset,theme,character,live2d_model_id,opening_voice_asset}]、bindings、rule",
-        "素材 URL/文件信息由服务端派生；不包含 LLM 模型、密钥或提示词；返回 revision 供写入时做乐观并发控制"
+        "200 JSON items[{id,name,cover_asset_id,cover_asset,theme,enabled,color_scheme,cover_title,cover_subtitle,cover_character_name,cover_dialogue,cover_voice_label,cover_voice_asset_id?,cover_voice_asset?,kanban_asset_id?,is_builtin,revision,created_at,updated_at}]",
+        "素材 URL/文件信息由服务端派生；返回 revision 供写入时做乐观并发控制"
     ),
     endpoint!(
         "ADMIN-RAIMENT-02",
@@ -1062,22 +1056,61 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存单套灵衣",
-        "路径 id 为稳定 slug；JSON: revision、name、cover_asset_id、theme、character、live2d_model_id?、opening_voice_asset_id?、llm_use_case='kanban_chat'",
+        "路径 id 为稳定 slug；JSON: revision、name、cover_asset_id、theme、color_scheme、cover_title、cover_subtitle、cover_character_name、cover_dialogue、cover_voice_label、cover_voice_asset_id?、kanban_asset_id?",
         "200 返回规范化后的灵衣与新 revision",
         "只更新目标灵衣，禁止全量覆盖其它灵衣；revision 冲突返回 409；素材必须 active 且类型匹配；id 创建后不可修改"
     ),
     endpoint!(
         "ADMIN-RAIMENT-03",
         "后台灵衣",
-        Put,
-        "/api/v1/admin/raiments/bindings",
-        "/api/v1/admin/raiments/bindings",
+        Post,
+        "/api/v1/admin/raiments",
+        "/api/v1/admin/raiments",
+        AdminJwt,
+        CREATED,
+        "新增灵衣",
+        "JSON: name、cover_asset_id、theme、color_scheme、cover_title、cover_subtitle、cover_character_name、cover_dialogue、cover_voice_label、cover_voice_asset_id?、kanban_asset_id?",
+        "201 返回创建后的完整灵衣；服务端生成稳定 id",
+        "封面必须为 active 图片；封面语音若提供则必须为 active 音频；看板娘字段若提供则必须为 active Live2D 素材"
+    ),
+    endpoint!(
+        "ADMIN-RAIMENT-04",
+        "后台灵衣",
+        Delete,
+        "/api/v1/admin/raiments/{id}",
+        "/api/v1/admin/raiments/saber",
+        AdminJwt,
+        NO_CONTENT,
+        "删除灵衣",
+        "路径 id 为稳定 slug",
+        "204 无响应体",
+        "内置灵衣允许删除，但系统必须至少保留一套灵衣；仍被站点时间段引用时返回 409；同步清理封面、语音和看板娘素材引用"
+    ),
+    endpoint!(
+        "ADMIN-RAIMENT-05",
+        "后台站点设置",
+        Get,
+        "/api/v1/admin/site/raiment-schedule",
+        "/api/v1/admin/site/raiment-schedule",
         AdminJwt,
         OK,
-        "保存日间与夜间模式的灵衣绑定及切换规则",
-        "JSON: bindings{day:[raiment_id],night:[raiment_id]}、rule{follow_system,schedule}",
-        "200 返回规范化后的 bindings 与 rule",
-        "v1 校验 day/night 各恰有一个启用灵衣；未来开放多选时仅放宽数组数量；同一灵衣可否跨模式复用由服务端策略决定"
+        "读取站点灵衣时间段",
+        "无查询参数",
+        "200 JSON revision、periods[{id,start_at,end_at,raiment_id}]",
+        "时间使用 24 小时制 HH:MM；允许跨午夜；时间段引用可用灵衣"
+    ),
+    endpoint!(
+        "ADMIN-RAIMENT-06",
+        "后台站点设置",
+        Put,
+        "/api/v1/admin/site/raiment-schedule",
+        "/api/v1/admin/site/raiment-schedule",
+        AdminJwt,
+        OK,
+        "保存站点灵衣时间段",
+        "JSON: revision、periods[{id,start_at,end_at,raiment_id}]",
+        "200 返回规范化时间段与新 revision",
+        "时间段不可重叠且开始/结束不能相同；引用必须存在；revision 冲突返回 409"
     ),
     endpoint!(
         "ADMIN-MUSIC-01",
@@ -1436,6 +1469,7 @@ pub fn router() -> Router<AppState> {
                 && !super::bangumi::implements(contract.method, contract.path)
                 && !super::games::implements(contract.method, contract.path)
                 && !super::llm::implements(contract.method, contract.path)
+                && !super::raiments::implements(contract.method, contract.path)
         })
         .fold(Router::new(), |router, contract| {
             let route = match contract.authentication {
@@ -1561,8 +1595,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_93_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 93);
+    fn catalog_contains_96_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 96);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1630,7 +1664,7 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 74);
+        assert_eq!(admin_count, 77);
         assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 19);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
@@ -1647,7 +1681,7 @@ mod tests {
         );
     }
 
-    /// 固定整个目录的身份快照，避免“数量仍是 106，但某个方法或路径被悄悄替换”。
+    /// 固定整个目录的身份快照，避免数量不变时某个方法或路径被悄悄替换。
     #[test]
     fn catalog_identity_matches_the_reviewed_snapshot() {
         let mut fingerprint = 0xcbf29ce484222325_u64;
@@ -1677,7 +1711,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 12_010_064_267_420_805_291,
+            fingerprint, 5_860_880_855_373_982_969,
             "update only after reviewing the full catalog"
         );
     }

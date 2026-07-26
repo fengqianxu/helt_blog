@@ -97,8 +97,8 @@ fn reference_type_label(source_type: &str) -> &'static str {
         "music_track" => "背景音乐",
         "article_cover" => "文章封面",
         "article_content" => "文章内容",
-        "theme_cover" => "主题封面",
-        "live2d_model" => "Live2D 模型",
+        "theme_cover" | "raiment_cover" => "灵衣封面",
+        "live2d_model" | "raiment_kanban" => "Live2D 模型",
         "moment_image" => "动态图片",
         "game_cover" => "游戏封面",
         "bangumi_cover" => "追番封面",
@@ -667,7 +667,7 @@ fn normalized_filter(
             | "raiment_cover",
         ) => Some("image"),
         Some("bgm" | "opening_voice") => Some("audio"),
-        Some("live2d_model") => Some("live2d"),
+        Some("live2d_model" | "raiment_kanban") => Some("live2d"),
         _ => None,
     });
     match value {
@@ -944,12 +944,12 @@ mod tests {
                 Some("audio")
             );
         }
-        assert_eq!(
-            normalized_filter(None, Some("live2d_model"))
-                .unwrap()
-                .as_deref(),
-            Some("live2d")
-        );
+        for target in ["live2d_model", "raiment_kanban"] {
+            assert_eq!(
+                normalized_filter(None, Some(target)).unwrap().as_deref(),
+                Some("live2d")
+            );
+        }
         assert_eq!(normalized_filter(None, Some("unknown")).unwrap(), None);
         assert!(normalized_filter(Some("executable"), None).is_err());
     }

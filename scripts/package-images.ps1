@@ -23,11 +23,11 @@ try {
     $env:IMAGE_TAG = $Tag
 
     if (-not $SkipBuild) {
-        & docker compose build backend frontend gateway
+        & docker compose build backend frontend gateway minio-init
         if ($LASTEXITCODE -ne 0) { throw "Docker image build failed." }
     }
 
-    & docker compose pull postgres minio minio-init artalk
+    & docker compose pull postgres minio artalk
     if ($LASTEXITCODE -ne 0) { throw "Dependency image pull failed." }
 
     New-Item -ItemType Directory -Path $bundleDirectory -Force | Out-Null
@@ -37,9 +37,9 @@ try {
         "${ImagePrefix}-frontend:${Tag}",
         "${ImagePrefix}-backend:${Tag}",
         "${ImagePrefix}-gateway:${Tag}",
+        "${ImagePrefix}-storage-init:${Tag}",
         "postgres:16-alpine",
         "minio/minio:latest",
-        "minio/mc:latest",
         "artalk/artalk-go:2.10.0"
     )
     & docker image save --output $archive @images

@@ -148,8 +148,7 @@ export function AdminLogin() {
       <div className="admin-login-cover login-cover-night" aria-hidden="true" />
       <div className="admin-login-shade" aria-hidden="true" />
       <button className="login-theme-switch" type="button" onClick={toggleLoginTheme} aria-label={`切换至${loginTheme === "day" ? "夜间" : "日间"}灵衣`}>
-        <span aria-hidden="true">{loginTheme === "day" ? "☾" : "☀"}</span>
-        <b>{loginTheme === "day" ? "ALTER" : "SABER"}</b>
+        <b>{loginTheme === "day" ? "夜间模式" : "日间模式"}</b>
       </button>
       <form className="login-card" onSubmit={submitLogin}>
         <div className="login-brand">

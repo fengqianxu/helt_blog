@@ -220,6 +220,217 @@ fn use_cases(connection_id: Option<i64>, enabled: bool) -> Value {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
+async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
+    let database = TestDatabase::create().await;
+    let app = test_app(database.pool.clone());
+
+    let (status, public) = json_request(&app, Method::GET, "/api/v1/raiments", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let public_items = public["items"].as_array().expect("public items");
+    assert_eq!(public_items.len(), 2);
+    let public_saber = public_items
+        .iter()
+        .find(|item| item["id"] == "saber")
+        .expect("public Saber raiment");
+    let public_alter = public_items
+        .iter()
+        .find(|item| item["id"] == "alter-saber")
+        .expect("public Alter Saber raiment");
+    assert_eq!(public_saber["name"], "日间模式");
+    assert_eq!(public_alter["color_scheme"], "night");
+    assert_eq!(public_saber["cover_character_name"], "Saber");
+    assert!(public_saber["cover_voice_url"].is_string());
+    assert_eq!(
+        public["schedule"]["periods"]
+            .as_array()
+            .expect("periods")
+            .len(),
+        2
+    );
+    assert_eq!(public["schedule"]["periods"][0]["start_at"], "07:00");
+    assert_eq!(public["schedule"]["periods"][1]["end_at"], "07:00");
+    assert!(
+        public["items"]
+            .as_array()
+            .expect("public items")
+            .iter()
+            .all(|item| item["cover_url"]
+                .as_str()
+                .expect("cover URL")
+                .starts_with("/storage/raiments/"))
+    );
+    assert!(public["items"][0].get("revision").is_none());
+
+    let (status, admin) = json_request(&app, Method::GET, "/api/v1/admin/raiments", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let saber = admin["items"]
+        .as_array()
+        .expect("admin items")
+        .iter()
+        .find(|item| item["id"] == "saber")
+        .expect("seed saber");
+    let revision = saber["revision"].as_i64().expect("revision");
+    let cover_asset_id = saber["cover_asset_id"].as_i64().expect("cover asset");
+    let voice_asset_id = saber["cover_voice_asset_id"].as_i64().expect("voice asset");
+    let theme = saber["theme"].clone();
+
+    let update = json!({
+        "revision": revision,
+        "name": "Saber Lily",
+        "cover_asset_id": cover_asset_id,
+        "theme": theme,
+        "color_scheme": "day",
+        "cover_title": "Saber Lily\n新的封面",
+        "cover_subtitle": "测试副标题",
+        "cover_character_name": "Lily",
+        "cover_dialogue": "欢迎回来。",
+        "cover_voice_label": "播放 Lily 语音",
+        "cover_voice_asset_id": voice_asset_id,
+        "kanban_asset_id": null
+    });
+    let (status, saved) = json_request(
+        &app,
+        Method::PUT,
+        "/api/v1/admin/raiments/saber",
+        Some(update.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["name"], "Saber Lily");
+    assert_eq!(saved["revision"], revision + 1);
+
+    let (status, conflict) = json_request(
+        &app,
+        Method::PUT,
+        "/api/v1/admin/raiments/saber",
+        Some(update),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(conflict["error"]["code"], "conflict");
+
+    let create = json!({
+        "name": "午后模式",
+        "cover_asset_id": cover_asset_id,
+        "theme": saved["theme"].clone(),
+        "color_scheme": "day",
+        "cover_title": "午后的标题",
+        "cover_subtitle": "午后副标题",
+        "cover_character_name": "Lily",
+        "cover_dialogue": "午后好。",
+        "cover_voice_label": "播放午后语音",
+        "cover_voice_asset_id": voice_asset_id,
+        "kanban_asset_id": null
+    });
+    let (status, created) =
+        json_request(&app, Method::POST, "/api/v1/admin/raiments", Some(create)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["name"], "午后模式");
+    assert_eq!(created["is_builtin"], false);
+    assert!(
+        created["id"]
+            .as_str()
+            .expect("created id")
+            .starts_with("raiment-")
+    );
+
+    let (status, public) = json_request(&app, Method::GET, "/api/v1/raiments", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(public["items"].as_array().expect("public items").len(), 3);
+    assert!(
+        public["items"]
+            .as_array()
+            .expect("public items")
+            .iter()
+            .all(|item| item.get("switch_at").is_none())
+    );
+    assert!(
+        public["items"]
+            .as_array()
+            .expect("public items")
+            .iter()
+            .find(|item| item["id"] == "saber")
+            .expect("public saber")
+            .get("revision")
+            .is_none()
+    );
+
+    let referenced_asset: i64 = sqlx::query_scalar(
+        "SELECT asset_id FROM asset_references
+         WHERE source_type = 'raiment_cover' AND source_key = 'saber'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .expect("raiment cover reference");
+    assert_eq!(referenced_asset, cover_asset_id);
+
+    let created_id = created["id"].as_str().expect("created id");
+    let (status, schedule) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/admin/site/raiment-schedule",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let schedule_revision = schedule["revision"].as_i64().expect("schedule revision");
+    let (status, saved_schedule) = json_request(
+        &app,
+        Method::PUT,
+        "/api/v1/admin/site/raiment-schedule",
+        Some(json!({
+            "revision": schedule_revision,
+            "periods": [
+                {"id":"morning","start_at":"06:00","end_at":"12:00","raiment_id":"saber"},
+                {"id":"afternoon","start_at":"12:00","end_at":"18:00","raiment_id":created_id},
+                {"id":"night","start_at":"18:00","end_at":"06:00","raiment_id":"alter-saber"}
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved_schedule["revision"], schedule_revision + 1);
+
+    let (status, conflict) = json_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/admin/raiments/{created_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(conflict["error"]["code"], "conflict");
+
+    let (status, _) = json_request(
+        &app,
+        Method::PUT,
+        "/api/v1/admin/site/raiment-schedule",
+        Some(json!({
+            "revision": saved_schedule["revision"],
+            "periods": [
+                {"id":"day","start_at":"06:00","end_at":"18:00","raiment_id":"saber"},
+                {"id":"night","start_at":"18:00","end_at":"06:00","raiment_id":"alter-saber"}
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = json_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/admin/raiments/{created_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_null());
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
 async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
     let database = TestDatabase::create().await;
     let legacy_comments_removed: bool = sqlx::query_scalar(
@@ -416,12 +627,8 @@ async fn bangumi_mirror_is_public_paginated_and_filterable() {
 #[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
 async fn steam_game_mirror_is_public_paginated_and_reports_progress() {
     let database = TestDatabase::create().await;
-    let keyring = LlmKeyring::new(
-        2,
-        CURRENT_LLM_SECRET,
-        Some((1, PREVIOUS_LLM_SECRET)),
-    )
-    .expect("Steam test keyring");
+    let keyring = LlmKeyring::new(2, CURRENT_LLM_SECRET, Some((1, PREVIOUS_LLM_SECRET)))
+        .expect("Steam test keyring");
     let encrypted_steam_key = keyring
         .encrypt("0123456789ABCDEF0123456789ABCDEF")
         .expect("encrypt Steam fixture key");
