@@ -689,15 +689,22 @@ async fn admin_create(
             .fetch_one(&mut *tx)
             .await?;
     let slug = format!("p{id}");
-    sqlx::query("UPDATE articles SET slug = $1 WHERE id = $2")
-        .bind(&slug)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
+        "UPDATE articles SET slug = $1 WHERE id = $2 RETURNING updated_at",
+    )
+    .bind(&slug)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({ "id": id, "slug": slug, "status": "draft" })),
+        Json(serde_json::json!({
+            "id": id,
+            "slug": slug,
+            "status": "draft",
+            "updated_at": updated_at
+        })),
     ))
 }
 
@@ -747,6 +754,7 @@ async fn admin_detail(
 
 #[derive(Debug, Deserialize, Default)]
 struct UpdateArticleRequest {
+    expected_updated_at: Option<DateTime<Utc>>,
     title: Option<String>,
     summary: Option<String>,
     content_md: Option<String>,
@@ -770,6 +778,9 @@ async fn admin_update(
     let existing = fetch_article_by_id(state.pool(), id, true)
         .await?
         .ok_or_else(|| ArticleError::NotFound("文章不存在".to_owned()))?;
+    let expected_updated_at = request.expected_updated_at.ok_or_else(|| {
+        ArticleError::validation("expected_updated_at 不能为空，请刷新文章后重试")
+    })?;
     let title = normalize_title(request.title.as_deref().or(Some(existing.title.as_str())))?;
     let content_md = request.content_md.unwrap_or(existing.content_md);
     let raw_summary = request.summary.unwrap_or(existing.summary);
@@ -809,11 +820,11 @@ async fn admin_update(
     } else {
         existing.published_at
     };
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE articles SET title=$1, summary=$2, content_md=$3, category_id=$4,
             cover_asset_id=$5, is_pinned=$6, allow_comment=$7, kanban_ref=$8,
             status=$9, word_count=$10, read_minutes=$11, published_at=$12
-         WHERE id=$13",
+         WHERE id=$13 AND updated_at=$14",
     )
     .bind(&title)
     .bind(&summary)
@@ -828,8 +839,15 @@ async fn admin_update(
     .bind(read_minutes)
     .bind(published_at)
     .bind(id)
+    .bind(expected_updated_at)
     .execute(&mut *tx)
     .await?;
+    if result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Err(ArticleError::Conflict(
+            "文章已在其他页面更新，请刷新后重试".to_owned(),
+        ));
+    }
     sync_article_relations(&mut tx, id, &tag_ids, &content_asset_ids).await?;
     tx.commit().await?;
     let updated = fetch_article_by_id(state.pool(), id, true)

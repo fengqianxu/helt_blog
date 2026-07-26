@@ -110,6 +110,28 @@ type ArticleDetailPayload = {
   allow_comment: boolean;
 };
 
+const ARTALK_SERVER = "/artalk";
+const ARTALK_SITE = "helt.";
+const articleCommentKey = (slug: string) => `/posts/${slug}`;
+type ArtalkInstance = { destroy: () => void; setDarkMode: (darkMode: boolean) => void };
+
+function useArtalkCommentCounts(pageKeys: string) {
+  useEffect(() => {
+    if (!pageKeys) return;
+    let cancelled = false;
+    void import("artalk").then(({ default: Artalk }) => {
+      if (cancelled) return;
+      Artalk.loadCountWidget({
+        server: ARTALK_SERVER,
+        site: ARTALK_SITE,
+        pvEl: ".artalk-pv-count-disabled",
+        countEl: ".artalk-comment-count",
+      });
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [pageKeys]);
+}
+
 const categoryName = (post: Post) => post.category?.name || "未分类";
 const articleDate = (post: Post) => (post.published_at || post.updated_at || post.created_at).slice(0, 10);
 const articleWords = (post: Post) => `${post.word_count.toLocaleString()} 字`;
@@ -193,7 +215,7 @@ export function BlogApp() {
   if (pathname === "/") page = <HomePage theme={theme} toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
   else if (pathname.startsWith("/posts/")) {
     const slug = pathname.split("/").filter(Boolean)[1];
-    page = <ArticlePage slug={slug} notify={notify} />;
+    page = <ArticlePage slug={slug} theme={theme} notify={notify} />;
   }
   else if (pathname === "/archives") page = <ArchivesPage />;
   else if (pathname === "/moments") page = <MomentsPage notify={notify} />;
@@ -291,6 +313,8 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
     return () => controller.abort();
   }, [page]);
   const visiblePosts = posts;
+  const commentCountKey = visiblePosts.map((post) => post.slug).join("|");
+  useArtalkCommentCounts(!loading && !error ? commentCountKey : "");
   const enter = () => document.getElementById("articles")?.scrollIntoView({ behavior: "smooth" });
   useEffect(() => {
     const updateNav = () => setNavElevated(window.scrollY > 56);
@@ -360,7 +384,7 @@ function PostCard({ post }: { post: Post }) {
   return (
     <Link href={`/posts/${post.slug}`} className={cx("post-card", post.is_pinned && "pinned")}>
       {post.is_pinned && <span className="pin">置顶 PINNED</span>}
-      <div className="post-main"><div className="post-meta"><span className="tag">{categoryName(post)}</span><span>{articleDate(post)}</span></div><h2>{post.title}</h2><p>{post.summary}</p><div className="post-stats"><span>{articleTime(post)}</span><span>{articleWords(post)}</span><span>评论 {post.comment_count}</span></div></div>
+      <div className="post-main"><div className="post-meta"><span className="tag">{categoryName(post)}</span><span>{articleDate(post)}</span></div><h2>{post.title}</h2><p>{post.summary}</p><div className="post-stats"><span>{articleTime(post)}</span><span>{articleWords(post)}</span><span>评论 <span className="artalk-comment-count" data-page-key={articleCommentKey(post.slug)}>{post.comment_count}</span></span></div></div>
       {post.cover_url && <Image src={post.cover_url} width={512} height={288} sizes="240px" alt={`${post.title} 封面`} unoptimized />}
     </Link>
   );
@@ -368,7 +392,7 @@ function PostCard({ post }: { post: Post }) {
 
 function PageHeading({ title, subtitle }: { title: string; subtitle: string }) { return <div className="page-heading"><h1>{title}</h1><span>{subtitle}</span></div>; }
 
-function ArticlePage({ slug, notify }: { slug: string; notify: Notify }) {
+function ArticlePage({ slug, theme, notify }: { slug: string; theme: Theme; notify: Notify }) {
   const [progress, setProgress] = useState(0);
   const [liked, setLiked] = useState(false);
   const [payload, setPayload] = useState<ArticleDetailPayload | null>(null);
@@ -425,7 +449,9 @@ function ArticlePage({ slug, notify }: { slug: string; notify: Notify }) {
         <MarkdownBody source={post.content_md || "这篇文章还没有正文。"} />
         <div id="article-actions" className="article-actions"><button className={liked ? "liked" : ""} onClick={() => { setLiked(!liked); notify(liked ? "已取消喜欢" : "感谢你的喜欢", "success"); }}>{liked ? "♥ 已喜欢" : "♡ 喜欢"}</button><button onClick={shareArticle}>⌁ 分享文章</button></div>
         <div className="article-nav">{previousPost ? <Link href={`/posts/${previousPost.slug}`}>← 上一篇<br /><b>{previousPost.title}</b></Link> : <span />}{nextPost ? <Link href={`/posts/${nextPost.slug}`}>下一篇 →<br /><b>{nextPost.title}</b></Link> : <span />}</div>
-        <Comments count={post.comment_count} notify={notify} />
+        {payload.allow_comment
+          ? <Comments slug={post.slug} title={post.title} count={post.comment_count} theme={theme} />
+          : <section className="comments comments-disabled"><h2>评论</h2><p>这篇文章已关闭评论。</p></section>}
       </article>
       <aside className="article-aside"><div className="toc"><b>目录 CONTENTS <small>{Math.round(progress)}%</small></b><Link href="#article-content" className="active">正文</Link><Link href="#article-actions">互动</Link></div><div className="recommend"><b>相关文章</b>{related.length ? related.map((item) => <Link key={item.id} href={`/posts/${item.slug}`}>{item.title}</Link>) : <Link href="/archives">浏览全部文章</Link>}</div></aside>
     </main></>
@@ -440,10 +466,52 @@ function SectionTitle({ index, title, id }: { index: string; title: string; id?:
   return <h2 id={id} className="section-title"><i />{index}、{title}</h2>;
 }
 
-function Comments({ count, notify }: { count: number; notify: Notify }) {
-  const [sent, setSent] = useState(false);
-  const [replyTo, setReplyTo] = useState("");
-  return <section className="comments"><h2>评论 · {count}</h2><div className="comment"><span>凛</span><div><b>Rin <small>· 3 小时前</small></b><p>开屏语音这个想法太棒了，期待夜间 Alter 的低音版本（笑）。</p><button className="text-action" onClick={() => setReplyTo("@Rin ")}>回复</button></div></div><div className="comment reply"><span>h</span><div><b>helt <em>博主</em> <small>· 2 小时前</small></b><p>@Rin 已经在录了，音量会默认静音防止吓到人（认真）。</p><button className="text-action" onClick={() => setReplyTo("@helt ")}>回复</button></div></div><form className="comment-form" onSubmit={(e) => { e.preventDefault(); setSent(true); setReplyTo(""); notify("评论已进入审核队列", "success"); }}><b>留下你的回应</b><div><input aria-label="昵称" placeholder="昵称" required /><input aria-label="邮箱" placeholder="邮箱" type="email" required /></div><textarea aria-label="评论内容" key={replyTo} defaultValue={replyTo} placeholder="写下想说的话……" required /><button className="primary-button">发送评论</button>{sent && <span className="success" role="status">已进入审核队列（Mock）</span>}</form></section>;
+function Comments({ slug, title, count, theme }: { slug: string; title: string; count: number; theme: Theme }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const artalkRef = useRef<ArtalkInstance | null>(null);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let cancelled = false;
+    setLoadError("");
+    void import("artalk").then(({ default: Artalk }) => {
+      if (cancelled) return;
+      artalkRef.current = Artalk.init({
+        el: container,
+        pageKey: articleCommentKey(slug),
+        pageTitle: title,
+        server: ARTALK_SERVER,
+        site: ARTALK_SITE,
+        locale: "zh-CN",
+        darkMode: document.documentElement.dataset.theme === "night",
+        placeholder: "写下想说的话……",
+        noComment: "还没有评论，来留下第一条回应吧。",
+        sendBtn: "发送评论",
+        pageVote: false,
+        pvAdd: false,
+      });
+    }).catch(() => {
+      if (!cancelled) setLoadError("评论组件加载失败，请刷新页面后重试。");
+    });
+    return () => {
+      cancelled = true;
+      artalkRef.current?.destroy();
+      artalkRef.current = null;
+    };
+  }, [slug, title]);
+
+  useEffect(() => {
+    artalkRef.current?.setDarkMode(theme === "night");
+  }, [theme]);
+
+  return <section className="comments" aria-labelledby="article-comments-title">
+    <h2 id="article-comments-title">评论 · <span className="artalk-comment-count" data-page-key={articleCommentKey(slug)}>{count}</span></h2>
+    {loadError && <p className="comment-load-error" role="alert">{loadError}</p>}
+    <div ref={containerRef} className="artalk-host" />
+    <small className="comment-privacy-note">评论由 Artalk 提供；提交时会处理昵称、邮箱、IP 地址与浏览器信息，用于身份识别和反垃圾。</small>
+  </section>;
 }
 
 function ArchivesPage() {
@@ -665,10 +733,10 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   const [currentAdmin, setCurrentAdmin] = useState(admin);
   const current = adminNav.find(([href]) => pathname === href)?.[2] || (pathname.includes("articles") ? "文章编辑器" : "仪表盘");
   let content: React.ReactNode;
-  if (pathname === "/admin") content = <Dashboard notify={notify} />;
+  if (pathname === "/admin") content = <Dashboard />;
   else if (pathname === "/admin/articles") content = <ArticleManager notify={notify} />;
   else if (pathname.includes("/admin/articles/")) content = <ArticleEditor pathname={pathname} theme={theme} notify={notify} />;
-  else if (pathname === "/admin/comments") content = <CommentManager notify={notify} />;
+  else if (pathname === "/admin/comments") content = <CommentManager />;
   else if (pathname === "/admin/assets") content = <AssetManager notify={notify} />;
   else if (pathname === "/admin/raiments" || pathname === "/admin/appearance") content = <RaimentSettings notify={notify} />;
   else if (pathname === "/admin/llm" || pathname === "/admin/kanban") content = <LlmSettings notify={notify} />;
@@ -760,8 +828,8 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
 
 function AdminTitle({ title, sub, action }: { title: string; sub: string; action?: React.ReactNode }) { return <div className="admin-title"><div><h1>{title}</h1><p>{sub}</p></div>{action}</div>; }
 
-function Dashboard({ notify }: { notify: Notify }) {
-  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · 2026.07.23" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} /><div className="admin-stats">{[["128", "文章总数", "+3 本月"], ["187,203", "累计访客", "+12.4%"], ["1,842", "评论总数", "17 待审核"], ["2,048", "运行天数", "99.98%"]].map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS</small></h2><div className="chart">{[35, 52, 43, 66, 58, 78, 72, 88, 60, 82, 76, 94, 86, 100].map((n, i) => <i key={i} style={{ height: `${n}%` }} />)}</div></section><section className="admin-panel recent-comments"><h2>最新评论 <Link href="/admin/comments">全部 →</Link></h2>{["Rin", "Aki", "Kumo"].map((n, i) => <div key={n}><span>{n[0]}</span><p><b>{n} · {i + 1} 小时前</b>开屏语音这个想法太棒了，期待夜间 Alter…</p><span className="mini-actions"><button onClick={() => notify(`已通过 ${n} 的评论`, "success")}>通过</button><button onClick={() => notify(`已拒绝 ${n} 的评论`, "danger")}>拒绝</button><button onClick={() => notify(`正在回复 ${n}`)}>回复</button></span></div>)}</section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/assets">▧<span>上传素材</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
+function Dashboard() {
+  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · 2026.07.23" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} /><div className="admin-stats">{[["128", "文章总数", "+3 本月"], ["187,203", "累计访客", "+12.4%"], ["Artalk", "评论系统", "独立审核控制台"], ["2,048", "运行天数", "99.98%"]].map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS</small></h2><div className="chart">{[35, 52, 43, 66, 58, 78, 72, 88, 60, 82, 76, 94, 86, 100].map((n, i) => <i key={i} style={{ height: `${n}%` }} />)}</div></section><section className="admin-panel recent-comments"><h2>评论系统 <Link href="/admin/comments">管理 →</Link></h2><div><span>A</span><p><b>Artalk 已接入</b>最新评论、审核队列与评论统计请在评论控制台查看。</p></div></section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/assets">▧<span>上传素材</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
 }
 
 function ArticleManager({ notify }: { notify: Notify }) {
@@ -776,6 +844,7 @@ function ArticleManager({ notify }: { notify: Notify }) {
   const [loading, setLoading] = useState(true);
   const loadSequenceRef = useRef(0);
   const perPage = 20;
+  useArtalkCommentCounts(rows.map((post) => post.slug).join("|"));
   const load = useCallback(async () => {
     const sequence = ++loadSequenceRef.current;
     setLoading(true);
@@ -861,7 +930,7 @@ function ArticleManager({ notify }: { notify: Notify }) {
     return () => window.removeEventListener("keydown", close);
   }, [deleteConfirmation, deleting]);
   const pageCount = Math.max(1, Math.ceil(total / perPage));
-  return <><AdminTitle title="文章管理" sub={`ARTICLES · ${total} 条结果`} action={<Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>} /><div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => { setFilter(x); setPage(1); }}>{x}</button>)}</div><input aria-label="搜索文章标题" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="搜索标题…" /></div>{selected.length > 0 && <div className="admin-toolbar"><span>已选择 {selected.length} 篇</span><button onClick={() => void batch("publish")}>发布</button><button onClick={() => void batch("unpublish")}>撤回</button><button onClick={() => void batch("pin")}>置顶</button><button onClick={() => void batch("delete")}>删除</button></div>}<div className="admin-table"><div className="table-head"><span>选择</span><span>标题</span><span>分类</span><span>状态</span><span>数据</span><span>日期</span><span>操作</span></div>{loading && <div className="empty-panel">正在加载文章…</div>}{!loading && rows.map((p) => <div className="table-row" key={p.id}><span><input type="checkbox" aria-label={`选择 ${p.title}`} checked={selected.includes(p.id)} onChange={(event) => setSelected((items) => event.target.checked ? [...items, p.id] : items.filter((id) => id !== p.id))} /></span><b>{p.is_pinned && <em>置顶</em>}{p.title}</b><span className="tag">{categoryName(p)}</span><span className={p.status === "published" ? "published" : "draft"}>{p.status === "published" ? "● 已发布" : p.status === "hidden" ? "◌ 隐藏" : "◐ 草稿"}</span><small>{p.view_count} 阅 · {p.comment_count} 评</small><small>{articleDate(p).slice(5)}</small><span className="row-actions"><Link href={`/admin/articles/${p.id}/edit`}>编辑</Link>{p.status === "published" && <Link href={`/posts/${p.slug}`}>预览</Link>}<button onClick={() => remove(p.id, p.title)}>删除</button></span></div>)}{!loading && !rows.length && <div className="empty-panel">没有符合当前筛选的文章。</div>}</div>{pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台文章分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}{deleteConfirmation && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteConfirmation(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="article-delete-title"><header><div><span>ARTICLES / DELETE</span><h2 id="article-delete-title">确认删除文章</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>×</button></header><p>{deleteConfirmation.ids.length === 1 && deleteConfirmation.title ? `确定删除《${deleteConfirmation.title}》？` : `确定删除选中的 ${deleteConfirmation.ids.length} 篇文章？`}此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}</>;
+  return <><AdminTitle title="文章管理" sub={`ARTICLES · ${total} 条结果`} action={<Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>} /><div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => { setFilter(x); setPage(1); }}>{x}</button>)}</div><input aria-label="搜索文章标题" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="搜索标题…" /></div>{selected.length > 0 && <div className="admin-toolbar"><span>已选择 {selected.length} 篇</span><button onClick={() => void batch("publish")}>发布</button><button onClick={() => void batch("unpublish")}>撤回</button><button onClick={() => void batch("pin")}>置顶</button><button onClick={() => void batch("delete")}>删除</button></div>}<div className="admin-table"><div className="table-head"><span>选择</span><span>标题</span><span>分类</span><span>状态</span><span>数据</span><span>日期</span><span>操作</span></div>{loading && <div className="empty-panel">正在加载文章…</div>}{!loading && rows.map((p) => <div className="table-row" key={p.id}><span><input type="checkbox" aria-label={`选择 ${p.title}`} checked={selected.includes(p.id)} onChange={(event) => setSelected((items) => event.target.checked ? [...items, p.id] : items.filter((id) => id !== p.id))} /></span><b>{p.is_pinned && <em>置顶</em>}{p.title}</b><span className="tag">{categoryName(p)}</span><span className={p.status === "published" ? "published" : "draft"}>{p.status === "published" ? "● 已发布" : p.status === "hidden" ? "◌ 隐藏" : "◐ 草稿"}</span><small>{p.view_count} 阅 · <span className="artalk-comment-count" data-page-key={articleCommentKey(p.slug)}>{p.comment_count}</span> 评</small><small>{articleDate(p).slice(5)}</small><span className="row-actions"><Link href={`/admin/articles/${p.id}/edit`}>编辑</Link>{p.status === "published" && <Link href={`/posts/${p.slug}`}>预览</Link>}<button onClick={() => remove(p.id, p.title)}>删除</button></span></div>)}{!loading && !rows.length && <div className="empty-panel">没有符合当前筛选的文章。</div>}</div>{pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台文章分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}{deleteConfirmation && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteConfirmation(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="article-delete-title"><header><div><span>ARTICLES / DELETE</span><h2 id="article-delete-title">确认删除文章</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>×</button></header><p>{deleteConfirmation.ids.length === 1 && deleteConfirmation.title ? `确定删除《${deleteConfirmation.title}》？` : `确定删除选中的 ${deleteConfirmation.ids.length} 篇文章？`}此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}</>;
 }
 
 type ArticleEditPayload = {
@@ -877,6 +946,7 @@ type ArticleEditPayload = {
   kanban_ref: boolean;
   status: Post["status"];
   slug: string;
+  updated_at: string;
 };
 
 type EditorLlmConnection = {
@@ -989,6 +1059,7 @@ const emptyArticle: ArticleEditPayload = {
   kanban_ref: true,
   status: "draft",
   slug: "待保存",
+  updated_at: "",
 };
 
 const editorDraftKey = (id: number | null) => id ? `helt-article-editor-${id}` : "helt-article-editor-new";
@@ -1253,6 +1324,7 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
     setSaving(true);
     try {
       let id = articleId;
+      let expectedUpdatedAt = data.updated_at;
       if (!id) {
         const created = await fetch("/api/v1/admin/articles", {
           method: "POST",
@@ -1261,7 +1333,9 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
           body: JSON.stringify({ title: data.title }),
         });
         if (!created.ok) throw new Error(await responseMessage(created, "无法创建文章"));
-        id = (await created.json() as { id: number }).id;
+        const createdArticle = await created.json() as { id: number; updated_at: string };
+        id = createdArticle.id;
+        expectedUpdatedAt = createdArticle.updated_at;
         setArticleId(id);
         window.history.replaceState({}, "", `/admin/articles/${id}/edit`);
       }
@@ -1269,17 +1343,21 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
         method: "PUT",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...data, status }),
+        body: JSON.stringify({
+          ...data,
+          status,
+          expected_updated_at: expectedUpdatedAt || undefined,
+        }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, "文章保存失败"));
-      const result = await response.json() as { status: Post["status"] };
+      const result = await response.json() as { status: Post["status"]; updated_at: string };
       try {
         window.localStorage.removeItem(editorDraftKey(articleId));
         window.localStorage.removeItem(editorDraftKey(id));
       } catch {
         // 本地存储不可用时不影响服务端保存结果。
       }
-      setData((current) => current ? { ...current, status: result.status } : current);
+      setData((current) => current ? { ...current, status: result.status, updated_at: result.updated_at } : current);
       setDirty(false);
       setAutoSavedAt("");
       setLastSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
@@ -1500,11 +1578,18 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
   );
 }
 
-function CommentManager({ notify }: { notify: Notify }) {
-  const [done, setDone] = useState<string[]>([]);
-  const items = [{ n: "Rin", text: "开屏语音这个想法太棒了，期待夜间 Alter 的低音版本（笑）。", post: "重构博客的一些思考" }, { n: "Kumo", text: "pkg 解包那段能再详细一点吗？我卡在 RePKG 提取贴图这步了。", post: "把 Wallpaper Engine 的动态壁纸搬到网页开屏" }, { n: "Aki", text: "新的移动端布局读起来很舒服！", post: "重构博客的一些思考" }];
-  const handle = (name: string, action: string) => { setDone((itemsDone) => [...itemsDone, name]); notify(`已${action} ${name} 的评论`, action === "拒绝" ? "danger" : "success"); };
-  return <><AdminTitle title="评论审核" sub={`COMMENTS · ${items.length - done.length} 待处理`} /><div className="moderation-list">{items.filter((x) => !done.includes(x.n)).map((x) => <article key={x.n}><span>{x.n[0]}</span><div><b>{x.n} <small>· 刚刚</small></b><p>{x.text}</p><small>评论于：<span>《{x.post}》</span></small></div><div><button onClick={() => handle(x.n, "通过")}>✓ 通过</button><button onClick={() => handle(x.n, "拒绝")}>× 拒绝</button><button onClick={() => notify(`已打开对 ${x.n} 的回复框`)}>↩ 回复</button></div></article>)}{done.length === items.length && <div className="empty-panel"><b>✓</b><p>全部评论已处理完毕。</p><button onClick={() => setDone([])}>恢复演示数据</button></div>}</div></>;
+function CommentManager() {
+  return <>
+    <AdminTitle title="评论审核" sub="COMMENTS · POWERED BY ARTALK" action={<a className="admin-primary" href="/artalk/" target="_blank" rel="noreferrer">打开评论控制台 ↗</a>} />
+    <section className="admin-panel comment-admin-card">
+      <div className="comment-admin-mark" aria-hidden="true">A</div>
+      <div>
+        <h2>Artalk 评论控制台</h2>
+        <p>评论、嵌套回复、待审队列、垃圾内容、用户和页面统计统一由 Artalk 管理。控制台使用独立的评论管理员账户。</p>
+        <p>首次部署后，请在项目根目录执行 <code>docker compose exec artalk artalk admin</code> 创建管理员，然后从上方入口登录。</p>
+      </div>
+    </section>
+  </>;
 }
 
 function RaimentSettings({ notify }: { notify: Notify }) {

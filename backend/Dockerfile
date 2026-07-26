@@ -11,14 +11,22 @@ RUN cargo fetch --locked
 
 COPY migrations ./migrations
 COPY src ./src
+COPY tests ./tests
 
 RUN cargo build --locked --release
 
-FROM builder AS test
+FROM builder AS test-base
 
-RUN rustup component add clippy \
-    && cargo test --locked --all-targets \
+RUN rustup component add clippy
+
+FROM test-base AS test
+
+RUN cargo test --locked --all-targets \
     && cargo clippy --locked --all-targets -- -D warnings
+
+FROM test-base AS integration-test
+
+CMD ["cargo", "test", "--locked", "--test", "postgres_integration", "--", "--ignored", "--test-threads=1"]
 
 FROM debian:bookworm-slim AS runtime
 

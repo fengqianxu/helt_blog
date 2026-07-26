@@ -16,15 +16,14 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+      artalk:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--output-document=-", "http://127.0.0.1/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-
   frontend:
     build:
       context: ./frontend
@@ -48,9 +47,6 @@ services:
       start_period: 10s
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
-
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -70,9 +66,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-
   minio:
     image: minio/minio:latest
     restart: unless-stopped
@@ -91,13 +84,9 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-
   minio-init:
     image: minio/mc:latest
     restart: "no"
-    exclude_from_hc: true
     depends_on:
       minio:
         condition: service_healthy
@@ -117,9 +106,6 @@ services:
         mc mb --ignore-existing local/blog-private
         mc anonymous set download local/blog-public
         mc anonymous set none local/blog-private
-    security_opt:
-      - no-new-privileges:true
-
   backend:
     build:
       context: ./backend
@@ -142,7 +128,11 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-helt}
       ADMIN_INITIAL_PASSWORD: ${SERVICE_PASSWORD_64_ADMIN}
       AUTH_JWT_SECRET: ${SERVICE_PASSWORD_64_JWT}
-      LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:-}
+      LLM_ENCRYPTION_KEY: ${SERVICE_PASSWORD_64_LLM}
+      LLM_ENCRYPTION_KEY_VERSION: ${LLM_ENCRYPTION_KEY_VERSION:-1}
+      LLM_ENCRYPTION_PREVIOUS_KEY: ${LLM_ENCRYPTION_PREVIOUS_KEY:-}
+      LLM_ENCRYPTION_PREVIOUS_KEY_VERSION: ${LLM_ENCRYPTION_PREVIOUS_KEY_VERSION:-}
+      LLM_PRIVATE_HOST_ALLOWLIST: ${LLM_PRIVATE_HOST_ALLOWLIST:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the public URL, for example https://blog.example.com}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-${PUBLIC_ORIGIN}}
       REQUEST_TIMEOUT_SECS: ${REQUEST_TIMEOUT_SECS:-30}
@@ -171,12 +161,50 @@ services:
       - /tmp:size=64m,mode=1777
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
-
+  artalk:
+    image: artalk/artalk-go:2.10.0
+    restart: unless-stopped
+    init: true
+    environment:
+      TZ: Asia/Shanghai
+      ATK_LOCALE: zh-CN
+      ATK_APP_KEY: ${SERVICE_PASSWORD_64_ARTALK}
+      ATK_SITE_DEFAULT: helt.
+      ATK_SITE_URL: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the public URL, for example https://blog.example.com}
+      ATK_TRUSTED_DOMAINS: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the public URL, for example https://blog.example.com}
+      ATK_DB_TYPE: pgsql
+      ATK_DB_HOST: postgres
+      ATK_DB_PORT: 5432
+      ATK_DB_NAME: ${POSTGRES_DB:-helt_blog}
+      ATK_DB_USER: ${POSTGRES_USER:-helt}
+      ATK_DB_PASSWORD: ${SERVICE_PASSWORD_64_POSTGRES}
+      ATK_DB_TABLE_PREFIX: artalk_
+      ATK_HTTP_PROXY_HEADER: X-Real-IP
+      ATK_MODERATOR_PENDING_DEFAULT: ${ARTALK_PENDING_DEFAULT:-true}
+      ATK_IMG_UPLOAD_PATH: /data/artalk-img/
+      ATK_IMG_UPLOAD_PUBLIC_PATH: /artalk/static/images/
+    expose:
+      - "23366"
+    networks:
+      - api
+      - database
+    volumes:
+      - artalk_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=-", "http://127.0.0.1:23366/api/v2/conf"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    cap_drop:
+      - ALL
 volumes:
   postgres_data:
   minio_data:
+  artalk_data:
 
 networks:
   edge:

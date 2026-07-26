@@ -3,6 +3,8 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod llm_crypto;
+pub mod llm_network;
 pub mod routes;
 pub mod state;
 pub mod storage;

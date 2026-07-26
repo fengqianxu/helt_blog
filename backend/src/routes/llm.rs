@@ -7,12 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use chacha20poly1305::{
-    XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit},
-};
 use chrono::{DateTime, Utc};
-use rand::random;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,6 +17,7 @@ use tracing::error;
 use crate::{
     auth,
     error::{ErrorBody, ErrorEnvelope},
+    llm_crypto::LlmKeyring,
     routes::contract::HttpMethod,
     state::AppState,
 };
@@ -37,7 +33,7 @@ const MAX_CONNECTIONS: usize = 20;
 const MAX_UPSTREAM_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const ARTICLE_POLISH_TIMEOUT_SECS: u64 = 25;
 const SUMMARY_POLISH_SYSTEM_PROMPT: &str = "你是博客文章摘要编辑助手。当前任务只能润色摘要，不是续写、扩写或改写文章正文。严格保留原意与已有事实，不得虚构数据、经历、引用或来源。最终答案只能是一段可直接替换的纯文本摘要：不要标题、前缀、引号、解释、Markdown 或换行。包含中文、英文、数字、标点和空格在内，输出必须不超过 120 个字符，建议控制在 80–110 个字符。输出前请自行计数字符；如果超过上限，先压缩措辞再作答。此格式和长度要求高于用户的其他偏好。";
-type EncryptedApiKey = (Option<Vec<u8>>, Option<Vec<u8>>);
+type EncryptedApiKey = (Option<Vec<u8>>, Option<Vec<u8>>, Option<i32>);
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -250,6 +246,7 @@ struct LlmConnectionRow {
     model: String,
     api_key_ciphertext: Option<Vec<u8>>,
     api_key_nonce: Option<Vec<u8>>,
+    encryption_key_version: Option<i32>,
     temperature: f32,
     max_tokens: i32,
     enabled: bool,
@@ -342,6 +339,7 @@ async fn create_connection(
     require_admin(&state, &headers)?;
     request.display_name = request.display_name.trim().to_owned();
     request.base_url = normalize_base_url(&request.base_url)?;
+    validate_base_url_policy(&state, &request.base_url)?;
     request.api_key = request.api_key.trim().to_owned();
     if request.revision < 1 {
         return Err(LlmError::validation("revision 必须为正整数"));
@@ -369,8 +367,8 @@ async fn create_connection(
         ));
     }
     let latency_ms = i32::try_from(started.elapsed().as_millis()).unwrap_or(i32::MAX);
-    let (api_key_ciphertext, api_key_nonce) =
-        encrypt_api_key(state.llm_encryption_key(), &request.api_key)?;
+    let (api_key_ciphertext, api_key_nonce, encryption_key_version) =
+        encrypt_api_key(state.llm_keyring(), &request.api_key)?;
 
     let mut transaction = state.pool().begin().await?;
     let revision_updated = sqlx::query_scalar::<_, i64>(
@@ -389,15 +387,16 @@ async fn create_connection(
     }
     sqlx::query(
         "INSERT INTO llm_connections
-         (display_name, base_url, model, api_key_ciphertext, api_key_nonce,
+         (display_name, base_url, model, api_key_ciphertext, api_key_nonce, encryption_key_version,
           temperature, max_tokens, enabled, last_tested_at, last_test_status,
           last_test_latency_ms, last_test_error)
-         VALUES ($1, $2, '', $3, $4, 0.7, 512, true, now(), 'online', $5, NULL)",
+         VALUES ($1, $2, '', $3, $4, $5, 0.7, 512, true, now(), 'online', $6, NULL)",
     )
     .bind(&request.display_name)
     .bind(&request.base_url)
     .bind(api_key_ciphertext)
     .bind(api_key_nonce)
+    .bind(encryption_key_version)
     .bind(latency_ms)
     .execute(&mut *transaction)
     .await?;
@@ -414,6 +413,13 @@ async fn update_settings(
 ) -> Result<Json<LlmSettingsResponse>, LlmError> {
     require_admin(&state, &headers)?;
     normalize_and_validate(&mut request)?;
+    if let Some(connections) = request.connections.as_ref() {
+        for connection in connections {
+            validate_base_url_policy(&state, &connection.base_url)?;
+        }
+    } else {
+        validate_base_url_policy(&state, &request.base_url)?;
+    }
 
     let current = load_settings(&state).await?;
     if current.revision != request.revision {
@@ -521,16 +527,18 @@ async fn update_settings(
         let previous = connection
             .id
             .and_then(|id| existing_connections.iter().find(|item| item.id == id));
-        let (api_key_ciphertext, api_key_nonce) = if let Some(api_key) = supplied_key {
-            encrypt_api_key(state.llm_encryption_key(), api_key)?
-        } else if connection.clear_api_key {
-            (None, None)
-        } else {
-            (
-                previous.and_then(|item| item.api_key_ciphertext.clone()),
-                previous.and_then(|item| item.api_key_nonce.clone()),
-            )
-        };
+        let credentials_changed = supplied_key.is_some() || connection.clear_api_key;
+        let (api_key_ciphertext, api_key_nonce, encryption_key_version) =
+            if let Some(api_key) = supplied_key {
+                encrypt_api_key(state.llm_keyring(), api_key)?
+            } else if connection.clear_api_key {
+                (None, None, None)
+            } else {
+                // Preserve the database columns in-place. Copying the values
+                // loaded above could overwrite a concurrent key rotation with
+                // stale ciphertext after the row lock is released.
+                (None, None, None)
+            };
         let connection_test_invalidated = previous.is_none()
             || supplied_key.is_some()
             || connection.clear_api_key
@@ -539,19 +547,23 @@ async fn update_settings(
             sqlx::query(
                 "UPDATE llm_connections
                  SET display_name = $1, base_url = $2, model = $3,
-                     api_key_ciphertext = $4, api_key_nonce = $5,
-                     temperature = $6, max_tokens = $7, enabled = $8,
-                     last_tested_at = CASE WHEN $9 THEN NULL ELSE last_tested_at END,
-                     last_test_status = CASE WHEN $9 THEN 'untested' ELSE last_test_status END,
-                     last_test_latency_ms = CASE WHEN $9 THEN NULL ELSE last_test_latency_ms END,
-                     last_test_error = CASE WHEN $9 THEN NULL ELSE last_test_error END
-                 WHERE id = $10",
+                     api_key_ciphertext = CASE WHEN $7 THEN $4 ELSE api_key_ciphertext END,
+                     api_key_nonce = CASE WHEN $7 THEN $5 ELSE api_key_nonce END,
+                     encryption_key_version = CASE WHEN $7 THEN $6 ELSE encryption_key_version END,
+                     temperature = $8, max_tokens = $9, enabled = $10,
+                     last_tested_at = CASE WHEN $11 THEN NULL ELSE last_tested_at END,
+                     last_test_status = CASE WHEN $11 THEN 'untested' ELSE last_test_status END,
+                     last_test_latency_ms = CASE WHEN $11 THEN NULL ELSE last_test_latency_ms END,
+                     last_test_error = CASE WHEN $11 THEN NULL ELSE last_test_error END
+                 WHERE id = $12",
             )
             .bind(&connection.display_name)
             .bind(&connection.base_url)
             .bind(&connection.model)
             .bind(api_key_ciphertext)
             .bind(api_key_nonce)
+            .bind(encryption_key_version)
+            .bind(credentials_changed)
             .bind(connection.temperature)
             .bind(connection.max_tokens)
             .bind(connection.enabled)
@@ -563,14 +575,16 @@ async fn update_settings(
             sqlx::query(
                 "INSERT INTO llm_connections
                  (display_name, base_url, model, api_key_ciphertext, api_key_nonce,
+                  encryption_key_version,
                   temperature, max_tokens, enabled)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             )
             .bind(&connection.display_name)
             .bind(&connection.base_url)
             .bind(&connection.model)
             .bind(api_key_ciphertext)
             .bind(api_key_nonce)
+            .bind(encryption_key_version)
             .bind(connection.temperature)
             .bind(connection.max_tokens)
             .bind(connection.enabled)
@@ -619,7 +633,8 @@ async fn test_connection(
         .ok_or_else(|| LlmError::validation("请先新增并保存一条 LLM Key"))?;
 
     let api_key = decrypt_api_key(
-        state.llm_encryption_key(),
+        state.llm_keyring(),
+        row.encryption_key_version,
         row.api_key_ciphertext.as_deref(),
         row.api_key_nonce.as_deref(),
     )?;
@@ -684,7 +699,8 @@ async fn polish_article(
         return Err(LlmError::validation("选择的 LLM Key 已停用，请重新选择"));
     }
     let api_key = decrypt_api_key(
-        state.llm_encryption_key(),
+        state.llm_keyring(),
+        connection.encryption_key_version,
         connection.api_key_ciphertext.as_deref(),
         connection.api_key_nonce.as_deref(),
     )?
@@ -720,6 +736,7 @@ async fn list_models(
         request.base_url.clone()
     };
     let base_url = normalize_base_url(&base_url)?;
+    validate_base_url_policy(&state, &base_url)?;
     let supplied_key = request
         .api_key
         .as_deref()
@@ -732,7 +749,8 @@ async fn list_models(
     {
         let saved = saved.as_ref().expect("saved connection checked above");
         decrypt_api_key(
-            state.llm_encryption_key(),
+            state.llm_keyring(),
+            saved.encryption_key_version,
             saved.api_key_ciphertext.as_deref(),
             saved.api_key_nonce.as_deref(),
         )?
@@ -756,12 +774,9 @@ async fn request_model_options(
     api_key: Option<&str>,
 ) -> Result<Vec<ModelOption>, LlmError> {
     let endpoint = models_endpoint(base_url).map_err(LlmError::validation)?;
-    let mut request = state.http_client().get(endpoint);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request
-        .send()
+    let response = state
+        .llm_http_client()
+        .get(endpoint, api_key, Duration::from_secs(8))
         .await
         .map_err(|error| LlmError::Upstream(format!("无法连接模型 API：{error}")))?;
     let status = response.status();
@@ -844,12 +859,13 @@ async fn request_polished_text(
         "max_tokens": max_tokens
     });
     let response = state
-        .http_client()
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .timeout(Duration::from_secs(ARTICLE_POLISH_TIMEOUT_SECS))
-        .json(&payload)
-        .send()
+        .llm_http_client()
+        .post_json(
+            endpoint,
+            api_key,
+            &payload,
+            Duration::from_secs(ARTICLE_POLISH_TIMEOUT_SECS),
+        )
         .await
         .map_err(|error| LlmError::Upstream(format!("无法连接模型 API：{error}")))?;
     let status = response.status();
@@ -899,7 +915,7 @@ async fn load_settings(state: &AppState) -> Result<LlmSettingsRow, LlmError> {
 async fn load_connections(state: &AppState) -> Result<Vec<LlmConnectionRow>, LlmError> {
     sqlx::query_as::<_, LlmConnectionRow>(
         "SELECT id, display_name, base_url, model, api_key_ciphertext,
-                api_key_nonce, temperature, max_tokens, enabled, last_tested_at,
+                api_key_nonce, encryption_key_version, temperature, max_tokens, enabled, last_tested_at,
                 last_test_status, last_test_latency_ms, last_test_error, updated_at
          FROM llm_connections
          ORDER BY id",
@@ -1110,33 +1126,34 @@ fn normalize_base_url(value: &str) -> Result<String, LlmError> {
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
-fn encrypt_api_key(encryption_key: &[u8; 32], api_key: &str) -> Result<EncryptedApiKey, LlmError> {
-    let cipher = XChaCha20Poly1305::new(encryption_key.into());
-    let nonce_bytes: [u8; 24] = random();
-    let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce_bytes), api_key.as_bytes())
-        .map_err(|_| LlmError::Internal("无法加密 LLM API Key".to_owned()))?;
-    Ok((Some(ciphertext), Some(nonce_bytes.to_vec())))
+fn validate_base_url_policy(state: &AppState, base_url: &str) -> Result<(), LlmError> {
+    let url = Url::parse(base_url).map_err(|_| LlmError::validation("LLM API 地址无效"))?;
+    state
+        .llm_http_client()
+        .validate_configured_url(&url)
+        .map_err(|error| LlmError::validation(format!("LLM API 地址不符合网络策略：{error}")))
+}
+
+fn encrypt_api_key(keyring: &LlmKeyring, api_key: &str) -> Result<EncryptedApiKey, LlmError> {
+    let encrypted = keyring
+        .encrypt(api_key)
+        .map_err(|error| LlmError::Internal(error.to_string()))?;
+    Ok((
+        Some(encrypted.ciphertext),
+        Some(encrypted.nonce),
+        Some(encrypted.key_version),
+    ))
 }
 
 fn decrypt_api_key(
-    encryption_key: &[u8; 32],
+    keyring: &LlmKeyring,
+    key_version: Option<i32>,
     ciphertext: Option<&[u8]>,
     nonce: Option<&[u8]>,
 ) -> Result<Option<String>, LlmError> {
-    let (Some(ciphertext), Some(nonce)) = (ciphertext, nonce) else {
-        return Ok(None);
-    };
-    if nonce.len() != 24 {
-        return Err(LlmError::Internal("LLM API Key nonce 无效".to_owned()));
-    }
-    let cipher = XChaCha20Poly1305::new(encryption_key.into());
-    let plaintext = cipher
-        .decrypt(XNonce::from_slice(nonce), ciphertext)
-        .map_err(|_| LlmError::Internal("无法解密 LLM API Key".to_owned()))?;
-    String::from_utf8(plaintext)
-        .map(Some)
-        .map_err(|_| LlmError::Internal("LLM API Key 编码无效".to_owned()))
+    keyring
+        .decrypt_optional(key_version, ciphertext, nonce)
+        .map_err(|error| LlmError::Internal(error.to_string()))
 }
 
 fn models_endpoint(base_url: &str) -> Result<Url, String> {
@@ -1282,15 +1299,23 @@ mod tests {
         extract_polished_content, models_endpoint, normalize_and_validate, normalize_base_url,
         sort_model_options,
     };
+    use crate::llm_crypto::LlmKeyring;
     use serde_json::json;
 
     #[test]
     fn api_key_encryption_round_trips_without_plaintext_storage() {
-        let key = [7_u8; 32];
-        let (ciphertext, nonce) = encrypt_api_key(&key, "secret-key").expect("encrypt");
+        let keyring = LlmKeyring::new(7, "test encryption secret", None).expect("keyring");
+        let (ciphertext, nonce, key_version) =
+            encrypt_api_key(&keyring, "secret-key").expect("encrypt");
         assert_ne!(ciphertext.as_deref(), Some("secret-key".as_bytes()));
         assert_eq!(
-            decrypt_api_key(&key, ciphertext.as_deref(), nonce.as_deref()).expect("decrypt"),
+            decrypt_api_key(
+                &keyring,
+                key_version,
+                ciphertext.as_deref(),
+                nonce.as_deref()
+            )
+            .expect("decrypt"),
             Some("secret-key".to_owned())
         );
     }

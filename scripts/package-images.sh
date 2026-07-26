@@ -11,7 +11,7 @@ bundle_directory="$project_root/$output_directory/helt-blog-$safe_tag"
 
 cd "$project_root"
 docker compose build backend frontend gateway
-docker compose pull postgres minio minio-init
+docker compose pull postgres minio minio-init artalk
 mkdir -p "$bundle_directory"
 cp docker-compose.yml .env.example DEPLOY.md "$bundle_directory/"
 docker image save --output "$bundle_directory/images.tar" \
@@ -20,7 +20,8 @@ docker image save --output "$bundle_directory/images.tar" \
   "$image_prefix-gateway:$image_tag" \
   postgres:16-alpine \
   minio/minio:latest \
-  minio/mc:latest
+  minio/mc:latest \
+  artalk/artalk-go:2.10.0
 (cd "$bundle_directory" && sha256sum images.tar > images.tar.sha256)
 
 printf 'Offline deployment bundle created at: %s\n' "$bundle_directory"

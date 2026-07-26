@@ -44,21 +44,37 @@ docker compose -f docker-compose.yml -f docker-compose.coolify.yml config --quie
 
 ## Validation
 
-Before handing off changes, run the checks relevant to the files changed:
+This repository is validated as a Docker Compose project. Run the commands from
+the repository root rather than validating frontend and backend with host
+toolchains directly:
 
 ```powershell
-Set-Location frontend
-npm run lint
-npm test
+# Validate the base Compose model and the production/Coolify override.
+docker compose config --quiet
+docker compose -f docker-compose.yml -f docker-compose.coolify.yml config --quiet
 
-Set-Location ..\backend
-cargo fmt --all -- --check
-cargo test
+# Build the service test stages. These stages run the frontend lint/render
+# checks and the backend cargo test/clippy checks inside their Docker images.
+docker build --target test -t helt-blog-frontend-test ./frontend
+docker build --target test -t helt-blog-backend-test ./backend
+
+# For changes crossing service boundaries, run a Compose smoke test.
+docker compose up --build -d
+docker compose ps
+docker compose down
 ```
 
-When the local Windows Rust toolchain lacks the MSVC linker, run backend tests
-inside the Rust Docker image or build the backend Docker target instead. For
-database migration changes, validate all migrations in order against a
-temporary PostgreSQL 16 container.
+For database migration changes, start the Compose PostgreSQL 16 service and
+validate all migrations in order against that container. Use the debug override
+when host access to PostgreSQL or MinIO is required:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.debug.yml up --build -d
+docker compose -f docker-compose.yml -f docker-compose.debug.yml ps
+docker compose -f docker-compose.yml -f docker-compose.debug.yml down
+```
+
+Do not rely on a host Windows Rust linker or host Node installation as the
+project validation path; the Docker test stages are the source of truth.
 
 Never commit `.env`, credentials, generated `frontend/dist`, or `backend/target`.

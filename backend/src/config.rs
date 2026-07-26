@@ -19,7 +19,11 @@ pub struct Config {
     pub admin_username: String,
     pub admin_initial_password: Option<String>,
     pub auth_jwt_secret: String,
+    pub llm_encryption_key_version: i32,
     pub llm_encryption_secret: String,
+    pub llm_encryption_previous_key_version: Option<i32>,
+    pub llm_encryption_previous_secret: Option<String>,
+    pub llm_private_host_allowlist: Vec<String>,
     pub public_origin: String,
     pub cors_allowed_origins: Vec<String>,
     pub request_timeout_secs: u64,
@@ -35,8 +39,16 @@ pub enum ConfigError {
     InvalidPoolSize,
     #[error("AUTH_JWT_SECRET must contain at least 32 characters")]
     WeakAuthSecret,
-    #[error("LLM_ENCRYPTION_KEY must contain at least 32 characters when provided")]
+    #[error("LLM_ENCRYPTION_KEY must contain at least 32 characters")]
     WeakLlmEncryptionSecret,
+    #[error("LLM_ENCRYPTION_PREVIOUS_KEY must contain at least 32 characters")]
+    WeakPreviousLlmEncryptionSecret,
+    #[error(
+        "LLM_ENCRYPTION_PREVIOUS_KEY and LLM_ENCRYPTION_PREVIOUS_KEY_VERSION must be configured together"
+    )]
+    IncompletePreviousLlmEncryptionKey,
+    #[error("LLM encryption key versions must be positive and distinct")]
+    InvalidLlmEncryptionKeyVersions,
 }
 
 impl Config {
@@ -66,13 +78,31 @@ impl Config {
         if auth_jwt_secret.chars().count() < 32 {
             return Err(ConfigError::WeakAuthSecret);
         }
-        let llm_encryption_secret = env::var("LLM_ENCRYPTION_KEY")
-            .ok()
-            .filter(|secret| !secret.trim().is_empty())
-            .unwrap_or_else(|| auth_jwt_secret.clone());
+        let llm_encryption_secret = required("LLM_ENCRYPTION_KEY")?;
         if llm_encryption_secret.chars().count() < 32 {
             return Err(ConfigError::WeakLlmEncryptionSecret);
         }
+        let llm_encryption_key_version = parse_or("LLM_ENCRYPTION_KEY_VERSION", 1_i32)?;
+        let llm_encryption_previous_secret = optional("LLM_ENCRYPTION_PREVIOUS_KEY");
+        let llm_encryption_previous_key_version =
+            optional_parse("LLM_ENCRYPTION_PREVIOUS_KEY_VERSION")?;
+        if llm_encryption_previous_secret.is_some() != llm_encryption_previous_key_version.is_some()
+        {
+            return Err(ConfigError::IncompletePreviousLlmEncryptionKey);
+        }
+        if llm_encryption_previous_secret
+            .as_ref()
+            .is_some_and(|secret| secret.chars().count() < 32)
+        {
+            return Err(ConfigError::WeakPreviousLlmEncryptionSecret);
+        }
+        if llm_encryption_key_version <= 0
+            || llm_encryption_previous_key_version
+                .is_some_and(|version| version <= 0 || version == llm_encryption_key_version)
+        {
+            return Err(ConfigError::InvalidLlmEncryptionKeyVersions);
+        }
+        let llm_private_host_allowlist = parse_host_allowlist()?;
 
         Ok(Self {
             environment: env::var("APP_ENV").unwrap_or_else(|_| "development".to_owned()),
@@ -94,13 +124,66 @@ impl Config {
                 .ok()
                 .filter(|password| !password.trim().is_empty()),
             auth_jwt_secret,
+            llm_encryption_key_version,
             llm_encryption_secret,
+            llm_encryption_previous_key_version,
+            llm_encryption_previous_secret,
+            llm_private_host_allowlist,
             public_origin: env::var("PUBLIC_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost".to_owned()),
             cors_allowed_origins,
             request_timeout_secs: parse_or("REQUEST_TIMEOUT_SECS", 30_u64)?,
         })
     }
+}
+
+fn optional(name: &'static str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn optional_parse<T>(name: &'static str) -> Result<Option<T>, ConfigError>
+where
+    T: FromStr,
+{
+    optional(name)
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| ConfigError::Invalid { name, value })
+        })
+        .transpose()
+}
+
+fn parse_host_allowlist() -> Result<Vec<String>, ConfigError> {
+    let raw = env::var("LLM_PRIVATE_HOST_ALLOWLIST").unwrap_or_default();
+    raw.split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(|host| {
+            let host = host.trim_matches(['[', ']']).trim_end_matches('.');
+            if host.is_empty()
+                || host.contains(char::is_whitespace)
+                || host.contains("://")
+                || host.contains(['/', '\\', '@', '?', '#'])
+                || (host.parse::<IpAddr>().is_err()
+                    && host.split('.').any(|label| {
+                        label.is_empty()
+                            || label.len() > 63
+                            || label.starts_with('-')
+                            || label.ends_with('-')
+                            || !label
+                                .chars()
+                                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+                    }))
+            {
+                return Err(ConfigError::Invalid {
+                    name: "LLM_PRIVATE_HOST_ALLOWLIST",
+                    value: raw.clone(),
+                });
+            }
+            Ok(host.to_ascii_lowercase())
+        })
+        .collect()
 }
 
 fn required(name: &'static str) -> Result<String, ConfigError> {

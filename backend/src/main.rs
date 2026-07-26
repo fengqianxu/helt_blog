@@ -1,7 +1,14 @@
 use std::{net::SocketAddr, process::ExitCode, time::Duration};
 
 use anyhow::{Context, Result};
-use blog_backend::{admin, build_app, config::Config, db, state::AppState, storage_gc, telemetry};
+use blog_backend::{
+    admin, build_app,
+    config::Config,
+    db,
+    llm_crypto::{LlmKeyring, rotate_llm_encryption_keys},
+    state::AppState,
+    storage_gc, telemetry,
+};
 use tokio::{net::TcpListener, signal};
 use tracing::{error, info};
 
@@ -36,8 +43,29 @@ async fn main() -> Result<ExitCode> {
         admin::reset_password(&pool, &config).await?;
         return Ok(ExitCode::SUCCESS);
     }
+    if command.as_deref() == Some("rotate-llm-encryption-key") {
+        let keyring = LlmKeyring::new(
+            config.llm_encryption_key_version,
+            &config.llm_encryption_secret,
+            config
+                .llm_encryption_previous_key_version
+                .zip(config.llm_encryption_previous_secret.as_deref()),
+        )
+        .context("invalid LLM encryption keyring")?;
+        let rotated = rotate_llm_encryption_keys(&pool, &keyring)
+            .await
+            .context("LLM encryption key rotation failed")?;
+        info!(
+            rotated,
+            current_version = keyring.current_version(),
+            "LLM encryption key rotation complete"
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(command) = command {
-        anyhow::bail!("unknown command {command:?}; supported command: reset-password");
+        anyhow::bail!(
+            "unknown command {command:?}; supported commands: reset-password, rotate-llm-encryption-key"
+        );
     }
 
     admin::ensure_initial_admin(&pool, &config)

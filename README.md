@@ -13,6 +13,7 @@ Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compo
 | `gateway` | Nginx 统一入口，转发页面、API、健康检查和公开文件 | `127.0.0.1:18080` |
 | `frontend` | Vinext/React SSR 前端 | 仅容器网络 |
 | `backend` | Rust/Axum API；启动时执行数据库迁移 | 仅 `api` 容器网络 |
+| `artalk` | Artalk 2.10 评论、审核、回复与反垃圾服务 | 由网关代理到 `/artalk/` |
 | `postgres` | PostgreSQL 16 业务数据库 | 仅 `database` 容器网络 |
 | `minio` | S3 兼容对象存储 | 仅 `storage` 容器网络 |
 | `minio-init` | 创建公开/私有桶并设置访问策略 | 一次性任务，成功后退出 |
@@ -27,8 +28,8 @@ Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compo
 | --- | --- |
 | `edge` | 仅 `gateway`，承载宿主机或平台反向代理入口 |
 | `web` | `gateway`、`frontend` |
-| `api` | `gateway`、`backend` |
-| `database` | `backend`、`postgres` |
+| `api` | `gateway`、`backend`、`artalk` |
+| `database` | `backend`、`artalk`、`postgres` |
 | `storage` | `gateway`、`backend`、`minio`、`minio-init` |
 
 ## 首次启动
@@ -57,12 +58,14 @@ Linux/macOS：
 cp .env.example .env
 ```
 
-编辑 `.env`，至少替换以下三项，不能保留示例值：
+编辑 `.env`，至少替换以下五项，不能保留示例值：
 
 ```dotenv
 POSTGRES_PASSWORD=使用足够长的URL安全随机值
 MINIO_ROOT_PASSWORD=使用足够长的随机值
 AUTH_JWT_SECRET=至少32个字符的随机值
+LLM_ENCRYPTION_KEY=另一段至少32个字符且不与JWT共用的随机值
+ARTALK_APP_KEY=另一段独立的长随机值
 ```
 
 数据库密码会嵌入连接 URL，推荐只使用字母、数字、`-` 和 `_`，不要使用
@@ -91,6 +94,7 @@ docker compose ps
 
 - 网站：<http://localhost:18080/>
 - API：<http://localhost:18080/api/v1>
+- 评论控制台：<http://localhost:18080/artalk/>
 - 就绪检查：<http://localhost:18080/health/ready>
 
 ### 4. 获取初始管理员密码
@@ -113,6 +117,45 @@ docker compose logs backend | grep "initial administrator"
 docker compose exec backend blog-admin reset-password
 ```
 
+LLM Key 加密密钥使用显式版本。轮换时先保留旧密钥窗口，再原子重加密数据库：
+
+```dotenv
+LLM_ENCRYPTION_KEY=新的至少32字符随机值
+LLM_ENCRYPTION_KEY_VERSION=2
+LLM_ENCRYPTION_PREVIOUS_KEY=旧的LLM加密密钥
+LLM_ENCRYPTION_PREVIOUS_KEY_VERSION=1
+```
+
+```powershell
+docker compose up -d backend
+docker compose exec backend blog-admin rotate-llm-encryption-key
+```
+
+命令成功后可清空两个 `LLM_ENCRYPTION_PREVIOUS_*` 变量并重建后端。曾依赖旧版
+JWT 回退的部署，首次拆分密钥时应把原 `AUTH_JWT_SECRET` 作为版本 1 的 previous
+key，把独立 LLM 密钥设为版本 2 后执行同一命令。
+
+生产环境默认仅允许 HTTPS 公网 LLM 地址。确需访问私有 LLM 时，只在
+`LLM_PRIVATE_HOST_ALLOWLIST` 中填写逗号分隔的精确域名或 IP；该配置会显式允许
+对应私网地址（以及该主机的 HTTP），请保持最小范围。
+
+### 5. 创建评论管理员
+
+Artalk 使用独立管理员账户，以便它自己的审核、通知和用户管理能力保持完整。首次
+启动后执行下列交互式命令，填写评论管理员昵称、邮箱和密码：
+
+```powershell
+docker compose exec artalk artalk admin
+```
+
+随后访问 <http://localhost:18080/artalk/> 登录。新评论默认进入待审状态；可以在
+`.env` 中将 `ARTALK_PENDING_DEFAULT=false` 改为直接公开。文章编辑器里的“允许评论”
+开关仍然生效，关闭后文章页不会加载评论客户端。
+
+Artalk 与博客共用 PostgreSQL 实例，但使用 `artalk_` 表前缀避免业务表冲突；评论
+图片和 Artalk 运行数据保存在独立的 `artalk_data` 卷。前端与服务端均固定为
+2.10.0，升级时请同步调整 npm 包和容器镜像版本。
+
 ## 日常使用
 
 ```powershell
@@ -121,7 +164,7 @@ docker compose up -d
 
 # 查看状态和日志
 docker compose ps
-docker compose logs -f gateway frontend backend postgres minio
+docker compose logs -f gateway frontend backend artalk postgres minio
 
 # 代码或 Dockerfile 变化后重新构建
 docker compose up -d --build
@@ -134,7 +177,7 @@ docker compose down
 ```
 
 不要在有数据需要保留时执行 `docker compose down -v`，它会删除 PostgreSQL 和
-MinIO 的命名卷。只修改 `.env` 后也要再次执行 `docker compose up -d`，Compose
+MinIO 和 Artalk 的命名卷。只修改 `.env` 后也要再次执行 `docker compose up -d`，Compose
 才会按新配置重建相关容器。
 
 ## 可选：本机直连内部服务
@@ -167,6 +210,7 @@ Invoke-RestMethod http://localhost:18080/health/live
 Invoke-RestMethod http://localhost:18080/health/ready
 docker compose exec postgres psql -U helt -d helt_blog -c "\dt"
 docker compose logs --tail 200 backend
+docker compose logs --tail 200 artalk
 ```
 
 常见问题：
@@ -178,6 +222,10 @@ docker compose logs --tail 200 backend
   `MINIO_CONSOLE_DEBUG_PORT`。
 - `backend` 反复重启：先查看后端日志，并检查密码、`AUTH_JWT_SECRET` 长度和
   PostgreSQL 健康状态。
+- 评论区显示连接失败：检查 `artalk` 健康状态、`PUBLIC_ORIGIN` 是否与浏览器访问
+  地址一致，以及网关的 `/artalk/` 是否能返回控制台页面。
+- 评论全部显示“待审”是默认策略；登录 Artalk 控制台通过评论，或显式设置
+  `ARTALK_PENDING_DEFAULT=false` 后重建 `artalk` 容器。
 - `gateway` 没有启动：它会等待前端和后端健康；分别查看这两个服务的日志。
 - 修改数据库用户名、数据库名或密码不会自动改写已有 PostgreSQL 数据卷中的
   账户。已有环境请在数据库内迁移账户，或仅在确认不需要数据后重建卷。
@@ -187,9 +235,13 @@ docker compose logs --tail 200 backend
 ```powershell
 docker build --target test -t helt-blog-frontend-test ./frontend
 docker build --target test -t helt-blog-backend-test ./backend
+
+# 启动 PostgreSQL，并在独立 schema 中执行文章与 LLM 数据库集成测试
+docker compose -f docker-compose.yml -f docker-compose.debug.yml --profile test run --rm --build backend-integration-test
 ```
 
 前端测试镜像执行构建、HTML 测试和 ESLint；后端测试镜像执行 Rust 单元测试和
-Clippy。后端未实现的契约接口会返回标准 JSON `501 Not Implemented`。
+Clippy。数据库集成测试会逐项应用全部迁移，并在结束后删除隔离 schema，不会清空
+开发数据库。后端未实现的契约接口会返回标准 JSON `501 Not Implemented`。
 
 生产部署、Coolify、离线打包和镜像仓库部署见 [DEPLOY.md](DEPLOY.md)。

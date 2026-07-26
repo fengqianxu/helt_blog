@@ -46,6 +46,13 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(app, /\/api\/v1\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles\/batch/);
+  assert.match(packageJson, /"artalk": "2\.10\.0"/);
+  assert.match(shell, /Artalk\.init/);
+  assert.match(shell, /Artalk\.loadCountWidget/);
+  assert.match(shell, /pageKey: articleCommentKey\(slug\)/);
+  assert.match(shell, /payload\.allow_comment/);
+  assert.match(shell, /docker compose exec artalk artalk admin/);
+  assert.doesNotMatch(shell, /评论已进入审核队列（Mock）|恢复演示数据/);
   assert.match(app, /\/api\/v1\/admin\/categories/);
   assert.match(app, /\/api\/v1\/admin\/tags/);
   assert.match(app, /function AdminLayout/);

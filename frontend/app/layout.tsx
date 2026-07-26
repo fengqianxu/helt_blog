@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import "artalk/Artalk.css";
 import "./globals.css";
 
 const themeInitScript = `

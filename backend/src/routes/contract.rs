@@ -716,9 +716,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存或发布文章",
-        "JSON: title、content_md、category_id、tag_ids、cover_asset_id?、content_asset_ids?、is_pinned、allow_comment、kanban_ref、status?",
+        "JSON: expected_updated_at、title、content_md、category_id、tag_ids、cover_asset_id?、content_asset_ids?、is_pinned、allow_comment、kanban_ref、status?",
         "200 返回 id、slug、status、word_count、read_minutes、updated_at",
-        "全量覆盖且事务保存分类/标签/素材引用；素材类型必须兼容；status=published 时校验必填字段并首次写 published_at；计算字数和阅读时长"
+        "全量覆盖且事务保存分类/标签/素材引用；expected_updated_at 不匹配返回 409；素材类型必须兼容；status=published 时校验必填字段并首次写 published_at；计算字数和阅读时长"
     ),
     endpoint!(
         "ADMIN-ARTICLE-05",
@@ -1694,7 +1694,11 @@ mod tests {
             admin_username: "test".to_owned(),
             admin_initial_password: Some("test".to_owned()),
             auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
+            llm_encryption_key_version: 1,
             llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
+            llm_encryption_previous_key_version: None,
+            llm_encryption_previous_secret: None,
+            llm_private_host_allowlist: Vec::new(),
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,

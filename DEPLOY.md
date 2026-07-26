@@ -6,7 +6,7 @@
 - `docker-compose.yml`：用于 Docker Engine + 官方 Compose 插件，默认只监听宿主机 `127.0.0.1:18080`。
 - `docker-compose.debug.yml`：可选的本机调试覆盖文件，显式开放后端、数据库和 MinIO；生产环境不加载。
 
-两种方式都会启动网关、前端、后端、PostgreSQL 与 MinIO；数据库迁移和对象桶初始化会在首次启动时自动完成。
+两种方式都会启动网关、前端、后端、Artalk、PostgreSQL 与 MinIO；数据库迁移和对象桶初始化会在首次启动时自动完成。
 
 ## Coolify（推荐）
 
@@ -26,16 +26,27 @@
    普通 Docker Compose 部署还需把 `.env` 中的 `AUTH_JWT_SECRET` 替换为至少 32
    字符的随机值；Coolify 会通过 `SERVICE_PASSWORD_64_JWT` 自动生成该密钥。
 
+   `SERVICE_PASSWORD_64_LLM` 会作为独立的 LLM 凭据加密密钥生成并持久化，不与
+   JWT Secret 共用。已有部署如果曾使用 JWT 回退，请按 README 的双密钥窗口步骤
+   将旧 JWT Secret 作为版本 1 previous key，完成一次原子轮换。
+
    如果需要允许其他前端域名跨域访问，再设置逗号分隔的 `CORS_ALLOWED_ORIGINS`；默认与 `PUBLIC_ORIGIN` 相同。
-5. 点击 Deploy。不要给 `frontend`、`backend`、`postgres` 或 `minio` 分配域名。
+5. 点击 Deploy。不要给 `frontend`、`backend`、`artalk`、`postgres` 或 `minio` 分配域名。
 
 Coolify 会自动生成并持久保存以下密码，无需手工创建：
 
 - `SERVICE_PASSWORD_64_POSTGRES`
 - `SERVICE_PASSWORD_64_MINIO`
 - `SERVICE_PASSWORD_64_ADMIN`
+- `SERVICE_PASSWORD_64_ARTALK`
+- `SERVICE_PASSWORD_64_LLM`
 
 首个后台管理员用户名默认为 `helt`（可通过 `ADMIN_USERNAME` 修改），初始密码就是 Coolify 环境变量 `SERVICE_PASSWORD_64_ADMIN` 的值。
+
+首次部署完成后，在 Coolify 的 `artalk` 服务终端执行 `artalk admin`，交互式创建
+评论管理员。评论控制台位于 `https://blog.example.com/artalk/`，它与博客后台使用
+独立账户。默认情况下访客评论需审核；如需直接公开，在 Coolify 环境变量中设置
+`ARTALK_PENDING_DEFAULT=false` 并重新部署。
 
 部署完成后访问：
 
@@ -45,8 +56,8 @@ https://blog.example.com/health/ready
 ```
 
 Coolify 配置不发布任何宿主机端口，并使用入口 `edge` 网络，以及 `web`、
-`api`、`database` 和 `storage` 四个隔离的内部网络。持久化数据保存在 `postgres_data` 和
-`minio_data` 命名卷中。`minio-init` 是正常执行后退出的一次性任务，已从
+`api`、`database` 和 `storage` 四个隔离的内部网络。持久化数据保存在 `postgres_data`、
+`minio_data` 和 `artalk_data` 命名卷中。`minio-init` 是正常执行后退出的一次性任务，已从
 Coolify 总体健康检查中排除。
 
 > `exclude_from_hc` 是 Coolify 的 Compose 扩展字段，因此不要用原生 `docker compose` 运行 `docker-compose.coolify.yml`；原生部署请使用默认的 `docker-compose.yml`。
@@ -58,12 +69,14 @@ Coolify 总体健康检查中排除。
 
 ```bash
 cp .env.example .env
-# 编辑 .env：替换 POSTGRES_PASSWORD、MINIO_ROOT_PASSWORD、AUTH_JWT_SECRET，
+# 编辑 .env：替换 POSTGRES_PASSWORD、MINIO_ROOT_PASSWORD、AUTH_JWT_SECRET、
+# LLM_ENCRYPTION_KEY、ARTALK_APP_KEY，
 # 并按实际 HTTPS 地址设置 PUBLIC_ORIGIN 和 CORS_ALLOWED_ORIGINS。
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 curl http://127.0.0.1:18080/health/ready
+docker compose exec artalk artalk admin
 ```
 
 数据库密码会嵌入 PostgreSQL URL，请使用足够长的 URL 安全字符组合（字母、数字、`-`、`_`），不要直接使用 `@`、`:`、`/`、`#` 等字符。
@@ -84,7 +97,7 @@ docker compose logs backend | grep "initial administrator"
 
 ```bash
 docker compose ps
-docker compose logs -f gateway frontend backend
+docker compose logs -f gateway frontend backend artalk
 docker compose up -d --build
 docker compose down
 ```

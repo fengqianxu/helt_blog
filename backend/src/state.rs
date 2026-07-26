@@ -7,11 +7,12 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use webauthn_rs::prelude::{PasskeyRegistration, Url, Webauthn, WebauthnBuilder};
 
-use crate::{config::Config, storage::ObjectStorage};
+use crate::{
+    config::Config, llm_crypto::LlmKeyring, llm_network::LlmHttpClient, storage::ObjectStorage,
+};
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -23,7 +24,8 @@ struct Inner {
     pub object_storage: ObjectStorage,
     pub started_at: DateTime<Utc>,
     pub auth_jwt_secret: String,
-    pub llm_encryption_key: [u8; 32],
+    pub llm_keyring: LlmKeyring,
+    pub llm_http_client: LlmHttpClient,
     pub secure_cookies: bool,
     pub auth_failures: Mutex<HashMap<String, Vec<Instant>>>,
     pub webauthn: Webauthn,
@@ -48,8 +50,16 @@ impl AppState {
             .rp_name("helt. Admin")
             .build()
             .map_err(|error| anyhow::anyhow!("failed to initialize Passkey support: {error}"))?;
-        let llm_encryption_key: [u8; 32] =
-            Sha256::digest(config.llm_encryption_secret.as_bytes()).into();
+        let llm_keyring = LlmKeyring::new(
+            config.llm_encryption_key_version,
+            &config.llm_encryption_secret,
+            config
+                .llm_encryption_previous_key_version
+                .zip(config.llm_encryption_previous_secret.as_deref()),
+        )
+        .context("invalid LLM encryption keyring")?;
+        let llm_http_client =
+            LlmHttpClient::new(&config.environment, &config.llm_private_host_allowlist);
 
         Ok(Self(Arc::new(Inner {
             pool,
@@ -63,7 +73,8 @@ impl AppState {
             ),
             started_at: Utc::now(),
             auth_jwt_secret: config.auth_jwt_secret.clone(),
-            llm_encryption_key,
+            llm_keyring,
+            llm_http_client,
             secure_cookies: config.public_origin.starts_with("https://"),
             auth_failures: Mutex::new(HashMap::new()),
             webauthn,
@@ -95,8 +106,12 @@ impl AppState {
         &self.0.auth_jwt_secret
     }
 
-    pub fn llm_encryption_key(&self) -> &[u8; 32] {
-        &self.0.llm_encryption_key
+    pub fn llm_keyring(&self) -> &LlmKeyring {
+        &self.0.llm_keyring
+    }
+
+    pub fn llm_http_client(&self) -> &LlmHttpClient {
+        &self.0.llm_http_client
     }
 
     pub fn secure_cookies(&self) -> bool {
