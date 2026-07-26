@@ -238,7 +238,11 @@ pub async fn migrate_legacy_steam_web_api_key(
              END
          WHERE id = $4",
     )
-    .bind(encrypted.as_ref().map(|secret| secret.ciphertext.as_slice()))
+    .bind(
+        encrypted
+            .as_ref()
+            .map(|secret| secret.ciphertext.as_slice()),
+    )
     .bind(encrypted.as_ref().map(|secret| secret.nonce.as_slice()))
     .bind(encrypted.as_ref().map(|secret| secret.key_version))
     .bind(row.id)

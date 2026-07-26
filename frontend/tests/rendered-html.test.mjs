@@ -67,6 +67,9 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(raiments, /inferColorScheme\(selected\.theme\.background/);
   assert.match(raiments, /cover_title:\s*selected\.cover_title/);
   assert.match(raiments, /cover_voice_asset_id:\s*selected\.cover_voice_asset_id/);
+  assert.match(raiments, /fetchAllAssets\("raiment_cover"/);
+  assert.match(raiments, /fetchAllAssets\("raiment_voice"/);
+  assert.match(raiments, /items\.length >= payload\.total/);
   assert.match(raiments, /kanban_asset_id:\s*selected\.kanban_asset_id/);
   assert.match(siteSettings, /\/api\/v1\/admin\/site\/raiment-schedule/);
   assert.match(siteSettings, /type="time"/);
@@ -150,14 +153,15 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.doesNotMatch(shell, /发布地址|固定链接|系统稳定地址|editor-slug-row|editor-slug-input/);
   assert.doesNotMatch(styles, /editor-slug-row|editor-slug-input/);
   assert.match(app, /function FriendsPage/);
-  assert.match(app, /問おう。貴方が私のマスターか？/);
-  assert.match(app, /试问。你是我的御主吗？/);
-  assert.match(app, /召喚に応じ参上した。貴様が私のマスターという奴か？/);
-  assert.match(app, /应召唤前来。你这家伙就是我的御主吗？/);
-  assert.match(app, /\/storage\/voice\/login\/blue-saber\.mp3/);
-  assert.match(app, /\/storage\/voice\/login\/alter-saber\.mp3/);
-  assert.match(app, /\/storage\/voice\/login\/blue-saber-success\.mp3/);
-  assert.match(app, /\/storage\/voice\/login\/alter-saber-success\.mp3/);
+  assert.match(login, /scene\.cover_title/);
+  assert.match(login, /scene\.cover_subtitle \|\| scene\.cover_dialogue/);
+  assert.match(login, /fetch\("\/api\/v1\/raiments"/);
+  assert.match(login, /scheduledRaimentId\(payload\)/);
+  assert.match(login, /scene\.cover_url/);
+  assert.match(login, /scene\.cover_title/);
+  assert.match(login, /scene\.cover_voice_url/);
+  assert.match(login, /scene\.login_success_voice_url/);
+  assert.doesNotMatch(login, /loginScenes|\/storage\/voice\/login|saber-day\.png|saber-night\.png/);
   assert.doesNotMatch(app, /playLoginSuccessVoice|15_000/);
   assert.match(app, /sessionStorage\.setItem\("helt-login-success-voice"/);
   assert.match(app, /window\.location\.replace\("\/admin"\)/);
@@ -253,17 +257,14 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(styles, /\.admin-account-dialog\s*\{/);
 });
 
-test("server-renders the admin login design and real authentication form", async () => {
+test("server-renders the admin login shell and real authentication form", async () => {
   const response = await render("/admin/login");
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /ADMIN ACCESS/);
   assert.match(html, /契 约 · 成 立/);
-  assert.match(html, /语音放送/);
-  assert.match(html, /切换至(?:夜间|日间)灵衣/);
-  assert.match(html, /問おう。貴方が私のマスターか？|召喚に応じ参上した。貴様が私のマスターという奴か？/);
-  assert.match(html, /试问。你是我的御主吗？|应召唤前来。你这家伙就是我的御主吗？/);
-  assert.match(html, /\/storage\/voice\/login\/(?:blue-saber|alter-saber)\.mp3/);
+  assert.match(html, /灵衣加载中/);
+  assert.doesNotMatch(html, /\/storage\/voice\/login/);
   assert.match(html, /name="username"/);
   assert.match(html, /name="password"/);
   assert.doesNotMatch(html, /忘记密码|通行密钥|Passkey|MASTER AUTHENTICATION|SECURE ADMIN GATEWAY|NIGHT CONTRACT|SYSTEM TIME|恢复自动/);

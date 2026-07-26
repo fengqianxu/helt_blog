@@ -94,6 +94,8 @@ fn reference_type_label(source_type: &str) -> &'static str {
         "admin_avatar" | "system_default" => "头像",
         "login_voice" => "登录语音",
         "theme_voice" => "开屏语音",
+        "raiment_voice" => "灵衣封面语音",
+        "raiment_success_voice" => "灵衣登录成功语音",
         "music_track" => "背景音乐",
         "article_cover" => "文章封面",
         "article_content" => "文章内容",
@@ -666,7 +668,7 @@ fn normalized_filter(
             "article_cover" | "article_content" | "moment" | "game_cover" | "friend_avatar"
             | "raiment_cover",
         ) => Some("image"),
-        Some("bgm" | "opening_voice") => Some("audio"),
+        Some("bgm" | "opening_voice" | "raiment_voice") => Some("audio"),
         Some("live2d_model" | "raiment_kanban") => Some("live2d"),
         _ => None,
     });
@@ -938,7 +940,7 @@ mod tests {
                 Some("image")
             );
         }
-        for target in ["bgm", "opening_voice"] {
+        for target in ["bgm", "opening_voice", "raiment_voice"] {
             assert_eq!(
                 normalized_filter(None, Some(target)).unwrap().as_deref(),
                 Some("audio")
@@ -1048,6 +1050,7 @@ mod tests {
         assert_eq!(safe_archive_name("../a\\b.png", 9, 0), "9-_a_b.png");
         assert_eq!(safe_archive_name("...", 9, 2), "asset-9-2");
         assert_eq!(reference_type_label("article_cover"), "文章封面");
+        assert_eq!(reference_type_label("raiment_voice"), "灵衣封面语音");
         assert_eq!(reference_type_label("unknown"), "其他引用");
     }
 }

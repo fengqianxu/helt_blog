@@ -187,17 +187,15 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   position: absolute;
   z-index: -3;
   inset: 0;
-  background-position: center;
-  background-size: cover;
-  transition: opacity .75s cubic-bezier(.2,.8,.2,1), transform 8s ease;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  transition: transform 8s ease;
   transform: scale(1.015);
+  animation: login-cover-in .75s cubic-bezier(.2,.8,.2,1) both;
 }
-.login-cover-day { background-image: url("/saber-day.png"); opacity: 0; }
-.login-cover-night { background-image: url("/saber-night.png"); opacity: 1; }
-.login-theme-day .login-cover-day { opacity: 1; transform: scale(1.035); }
-.login-theme-day .login-cover-night { opacity: 0; }
-.login-theme-night .login-cover-day { opacity: 0; }
-.login-theme-night .login-cover-night { opacity: 1; transform: scale(1.035); }
+@keyframes login-cover-in { from { opacity: 0; transform: scale(1.015); } to { opacity: 1; transform: scale(1.035); } }
 .admin-login::after {
   content: "";
   position: absolute;
@@ -401,7 +399,9 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
   font-weight: 400;
   line-height: 1.72;
   letter-spacing: .018em;
+  white-space: pre-line;
 }
+.login-scene-name { display: block; margin-bottom: 12px; color: color-mix(in srgb, var(--login-gold) 82%, #fff); font: 700 12px ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; }
 .login-scene-copy blockquote p:last-child { margin-top: 9px; color: rgba(248,250,255,.78); font-family: "Kaiti SC", "STKaiti", "KaiTi", "Noto Serif SC", "Songti SC", serif; font-size: 16px; font-weight: 400; line-height: 1.8; letter-spacing: .045em; }
 .login-scene-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
 .login-voice-button {
@@ -631,8 +631,9 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 
 .raiment-page-title { margin-bottom: 18px; }
 .raiment-mode-switch { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 14px; }
-.raiment-mode-switch button { min-width: 0; min-height: 46px; display: flex; align-items: center; justify-content: center; padding: 10px 14px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-top: 3px solid transparent; }
+.raiment-mode-switch button { min-width: 0; min-height: 46px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 3px; padding: 10px 14px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-top: 3px solid transparent; }
 .raiment-mode-switch button b { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.raiment-mode-switch button small { color: var(--faint); font: 8px ui-monospace, monospace; }
 .raiment-mode-switch button:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
 .raiment-mode-switch button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 46%, var(--line)); border-top-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .raiment-editor-panel { padding: 0; overflow: hidden; }
@@ -655,6 +656,9 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 .raiment-form-section input, .raiment-form-section select, .raiment-form-section textarea { width: 100%; min-width: 0; padding: 0 11px; color: var(--text); background: var(--surface); border: 1px solid var(--line); outline: 0; }.raiment-form-section input, .raiment-form-section select { height: 39px; }.raiment-form-section textarea { resize: vertical; padding-block: 9px; line-height: 1.55; }
 .raiment-form-section input:focus, .raiment-form-section select:focus, .raiment-form-section textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent); }.raiment-form-section > small { display: block; margin-top: 8px; color: var(--faint); font-size: 8px; line-height: 1.6; }
 .raiment-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.raiment-name-section .raiment-form-row { grid-template-columns: minmax(90px, 1fr) auto auto; align-items: end; }
+.raiment-form-section label.raiment-checkbox, .raiment-create-modal label.raiment-checkbox { min-height: 39px; flex-direction: row; align-items: center; gap: 8px; padding: 0 11px; color: var(--text); background: var(--surface); border: 1px solid var(--line); }
+.raiment-form-section label.raiment-checkbox input, .raiment-create-modal label.raiment-checkbox input { width: 15px; min-width: 15px; height: 15px; padding: 0; accent-color: var(--accent); box-shadow: none; }
 .raiment-section-intro { margin: -3px 0 13px; color: var(--faint); font-size: 9px; line-height: 1.65; }
 .raiment-color-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
 .color-token { display: grid; grid-template-columns: 38px 1fr; gap: 9px; align-items: end; }

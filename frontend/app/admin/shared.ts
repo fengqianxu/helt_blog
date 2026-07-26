@@ -40,13 +40,32 @@ export type PublicRaiment = {
   cover_dialogue: string;
   cover_voice_label: string;
   cover_voice_url: string | null;
+  login_success_voice_url: string | null;
   kanban_configured: boolean;
 };
 
 export type PublicRaimentPayload = {
   items: PublicRaiment[];
   schedule: RaimentSchedule;
+  default_raiment_id: string;
 };
+
+export function scheduledRaimentId(payload: PublicRaimentPayload, date = new Date()) {
+  const available = new Set(payload.items.map((item) => item.id));
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  const active = payload.schedule.periods.find((period) => {
+    const [startHour, startMinute] = period.start_at.split(":").map(Number);
+    const [endHour, endMinute] = period.end_at.split(":").map(Number);
+    const start = startHour * 60 + startMinute;
+    const end = endHour * 60 + endMinute;
+    return start < end
+      ? minutes >= start && minutes < end
+      : minutes >= start || minutes < end;
+  });
+  if (active && available.has(active.raiment_id)) return active.raiment_id;
+  if (available.has(payload.default_raiment_id)) return payload.default_raiment_id;
+  return payload.items[0]?.id || "";
+}
 
 export const DEFAULT_PROFILE_AVATAR_URL = "/storage/avatars/default/admin-avatar.webp";
 

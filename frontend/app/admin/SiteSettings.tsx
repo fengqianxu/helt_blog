@@ -13,6 +13,8 @@ type RaimentOption = {
   id: string;
   name: string;
   color_scheme: "day" | "night";
+  enabled: boolean;
+  is_default: boolean;
 };
 
 type RaimentPayload = {
@@ -45,7 +47,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
         raimentResponse.json() as Promise<RaimentPayload>,
       ]);
       setSchedule(nextSchedule);
-      setRaiments(nextRaiments.items);
+      setRaiments(nextRaiments.items.filter((item) => item.enabled));
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       notify(error instanceof Error ? error.message : "站点设置加载失败", "danger");
@@ -156,8 +158,8 @@ export function SiteSettings({ notify }: { notify: Notify }) {
           <button type="button" aria-label={`删除第 ${index + 1} 个时间段`} onClick={() => removePeriod(period.id)}>×</button>
         </div>;
       })}
-      {!loading && schedule && !schedule.periods.length && <div className="raiment-schedule-empty">尚未设置自动时间段；前台将使用第一套灵衣，访客仍可手动切换。</div>}
-      <footer>时间段不可重叠；开始时间包含在内，结束时间不包含在内。未覆盖的时刻使用灵衣列表中的第一套。</footer>
+      {!loading && schedule && !schedule.periods.length && <div className="raiment-schedule-empty">尚未设置自动时间段；前台将使用默认灵衣，访客仍可手动切换。</div>}
+      <footer>时间段不可重叠；开始时间包含在内，结束时间不包含在内。未覆盖的时刻使用默认灵衣。</footer>
     </section>
   </>;
 }

@@ -1,33 +1,15 @@
 "use client";
 
+import Image from "next/image";
 import { FormEvent, useEffect, useRef, useState } from "react";
 
-import { isJsonResponse, responseMessage, Theme } from "./shared";
-
-const loginScenes = {
-  day: {
-    Japanese: "問おう。貴方が私のマスターか？",
-    Chinese: "试问。你是我的御主吗？",
-    voice: "/storage/voice/login/blue-saber.mp3",
-    successVoice: "/storage/voice/login/blue-saber-success.mp3",
-  },
-  night: {
-    Japanese: "召喚に応じ参上した。貴様が私のマスターという奴か？",
-    Chinese: "应召唤前来。你这家伙就是我的御主吗？",
-    voice: "/storage/voice/login/alter-saber.mp3",
-    successVoice: "/storage/voice/login/alter-saber-success.mp3",
-  },
-} as const satisfies Record<Theme, {
-  Japanese: string;
-  Chinese: string;
-  voice: string;
-  successVoice: string;
-}>;
-
-function loginThemeForCurrentTime(date = new Date()): Theme {
-  const hour = date.getHours();
-  return hour >= 7 && hour < 19 ? "day" : "night";
-}
+import {
+  isJsonResponse,
+  PublicRaiment,
+  PublicRaimentPayload,
+  responseMessage,
+  scheduledRaimentId,
+} from "./shared";
 
 export function AdminLogin() {
   const [show, setShow] = useState(false);
@@ -36,13 +18,49 @@ export function AdminLogin() {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ tone: "error" | "success"; message: string } | null>(null);
-  const [loginTheme, setLoginTheme] = useState<Theme>(() => loginThemeForCurrentTime());
+  const [catalog, setCatalog] = useState<PublicRaimentPayload | null>(null);
+  const [activeRaimentId, setActiveRaimentId] = useState("");
   const [voicePlaying, setVoicePlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const scene = loginScenes[loginTheme];
+  const playAfterSwitch = useRef(false);
+  const manualSelection = useRef(false);
+  const scene: PublicRaiment | null = catalog?.items.find((item) => item.id === activeRaimentId)
+    || catalog?.items.find((item) => item.id === catalog.default_raiment_id)
+    || catalog?.items[0]
+    || null;
+  const sceneIndex = scene && catalog ? catalog.items.findIndex((item) => item.id === scene.id) : -1;
+  const nextScene = catalog?.items[(sceneIndex + 1) % catalog.items.length] || null;
+  const loginTheme = scene?.color_scheme || "night";
 
   useEffect(() => {
-    const audio = document.querySelector<HTMLAudioElement>("#admin-login-voice");
+    const controller = new AbortController();
+    void fetch("/api/v1/raiments", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok || !isJsonResponse(response)) throw new Error("灵衣目录加载失败");
+        return response.json() as Promise<PublicRaimentPayload>;
+      })
+      .then((payload) => {
+        if (!payload.items.length) throw new Error("没有可用的灵衣");
+        setCatalog(payload);
+        setActiveRaimentId(scheduledRaimentId(payload));
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          console.warn("Admin login raiment catalog unavailable", error);
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!catalog || manualSelection.current) return;
+    const syncSchedule = () => setActiveRaimentId(scheduledRaimentId(catalog));
+    const timer = window.setInterval(syncSchedule, 60_000);
+    return () => window.clearInterval(timer);
+  }, [catalog]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
     if (!audio) return;
     const syncVoiceState = () => setVoicePlaying(!audio.paused && !audio.ended);
     const frame = window.requestAnimationFrame(syncVoiceState);
@@ -60,6 +78,18 @@ export function AdminLogin() {
   }, []);
 
   useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
+    audio.load();
+    if (playAfterSwitch.current && scene?.cover_voice_url) {
+      playAfterSwitch.current = false;
+      void audio.play().catch(() => setVoicePlaying(false));
+    }
+  }, [scene?.id, scene?.cover_voice_url]);
+
+  useEffect(() => {
     const message = sessionStorage.getItem("helt-auth-message");
     if (!message) return;
     sessionStorage.removeItem("helt-auth-message");
@@ -75,8 +105,9 @@ export function AdminLogin() {
     }
   };
 
-  const playLoginVoice = async (audio = audioRef.current) => {
-    if (!audio) return;
+  const playLoginVoice = async () => {
+    const audio = audioRef.current;
+    if (!audio || !scene?.cover_voice_url) return;
     audio.currentTime = 0;
     try {
       await audio.play();
@@ -85,16 +116,12 @@ export function AdminLogin() {
     }
   };
 
-  const toggleLoginTheme = () => {
-    const nextTheme = loginTheme === "day" ? "night" : "day";
+  const toggleLoginRaiment = () => {
+    if (!nextScene || !catalog || catalog.items.length < 2) return;
     stopLoginVoice();
-    setLoginTheme(nextTheme);
-    const audio = audioRef.current;
-    if (audio) {
-      audio.src = loginScenes[nextTheme].voice;
-      audio.load();
-      void playLoginVoice(audio);
-    }
+    manualSelection.current = true;
+    playAfterSwitch.current = Boolean(nextScene.cover_voice_url);
+    setActiveRaimentId(nextScene.id);
   };
 
   const toggleVoice = async () => {
@@ -104,7 +131,7 @@ export function AdminLogin() {
       stopLoginVoice();
       return;
     }
-    await playLoginVoice(audio);
+    await playLoginVoice();
   };
 
   const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
@@ -129,9 +156,11 @@ export function AdminLogin() {
         throw new Error("认证接口尚未连接，请确认本地后端正在运行。");
       }
 
-      // Navigation is immediate. The destination page consumes this marker and
-      // starts the success voice independently from authentication.
-      sessionStorage.setItem("helt-login-success-voice", scene.successVoice);
+      if (scene?.login_success_voice_url) {
+        sessionStorage.setItem("helt-login-success-voice", scene.login_success_voice_url);
+      } else {
+        sessionStorage.removeItem("helt-login-success-voice");
+      }
       window.location.replace("/admin");
     } catch (error) {
       setFeedback({
@@ -143,12 +172,24 @@ export function AdminLogin() {
   };
 
   return (
-    <main className={`admin-login login-theme-${loginTheme}`}>
-      <div className="admin-login-cover login-cover-day" aria-hidden="true" />
-      <div className="admin-login-cover login-cover-night" aria-hidden="true" />
+    <main
+      className={`admin-login login-theme-${loginTheme}`}
+      style={scene ? {
+        "--login-accent": scene.theme.primary,
+        "--login-gold": scene.theme.secondary,
+        backgroundColor: scene.theme.background,
+      } as React.CSSProperties : undefined}
+    >
+      {scene && <Image key={scene.id} className="admin-login-cover" src={scene.cover_url} fill sizes="100vw" priority unoptimized alt="" />}
       <div className="admin-login-shade" aria-hidden="true" />
-      <button className="login-theme-switch" type="button" onClick={toggleLoginTheme} aria-label={`切换至${loginTheme === "day" ? "夜间" : "日间"}灵衣`}>
-        <b>{loginTheme === "day" ? "夜间模式" : "日间模式"}</b>
+      <button
+        className="login-theme-switch"
+        type="button"
+        onClick={toggleLoginRaiment}
+        disabled={!catalog || catalog.items.length < 2}
+        aria-label={nextScene ? `切换至${nextScene.name}灵衣` : "没有其他可用灵衣"}
+      >
+        <b>{nextScene ? `切换至 ${nextScene.name}` : scene?.name || "灵衣加载中"}</b>
       </button>
       <form className="login-card" onSubmit={submitLogin}>
         <div className="login-brand">
@@ -168,20 +209,22 @@ export function AdminLogin() {
         {feedback && <div className={`login-feedback ${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}><span aria-hidden="true">{feedback.tone === "error" ? "!" : "✓"}</span>{feedback.message}</div>}
         <button className="login-submit" disabled={busy}>{busy ? "仪 式 进 行 中…" : "契 约 · 成 立"}</button>
       </form>
-      <section className="login-scene-copy" aria-live="polite">
+      {scene && <section className="login-scene-copy" aria-live="polite">
         <div>
-          <span>{loginTheme === "day" ? "SABER / BLUE" : "SABER / ALTER"}</span>
-          <h2>{scene.Japanese}</h2>
-          <p>{scene.Chinese}</p>
+          <span className="login-scene-name">{scene.cover_character_name || scene.name}</span>
+          <blockquote>
+            <p>{scene.cover_title}</p>
+            <p>{scene.cover_subtitle || scene.cover_dialogue}</p>
+          </blockquote>
         </div>
-        <div className="login-scene-actions">
+        {scene.cover_voice_url && <div className="login-scene-actions">
           <button className={`login-voice-button${voicePlaying ? " is-playing" : ""}`} type="button" onClick={() => void toggleVoice()} aria-pressed={voicePlaying}>
             <span className="login-voice-glyph" aria-hidden="true"><i /><i /><i /><i /></span>
-            {voicePlaying ? "停止播放" : "语音放送"}
+            {voicePlaying ? "停止播放" : scene.cover_voice_label || "语音放送"}
           </button>
-        </div>
-        <audio id="admin-login-voice" ref={audioRef} src={scene.voice} preload="metadata" />
-      </section>
+        </div>}
+      </section>}
+      <audio id="admin-login-voice" ref={audioRef} src={scene?.cover_voice_url || undefined} preload="metadata" />
     </main>
   );
 }

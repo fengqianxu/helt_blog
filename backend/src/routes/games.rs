@@ -471,15 +471,12 @@ async fn sync_configured(state: &AppState) -> Result<()> {
     )
     .fetch_optional(&mut *transaction)
     .await?;
-    let credentials_unchanged = current
-        .as_ref()
-        .is_some_and(|current| {
-            current.steam_web_api_key_ciphertext.as_deref()
-                == Some(credentials.ciphertext.as_slice())
-                && current.steam_web_api_key_nonce.as_deref() == Some(credentials.nonce.as_slice())
-                && current.steam_encryption_key_version == Some(credentials.key_version)
-                && current.steam_id64.trim() == credentials.steam_id64
-        });
+    let credentials_unchanged = current.as_ref().is_some_and(|current| {
+        current.steam_web_api_key_ciphertext.as_deref() == Some(credentials.ciphertext.as_slice())
+            && current.steam_web_api_key_nonce.as_deref() == Some(credentials.nonce.as_slice())
+            && current.steam_encryption_key_version == Some(credentials.key_version)
+            && current.steam_id64.trim() == credentials.steam_id64
+    });
     if !credentials_unchanged {
         transaction.rollback().await?;
         bail!("Steam credentials changed while a sync was running");

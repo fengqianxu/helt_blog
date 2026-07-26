@@ -5,9 +5,7 @@ use blog_backend::{
     admin, build_app,
     config::Config,
     db,
-    llm_crypto::{
-        LlmKeyring, migrate_legacy_steam_web_api_key, rotate_llm_encryption_keys,
-    },
+    llm_crypto::{LlmKeyring, migrate_legacy_steam_web_api_key, rotate_llm_encryption_keys},
     state::AppState,
     storage_gc, telemetry,
 };

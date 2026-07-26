@@ -56,6 +56,7 @@ type Raiment = {
 type RaimentCatalog = {
   items: Record<string, Raiment>;
   order: string[];
+  defaultId: string;
   activeId: string;
   schedule: RaimentSchedule;
 };
@@ -113,6 +114,7 @@ const DEFAULT_RAIMENTS: Record<string, Raiment> = {
 const DEFAULT_RAIMENT_CATALOG: RaimentCatalog = {
   items: DEFAULT_RAIMENTS,
   order: ["saber", "alter-saber"],
+  defaultId: "saber",
   activeId: "saber",
   schedule: {
     revision: 1,
@@ -127,6 +129,7 @@ const RaimentContext = createContext<RaimentCatalog>(DEFAULT_RAIMENT_CATALOG);
 
 const resolveRaiment = (catalog: RaimentCatalog): Raiment =>
   catalog.items[catalog.activeId]
+  || catalog.items[catalog.defaultId]
   || catalog.items[catalog.order[0]]
   || DEFAULT_RAIMENTS.saber;
 
@@ -155,7 +158,8 @@ const catalogFromPayload = (payload: PublicRaimentPayload): RaimentCatalog => ({
     } satisfies Raiment];
   })),
   order: payload.items.map((item) => item.id),
-  activeId: payload.items[0]?.id || "saber",
+  defaultId: payload.default_raiment_id,
+  activeId: payload.default_raiment_id,
   schedule: payload.schedule,
 });
 
@@ -174,7 +178,9 @@ const raimentFromSchedule = (catalog: RaimentCatalog): string => {
   });
   return active && catalog.items[active.raiment_id]
     ? active.raiment_id
-    : catalog.order[0];
+    : catalog.items[catalog.defaultId]
+      ? catalog.defaultId
+      : catalog.order[0];
 };
 
 type ArticleCategory = { id: number; name: string; slug: string; color: string };
@@ -285,9 +291,14 @@ export function BlogApp() {
           const catalog = catalogFromPayload(payload);
           setRaimentCatalog(catalog);
           const saved = storedRaimentId.current;
-          const nextId = saved && catalog.items[saved]
-            ? saved
-            : raimentFromSchedule(catalog);
+          const savedIsAvailable = Boolean(saved && catalog.items[saved]);
+          if (saved && !savedIsAvailable) {
+            storedRaimentPreference.current = false;
+            storedRaimentId.current = null;
+            localStorage.removeItem("helt-raiment");
+            localStorage.removeItem("helt-theme");
+          }
+          const nextId = saved && savedIsAvailable ? saved : raimentFromSchedule(catalog);
           setActiveRaimentId(nextId);
         })
         .catch((error) => {
@@ -380,12 +391,12 @@ export function BlogApp() {
     }, 310);
     window.setTimeout(() => setThemeTransition(false), 760);
   };
-  const common = { theme, toggleTheme, pathname, menuOpen, setMenuOpen, searchOpen, setSearchOpen };
+  const common = { toggleTheme, pathname, menuOpen, setMenuOpen, searchOpen, setSearchOpen };
 
   if (pathname.startsWith("/admin")) return <RaimentContext.Provider value={activeCatalog}><AdminRouter pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />{themeTransition && <ThemeBlade />}{toast && <Toast {...toast} />}</RaimentContext.Provider>;
 
   let page: React.ReactNode;
-  if (pathname === "/") page = <HomePage key={activeRaimentId} theme={theme} toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
+  if (pathname === "/") page = <HomePage key={activeRaimentId} toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
   else if (pathname.startsWith("/posts/")) {
     const slug = pathname.split("/").filter(Boolean)[1];
     page = <ArticlePage slug={slug} theme={theme} notify={notify} />;
@@ -402,7 +413,7 @@ export function BlogApp() {
       {pathname !== "/" && <TopNav {...common} />}
       {page}
       {pathname !== "/" && <Footer />}
-      <FloatingTools theme={theme} toggleTheme={toggleTheme} playerOpen={playerOpen} setPlayerOpen={setPlayerOpen} notify={notify} />
+      <FloatingTools toggleTheme={toggleTheme} playerOpen={playerOpen} setPlayerOpen={setPlayerOpen} notify={notify} />
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
       {themeTransition && <ThemeBlade />}
       {toast && <Toast {...toast} />}
@@ -427,14 +438,14 @@ function EasterEgg({ onClose }: { onClose: () => void }) {
   return <div className="easter-egg" role="dialog" aria-modal="true" aria-label="隐藏彩蛋" onClick={onClose}><div onClick={(e) => e.stopPropagation()}><Image src={raiment.cover} width={5120} height={2160} sizes="(max-width: 760px) 100vw, 760px" unoptimized alt="" /><div className="dialog-box"><b>{raiment.kanban.displayName}</b><p>能抵达这里，说明你的意志相当坚定，Master。今晚的晚餐，就由胜者决定吧。</p></div><button onClick={onClose}>收起令咒</button></div></div>;
 }
 
-function ThemeSwitch({ theme, onClick, compact = false }: { theme: Theme; onClick: () => void; compact?: boolean }) {
+function ThemeSwitch({ onClick, compact = false }: { onClick: () => void; compact?: boolean }) {
   const catalog = useContext(RaimentContext);
   const current = resolveRaiment(catalog);
   const currentIndex = catalog.order.indexOf(current.id);
   const nextId = catalog.order[(currentIndex + 1) % catalog.order.length] || catalog.order[0];
   const next = catalog.items[nextId] || current;
   return (
-    <button className={cx("theme-switch", compact && "compact")} onClick={onClick} aria-label={`切换到${next.name}`} aria-pressed={theme === "night"}>
+    <button className={cx("theme-switch", compact && "compact")} onClick={onClick} aria-label={`切换到${next.name}`}>
       <span className="theme-label active">{current.name}</span>
       <span className="switch-track"><i /></span>
       {!compact && <span className="theme-label muted">{next.name}</span>}
@@ -442,7 +453,7 @@ function ThemeSwitch({ theme, onClick, compact = false }: { theme: Theme; onClic
   );
 }
 
-function TopNav({ pathname, theme, toggleTheme, menuOpen, setMenuOpen, setSearchOpen, floating = false, elevated = false }: { pathname: string; theme: Theme; toggleTheme: () => void; menuOpen: boolean; setMenuOpen: (v: boolean) => void; searchOpen: boolean; setSearchOpen: (v: boolean) => void; floating?: boolean; elevated?: boolean }) {
+function TopNav({ pathname, toggleTheme, menuOpen, setMenuOpen, setSearchOpen, floating = false, elevated = false }: { pathname: string; toggleTheme: () => void; menuOpen: boolean; setMenuOpen: (v: boolean) => void; searchOpen: boolean; setSearchOpen: (v: boolean) => void; floating?: boolean; elevated?: boolean }) {
   return (
     <header className={cx("top-nav", floating && "home-touchbar", elevated && "is-elevated")}>
       <Link href="/" className="brand">helt<span>.</span></Link>
@@ -451,14 +462,14 @@ function TopNav({ pathname, theme, toggleTheme, menuOpen, setMenuOpen, setSearch
       </nav>
       <div className="nav-actions">
         <button className="search-button" onClick={() => setSearchOpen(true)} aria-label="搜索文章">⌕ <span>搜索文章…</span></button>
-        <ThemeSwitch theme={theme} onClick={toggleTheme} compact />
+        <ThemeSwitch onClick={toggleTheme} compact />
         <button className="menu-button" onClick={() => setMenuOpen(!menuOpen)} aria-label={menuOpen ? "关闭菜单" : "打开菜单"} aria-expanded={menuOpen} aria-controls="primary-navigation">{menuOpen ? "×" : "☰"}</button>
       </div>
     </header>
   );
 }
 
-function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; toggleTheme: () => void; notify: Notify; onSearch: () => void }) {
+function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; notify: Notify; onSearch: () => void }) {
   const raiment = useRaiment();
   const [page, setPage] = useState(1);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -533,7 +544,7 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
       void audio.play().then(() => {
         setVoicePlaying(true);
         notify("开始播放开屏语音");
-      }).catch(() => notify("浏览器阻止了语音播放，请再试一次", "danger"));
+      }).catch(() => notify("语音加载或播放失败，请稍后再试", "danger"));
     }
   };
   const changePage = (next: number) => {
@@ -549,7 +560,7 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
       : "暂时还没有已发布文章。";
   return (
     <>
-      <TopNav pathname="/" theme={theme} toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating elevated={navElevated} />
+      <TopNav pathname="/" toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating elevated={navElevated} />
       <section className="hero">
         <div className="hero-stripe stripe-one" /><div className="hero-stripe stripe-two" />
         <Image className="hero-art" src={raiment.cover} width={5120} height={2160} sizes="(max-width: 768px) 100vw, 64vw" priority unoptimized alt={`${raiment.name} 灵衣封面`} />
@@ -558,7 +569,7 @@ function HomePage({ theme, toggleTheme, notify, onSearch }: { theme: Theme; togg
           <h1>{raiment.coverTitle}</h1>
           <p>{raiment.coverSubtitle}</p>
           <div className="hero-actions">
-            <button className={cx("voice-button", voicePlaying && "is-playing")} aria-pressed={voicePlaying} onClick={toggleCoverVoice}><b>{voicePlaying ? "Ⅱ" : "▶"}</b><span className="wave"><i /><i /><i /><i /><i /><i /></span><span>{voicePlaying ? `播放中 ${Math.floor(voiceSeconds / 60)}:${String(voiceSeconds % 60).padStart(2, "0")} / ${Math.floor(voiceDuration / 60)}:${String(voiceDuration % 60).padStart(2, "0")}` : raiment.coverVoiceLabel}</span></button>
+            {raiment.coverVoiceUrl && <button className={cx("voice-button", voicePlaying && "is-playing")} aria-pressed={voicePlaying} onClick={toggleCoverVoice}><b>{voicePlaying ? "Ⅱ" : "▶"}</b><span className="wave"><i /><i /><i /><i /><i /><i /></span><span>{voicePlaying ? `播放中 ${Math.floor(voiceSeconds / 60)}:${String(voiceSeconds % 60).padStart(2, "0")} / ${Math.floor(voiceDuration / 60)}:${String(voiceDuration % 60).padStart(2, "0")}` : raiment.coverVoiceLabel}</span></button>}
             <button className="primary-button" onClick={enter}>ENTER · 进入博客 ▾</button>
           </div>
         </div>
@@ -850,7 +861,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   return <div className="search-overlay" role="dialog" aria-modal="true" aria-label="搜索文章" onClick={onClose}><div className="search-panel" onClick={(e) => e.stopPropagation()}><div><span aria-hidden="true">⌕</span><input aria-label="搜索关键词" autoFocus value={query} onChange={(e) => { setQuery(e.target.value); if (!e.target.value.trim()) setResult([]); }} placeholder="搜索标题、分类或关键词…" /><button onClick={onClose} aria-label="关闭搜索">×</button></div>{query ? <section aria-live="polite">{result.length ? result.map((p) => <Link key={p.id} href={`/posts/${p.slug}`}><span className="tag">{categoryName(p)}</span><b>{p.title}</b><small>{articleDate(p)}</small></Link>) : <p>没有找到相关内容，换个关键词试试。</p>}</section> : <div className="search-suggestions"><small>热门关键词</small><div>{["React", "Fate", "Live2D", "博客重构"].map((item) => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div></div>}<small>ESC 关闭 · 输入关键词实时检索文章库</small></div></div>;
 }
 
-function FloatingTools({ theme, toggleTheme, playerOpen, setPlayerOpen, notify }: { theme: Theme; toggleTheme: () => void; playerOpen: boolean; setPlayerOpen: (v: boolean) => void; notify: Notify }) {
+function FloatingTools({ toggleTheme, playerOpen, setPlayerOpen, notify }: { toggleTheme: () => void; playerOpen: boolean; setPlayerOpen: (v: boolean) => void; notify: Notify }) {
   const raiment = useRaiment();
   const tracks = [{ title: "THIS ILLUSION", artist: "LiSA · Fate OST" }, { title: "to the beginning", artist: "Kalafina" }, { title: "花の唄", artist: "Aimer" }];
   const [track, setTrack] = useState(0);
@@ -858,11 +869,11 @@ function FloatingTools({ theme, toggleTheme, playerOpen, setPlayerOpen, notify }
   const [showTop, setShowTop] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatText, setChatText] = useState("");
-  const [chatReply, setChatReply] = useState<{ theme: Theme; text: string } | null>(null);
+  const [chatReply, setChatReply] = useState<{ raimentId: string; text: string } | null>(null);
   useEffect(() => { const watch = () => setShowTop(window.scrollY > 500); watch(); window.addEventListener("scroll", watch, { passive: true }); return () => window.removeEventListener("scroll", watch); }, []);
   const moveTrack = (delta: number) => { const next = (track + delta + tracks.length) % tracks.length; setTrack(next); setPlaying(true); notify(`正在播放：${tracks[next].title}`); };
-  const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply({ theme, text: "我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。" }); setChatText(""); };
-  return <><div className={cx("music-player", !playerOpen && "collapsed", playing && "is-playing")}><button className="disc" onClick={() => playerOpen ? setPlaying(!playing) : setPlayerOpen(true)} aria-label={playerOpen ? (playing ? "暂停音乐" : "播放音乐") : "展开播放器"}><i /></button>{playerOpen && <><div><b>{tracks[track].title}</b><span>{tracks[track].artist}</span><i className="progress"><i /></i></div><button onClick={() => moveTrack(-1)} aria-label="上一首">⏮</button><button onClick={() => { setPlaying(!playing); notify(playing ? "音乐已暂停" : `正在播放：${tracks[track].title}`); }} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button><button onClick={() => moveTrack(1)} aria-label="下一首">⏭</button><button className="collapse-player" onClick={() => setPlayerOpen(false)} aria-label="收起播放器">−</button></>}</div>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.theme === theme ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
+  const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply({ raimentId: raiment.id, text: "我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。" }); setChatText(""); };
+  return <><div className={cx("music-player", !playerOpen && "collapsed", playing && "is-playing")}><button className="disc" onClick={() => playerOpen ? setPlaying(!playing) : setPlayerOpen(true)} aria-label={playerOpen ? (playing ? "暂停音乐" : "播放音乐") : "展开播放器"}><i /></button>{playerOpen && <><div><b>{tracks[track].title}</b><span>{tracks[track].artist}</span><i className="progress"><i /></i></div><button onClick={() => moveTrack(-1)} aria-label="上一首">⏮</button><button onClick={() => { setPlaying(!playing); notify(playing ? "音乐已暂停" : `正在播放：${tracks[track].title}`); }} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button><button onClick={() => moveTrack(1)} aria-label="下一首">⏭</button><button className="collapse-player" onClick={() => setPlayerOpen(false)} aria-label="收起播放器">−</button></>}</div>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.raimentId === raiment.id ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
 }
 
 function Footer() { return <footer><Link href="/" className="brand">helt<span>.</span></Link><p>写代码、追番、折腾博客的个人小站。</p><span>© 2020—2026 helt. · POWERED BY REACT</span></footer>; }
@@ -974,7 +985,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
         <header>
           <div><span>CONTROL ROOM /</span><b>{current}</b></div>
           <div>
-            <ThemeSwitch theme={theme} onClick={toggleTheme} compact />
+            <ThemeSwitch onClick={toggleTheme} compact />
             <button onClick={() => setCommandOpen(true)} aria-label="打开快捷导航" aria-expanded={commandOpen}>⌕</button>
             <button
               className="admin-profile-trigger"

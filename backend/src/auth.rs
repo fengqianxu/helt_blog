@@ -539,13 +539,12 @@ async fn update_profile(
             error!(error = %err, "stored Steam Web API key could not be decrypted");
             ApiError::Internal
         })?;
-    let (supplied_steam_web_api_key, steam_id64, steam_key_configured) =
-        normalized_steam_update(
-            &request.steam_web_api_key,
-            &request.steam_id64,
-            request.clear_steam_web_api_key,
-            previous_steam_web_api_key.is_some(),
-        )?;
+    let (supplied_steam_web_api_key, steam_id64, steam_key_configured) = normalized_steam_update(
+        &request.steam_web_api_key,
+        &request.steam_id64,
+        request.clear_steam_web_api_key,
+        previous_steam_web_api_key.is_some(),
+    )?;
     let encrypted_steam_web_api_key = supplied_steam_web_api_key
         .as_deref()
         .map(|api_key| state.llm_keyring().encrypt(api_key))
@@ -554,8 +553,7 @@ async fn update_profile(
             error!(error = %err, "Steam Web API key could not be encrypted");
             ApiError::Internal
         })?;
-    let steam_key_mutated =
-        supplied_steam_web_api_key.is_some() || request.clear_steam_web_api_key;
+    let steam_key_mutated = supplied_steam_web_api_key.is_some() || request.clear_steam_web_api_key;
 
     let avatar_url = if let Some(asset_id) = request.avatar_asset_id {
         Some(
@@ -1951,21 +1949,15 @@ mod tests {
             .is_ok()
         );
         assert!(
-            normalized_steam_update(
-                "0123456789abcdef0123456789abcdef",
-                "",
-                false,
-                false
-            )
-            .is_err()
+            normalized_steam_update("0123456789abcdef0123456789abcdef", "", false, false).is_err()
         );
         assert!(normalized_steam_update("", "76561198000000000", false, false).is_err());
         let retained =
             normalized_steam_update("", "76561198000000000", false, true).expect("retain key");
         assert!(retained.0.is_none());
         assert!(retained.2);
-        let cleared = normalized_steam_update("", "76561198000000000", true, true)
-            .expect("explicit clear");
+        let cleared =
+            normalized_steam_update("", "76561198000000000", true, true).expect("explicit clear");
         assert_eq!(cleared, (None, String::new(), false));
     }
 

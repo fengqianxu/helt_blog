@@ -127,6 +127,11 @@ services:
         mc anonymous set none local/blog-private
         mc stat local/blog-public/raiments/saber/cover.png >/dev/null 2>&1 || mc cp /seed/raiments/saber/cover.png local/blog-public/raiments/saber/cover.png
         mc stat local/blog-public/raiments/alter-saber/cover.png >/dev/null 2>&1 || mc cp /seed/raiments/alter-saber/cover.png local/blog-public/raiments/alter-saber/cover.png
+        mc stat local/blog-public/voice/login/alter-saber-success.mp3 >/dev/null 2>&1 || mc cp /seed/voice/login/alter-saber-success.mp3 local/blog-public/voice/login/alter-saber-success.mp3
+        mc stat local/blog-public/voice/login/alter-saber.mp3 >/dev/null 2>&1 || mc cp /seed/voice/login/alter-saber.mp3 local/blog-public/voice/login/alter-saber.mp3
+        mc stat local/blog-public/voice/login/blue-saber-success.mp3 >/dev/null 2>&1 || mc cp /seed/voice/login/blue-saber-success.mp3 local/blog-public/voice/login/blue-saber-success.mp3
+        mc stat local/blog-public/voice/login/blue-saber.mp3 >/dev/null 2>&1 || mc cp /seed/voice/login/blue-saber.mp3 local/blog-public/voice/login/blue-saber.mp3
+        mc stat local/blog-public/avatars/default/admin-avatar.webp >/dev/null 2>&1 || mc cp /seed/avatars/default/admin-avatar.webp local/blog-public/avatars/default/admin-avatar.webp
     security_opt:
       - no-new-privileges:true
 

@@ -1,0 +1,8 @@
+**
+!.dockerignore
+!storage-init/
+!storage-init/Dockerfile
+!frontend/
+!frontend/public/
+!frontend/public/saber-day.png
+!frontend/public/saber-night.png
