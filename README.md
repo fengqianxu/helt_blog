@@ -58,7 +58,7 @@ Linux/macOS：
 cp .env.example .env
 ```
 
-编辑 `.env`，至少替换以下五项，不能保留示例值：
+编辑 `.env`，至少替换以下六项，不能保留示例值：
 
 ```dotenv
 POSTGRES_PASSWORD=使用足够长的URL安全随机值
@@ -66,6 +66,7 @@ MINIO_ROOT_PASSWORD=使用足够长的随机值
 AUTH_JWT_SECRET=至少32个字符的随机值
 LLM_ENCRYPTION_KEY=另一段至少32个字符且不与JWT共用的随机值
 ARTALK_APP_KEY=另一段独立的长随机值
+ARTALK_ADMIN_PASSWORD=评论服务管理账户的强密码
 ```
 
 数据库密码会嵌入连接 URL，推荐只使用字母、数字、`-` 和 `_`，不要使用
@@ -139,18 +140,19 @@ key，把独立 LLM 密钥设为版本 2 后执行同一命令。
 `LLM_PRIVATE_HOST_ALLOWLIST` 中填写逗号分隔的精确域名或 IP；该配置会显式允许
 对应私网地址（以及该主机的 HTTP），请保持最小范围。
 
-### 5. 创建评论管理员
+### 5. 登录评论控制台
 
-Artalk 使用独立管理员账户，以便它自己的审核、通知和用户管理能力保持完整。首次
-启动后执行下列交互式命令，填写评论管理员昵称、邮箱和密码：
+Artalk 使用 `.env` 中的 `ARTALK_ADMIN_NAME`、`ARTALK_ADMIN_EMAIL` 和
+`ARTALK_ADMIN_PASSWORD` 创建独立管理账户。访问 <http://localhost:18080/artalk/>
+并使用这组凭据登录。新评论默认进入待审状态；可以在 `.env` 中将
+`ARTALK_PENDING_DEFAULT=false` 改为直接公开。
 
-```powershell
-docker compose exec artalk artalk admin
-```
+评论内容与计数只由 Artalk 保存和统计。文章编辑器里的“允许评论”开关会同步到
+Artalk 页面的 `admin_only` 状态；删除文章时，后端也会通过 Artalk 删除对应页面及
+其全部评论。Artalk 同步失败时文章保存或删除会返回错误，不会静默留下双份状态。
 
-随后访问 <http://localhost:18080/artalk/> 登录。新评论默认进入待审状态；可以在
-`.env` 中将 `ARTALK_PENDING_DEFAULT=false` 改为直接公开。文章编辑器里的“允许评论”
-开关仍然生效，关闭后文章页不会加载评论客户端。
+从旧版本升级前，如旧业务库 `comments` 表中仍有需要保留的评论，请先将其导入
+Artalk；迁移 `0014_artalk_comment_source.sql` 会删除该旧表及旧评论预审配置。
 
 Artalk 与博客共用 PostgreSQL 实例，但使用 `artalk_` 表前缀避免业务表冲突；评论
 图片和 Artalk 运行数据保存在独立的 `artalk_data` 卷。前端与服务端均固定为

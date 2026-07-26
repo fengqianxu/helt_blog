@@ -15,6 +15,7 @@ use tracing::error;
 use uuid::Uuid;
 
 use crate::{
+    artalk::{ArtalkError, article_page_key},
     auth,
     error::{ErrorBody, ErrorEnvelope},
     routes::contract::HttpMethod,
@@ -88,6 +89,8 @@ enum ArticleError {
     Conflict(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    #[error(transparent)]
+    Artalk(#[from] ArtalkError),
 }
 
 impl ArticleError {
@@ -131,6 +134,14 @@ impl IntoResponse for ArticleError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",
                     "文章操作失败".to_owned(),
+                )
+            }
+            Self::Artalk(error) => {
+                error!(%error, "article synchronization with Artalk failed");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "artalk_unavailable",
+                    "评论服务同步失败，文章操作未完成".to_owned(),
                 )
             }
         };
@@ -233,7 +244,6 @@ struct ArticleRow {
     category_slug: Option<String>,
     category_color: Option<String>,
     cover_url: Option<String>,
-    comment_count: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -251,7 +261,6 @@ struct ArticleItem {
     word_count: i32,
     read_minutes: i32,
     view_count: i64,
-    comment_count: i64,
     published_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -282,7 +291,6 @@ fn article_item(row: ArticleRow, tags: Vec<TagSummary>, include_content: bool) -
         word_count: row.word_count,
         read_minutes: row.read_minutes,
         view_count: row.view_count,
-        comment_count: row.comment_count,
         published_at: row.published_at,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -359,9 +367,7 @@ async fn fetch_article(
                 a.allow_comment, a.kanban_ref, a.word_count, a.read_minutes, a.view_count,
                 a.published_at, a.created_at, a.updated_at, c.id AS category_id,
                 c.name AS category_name, c.slug AS category_slug, c.color AS category_color,
-                CASE WHEN asset.id IS NULL THEN NULL ELSE '/storage/' || upload.object_key END AS cover_url,
-                (SELECT COUNT(*) FROM comments cm WHERE cm.target_type = 'article'
-                    AND cm.target_id = a.id AND cm.status = 'approved') AS comment_count
+                CASE WHEN asset.id IS NULL THEN NULL ELSE '/storage/' || upload.object_key END AS cover_url
          FROM articles a
          LEFT JOIN categories c ON c.id = a.category_id
          LEFT JOIN assets asset ON asset.id = a.cover_asset_id AND asset.status = 'active'
@@ -433,9 +439,7 @@ async fn list_articles(
                 a.allow_comment, a.kanban_ref, a.word_count, a.read_minutes, a.view_count,
                 a.published_at, a.created_at, a.updated_at, c.id AS category_id,
                 c.name AS category_name, c.slug AS category_slug, c.color AS category_color,
-                CASE WHEN asset.id IS NULL THEN NULL ELSE '/storage/' || upload.object_key END AS cover_url,
-                (SELECT COUNT(*) FROM comments cm WHERE cm.target_type = 'article'
-                    AND cm.target_id = a.id AND cm.status = 'approved') AS comment_count
+                CASE WHEN asset.id IS NULL THEN NULL ELSE '/storage/' || upload.object_key END AS cover_url
          FROM articles a
          LEFT JOIN categories c ON c.id = a.category_id
          LEFT JOIN assets asset ON asset.id = a.cover_asset_id AND asset.status = 'active'
@@ -554,8 +558,7 @@ async fn public_detail(
                 a.allow_comment, a.kanban_ref, a.word_count, a.read_minutes, a.view_count,
                 a.published_at, a.created_at, a.updated_at, c.id AS category_id,
                 c.name AS category_name, c.slug AS category_slug, c.color AS category_color,
-                NULL::TEXT AS cover_url,
-                0::BIGINT AS comment_count
+                NULL::TEXT AS cover_url
          FROM articles a LEFT JOIN categories c ON c.id = a.category_id
          WHERE a.status='published' AND (a.published_at, a.id) < (
              SELECT published_at, id FROM articles WHERE id = $1)
@@ -570,8 +573,7 @@ async fn public_detail(
                 a.allow_comment, a.kanban_ref, a.word_count, a.read_minutes, a.view_count,
                 a.published_at, a.created_at, a.updated_at, c.id AS category_id,
                 c.name AS category_name, c.slug AS category_slug, c.color AS category_color,
-                NULL::TEXT AS cover_url,
-                0::BIGINT AS comment_count
+                NULL::TEXT AS cover_url
          FROM articles a LEFT JOIN categories c ON c.id = a.category_id
          WHERE a.status='published' AND (a.published_at, a.id) > (
              SELECT published_at, id FROM articles WHERE id = $1)
@@ -586,7 +588,7 @@ async fn public_detail(
                 a.allow_comment, a.kanban_ref, a.word_count, a.read_minutes, a.view_count,
                 a.published_at, a.created_at, a.updated_at, c.id AS category_id,
                 c.name AS category_name, c.slug AS category_slug, c.color AS category_color,
-                NULL::TEXT AS cover_url, 0::BIGINT AS comment_count
+                NULL::TEXT AS cover_url
          FROM articles a LEFT JOIN categories c ON c.id = a.category_id
          LEFT JOIN article_tags at ON at.article_id = a.id
          WHERE a.status='published' AND a.id <> $1
@@ -792,6 +794,7 @@ async fn admin_update(
         .unwrap_or(cover_asset_id(state.pool(), id).await?);
     let content_asset_ids = request.content_asset_ids.unwrap_or_default();
     let status = request.status.unwrap_or(existing.status);
+    let allow_comment = request.allow_comment.unwrap_or(existing.allow_comment);
     validate_status(&status)?;
     if status == "published" {
         if title == "未命名草稿" {
@@ -832,7 +835,7 @@ async fn admin_update(
     .bind(category_id)
     .bind(cover_asset_id)
     .bind(request.is_pinned.unwrap_or(existing.is_pinned))
-    .bind(request.allow_comment.unwrap_or(existing.allow_comment))
+    .bind(allow_comment)
     .bind(request.kanban_ref.unwrap_or(existing.kanban_ref))
     .bind(&status)
     .bind(word_count)
@@ -849,6 +852,12 @@ async fn admin_update(
         ));
     }
     sync_article_relations(&mut tx, id, &tag_ids, &content_asset_ids).await?;
+    if allow_comment != existing.allow_comment {
+        state
+            .artalk()
+            .set_page_commenting(&article_page_key(&existing.slug), &title, allow_comment)
+            .await?;
+    }
     tx.commit().await?;
     let updated = fetch_article_by_id(state.pool(), id, true)
         .await?
@@ -870,19 +879,18 @@ async fn admin_delete(
 ) -> Result<StatusCode, ArticleError> {
     require_admin(&state, &headers)?;
     let mut tx = state.pool().begin().await?;
-    let deleted = sqlx::query("DELETE FROM comments WHERE target_type='article' AND target_id=$1")
+    let slug = sqlx::query_scalar::<_, String>("SELECT slug FROM articles WHERE id=$1 FOR UPDATE")
         .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    let _ = deleted;
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ArticleError::NotFound("文章不存在".to_owned()))?;
     let result = sqlx::query("DELETE FROM articles WHERE id=$1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    if result.rows_affected() == 0 {
-        tx.rollback().await?;
-        return Err(ArticleError::NotFound("文章不存在".to_owned()));
-    }
+    debug_assert_eq!(result.rows_affected(), 1);
+    let page_key = article_page_key(&slug);
+    state.artalk().delete_pages([page_key.as_str()]).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -909,14 +917,15 @@ async fn admin_batch(
     let mut tx = state.pool().begin().await?;
     let mut affected = 0_i64;
     let mut failed_ids = Vec::new();
+    let mut deleted_page_keys = Vec::new();
     for id in ids {
-        let article = sqlx::query_as::<_, (String, String, String, Option<i64>)>(
-            "SELECT status, title, content_md, category_id FROM articles WHERE id=$1",
+        let article = sqlx::query_as::<_, (String, String, String, Option<i64>, String)>(
+            "SELECT status, title, content_md, category_id, slug FROM articles WHERE id=$1",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((status, title, content_md, category_id)) = article else {
+        let Some((status, title, content_md, category_id, slug)) = article else {
             failed_ids.push(id);
             continue;
         };
@@ -952,10 +961,7 @@ async fn admin_batch(
                     .await?
             }
             "delete" => {
-                sqlx::query("DELETE FROM comments WHERE target_type='article' AND target_id=$1")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
+                deleted_page_keys.push(article_page_key(&slug));
                 sqlx::query("DELETE FROM articles WHERE id=$1")
                     .bind(id)
                     .execute(&mut *tx)
@@ -969,6 +975,10 @@ async fn admin_batch(
             affected += result.rows_affected() as i64;
         }
     }
+    state
+        .artalk()
+        .delete_pages(deleted_page_keys.iter().map(String::as_str))
+        .await?;
     tx.commit().await?;
     Ok(Json(
         serde_json::json!({ "affected": affected, "failed_ids": failed_ids }),

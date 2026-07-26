@@ -69,7 +69,6 @@ struct UseCaseConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct UseCases {
     kanban_chat: UseCaseConfig,
-    comment_review: UseCaseConfig,
     article_assistant: UseCaseConfig,
 }
 
@@ -471,7 +470,6 @@ async fn update_settings(
     }
     for use_case in [
         &request.use_cases.kanban_chat,
-        &request.use_cases.comment_review,
         &request.use_cases.article_assistant,
     ] {
         if let Some(connection_id) = use_case.connection_id {
@@ -1059,7 +1057,6 @@ fn normalize_and_validate(request: &mut UpdateSettingsRequest) -> Result<(), Llm
     }
     for (name, use_case) in [
         ("看板娘对话", &mut request.use_cases.kanban_chat),
-        ("评论预审", &mut request.use_cases.comment_review),
         ("文章助手", &mut request.use_cases.article_assistant),
     ] {
         use_case.system_prompt = use_case.system_prompt.trim().to_owned();
@@ -1432,12 +1429,6 @@ mod tests {
                     "connection_id": null,
                     "model": ""
                 },
-                "comment_review": {
-                    "enabled": false,
-                    "system_prompt": "Review",
-                    "connection_id": null,
-                    "model": ""
-                },
                 "article_assistant": {
                     "enabled": false,
                     "system_prompt": "Write",
@@ -1470,7 +1461,6 @@ mod tests {
             }],
             "use_cases": {
                 "kanban_chat": { "enabled": false, "system_prompt": "Chat" },
-                "comment_review": { "enabled": false, "system_prompt": "Review" },
                 "article_assistant": { "enabled": false, "system_prompt": "Write" }
             }
         }))
@@ -1496,7 +1486,6 @@ mod tests {
             "connections": [connection.clone(), connection],
             "use_cases": {
                 "kanban_chat": { "enabled": false, "system_prompt": "Chat" },
-                "comment_review": { "enabled": false, "system_prompt": "Review" },
                 "article_assistant": { "enabled": false, "system_prompt": "Write" }
             }
         }))

@@ -11,7 +11,8 @@ use sqlx::PgPool;
 use webauthn_rs::prelude::{PasskeyRegistration, Url, Webauthn, WebauthnBuilder};
 
 use crate::{
-    config::Config, llm_crypto::LlmKeyring, llm_network::LlmHttpClient, storage::ObjectStorage,
+    artalk::ArtalkClient, config::Config, llm_crypto::LlmKeyring, llm_network::LlmHttpClient,
+    storage::ObjectStorage,
 };
 
 #[derive(Clone)]
@@ -22,6 +23,7 @@ struct Inner {
     pub http_client: Client,
     pub minio_health_url: String,
     pub object_storage: ObjectStorage,
+    pub artalk: ArtalkClient,
     pub started_at: DateTime<Utc>,
     pub auth_jwt_secret: String,
     pub llm_keyring: LlmKeyring,
@@ -60,6 +62,7 @@ impl AppState {
         .context("invalid LLM encryption keyring")?;
         let llm_http_client =
             LlmHttpClient::new(&config.environment, &config.llm_private_host_allowlist);
+        let artalk = ArtalkClient::new(http_client.clone(), config)?;
 
         Ok(Self(Arc::new(Inner {
             pool,
@@ -71,6 +74,7 @@ impl AppState {
                 config.minio_secret_key.clone(),
                 config.minio_public_bucket.clone(),
             ),
+            artalk,
             started_at: Utc::now(),
             auth_jwt_secret: config.auth_jwt_secret.clone(),
             llm_keyring,
@@ -96,6 +100,10 @@ impl AppState {
 
     pub fn object_storage(&self) -> &ObjectStorage {
         &self.0.object_storage
+    }
+
+    pub fn artalk(&self) -> &ArtalkClient {
+        &self.0.artalk
     }
 
     pub fn started_at(&self) -> DateTime<Utc> {

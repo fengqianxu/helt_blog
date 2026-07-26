@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { Notify, cx, responseMessage } from "./shared";
 
-type UseCaseKey = "kanban_chat" | "comment_review" | "article_assistant";
+type UseCaseKey = "kanban_chat" | "article_assistant";
 type UseCaseConfig = {
   enabled: boolean;
   system_prompt: string;
@@ -71,7 +71,6 @@ const EMPTY_SETTINGS: LlmSettingsPayload = {
   enabled: false,
   use_cases: {
     kanban_chat: { enabled: true, system_prompt: "", connection_id: null, model: "" },
-    comment_review: { enabled: false, system_prompt: "", connection_id: null, model: "" },
     article_assistant: { enabled: false, system_prompt: "", connection_id: null, model: "" },
   },
   status: EMPTY_STATUS,
@@ -84,9 +83,8 @@ const USE_CASES: Array<{
   source: string;
 }> = [
   { id: "kanban_chat", label: "看板娘对话", source: "灵衣 / 看板娘" },
-  { id: "comment_review", label: "评论预审", source: "评论审核" },
 ];
-const USE_CASE_KEYS: UseCaseKey[] = ["kanban_chat", "comment_review", "article_assistant"];
+const USE_CASE_KEYS: UseCaseKey[] = ["kanban_chat", "article_assistant"];
 
 function normalizePayload(payload: LlmSettingsPayload): LlmSettingsPayload {
   return {

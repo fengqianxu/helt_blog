@@ -49,9 +49,10 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(packageJson, /"artalk": "2\.10\.0"/);
   assert.match(shell, /Artalk\.init/);
   assert.match(shell, /Artalk\.loadCountWidget/);
+  assert.doesNotMatch(shell, /\.comment_count/);
   assert.match(shell, /pageKey: articleCommentKey\(slug\)/);
   assert.match(shell, /payload\.allow_comment/);
-  assert.match(shell, /docker compose exec artalk artalk admin/);
+  assert.match(shell, /ARTALK_ADMIN_PASSWORD/);
   assert.doesNotMatch(shell, /评论已进入审核队列（Mock）|恢复演示数据/);
   assert.match(app, /\/api\/v1\/admin\/categories/);
   assert.match(app, /\/api\/v1\/admin\/tags/);
@@ -99,7 +100,7 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(llm, /<select value=\{useCase\.model\}/);
   assert.doesNotMatch(llm, /updateConnection\(connection\.id, "model"/);
   assert.match(app, /kanban_chat/);
-  assert.match(app, /comment_review/);
+  assert.doesNotMatch(app, /comment_review|评论预审/);
   assert.doesNotMatch(llm, /label: "文章助手"/);
   assert.doesNotMatch(app, /供应商、模型、密钥和提示词只在这里维护|llm-source-banner|llm-policy-panel|服务商/);
   assert.doesNotMatch(shell, /raiment-model-panel|人格提示词|api\.example\.com|ai-reference-note/);

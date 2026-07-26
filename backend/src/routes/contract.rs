@@ -443,34 +443,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "200 JSON items[{id,name,article_count}]",
         "article_count 只统计 published；按使用量倒序后名称稳定排序"
     ),
-    // 评论域：文章评论与说说回复共表，但请求必须且只能选择一个目标。
-    endpoint!(
-        "COMMENT-01",
-        "评论",
-        Get,
-        "/api/v1/comments",
-        "/api/v1/comments?article_slug=p1&page=1&per_page=10",
-        Anonymous,
-        OK,
-        "读取已通过评论和楼中楼回复",
-        "Query: article_slug 或 moment_id 二选一且必填，另有 page/per_page",
-        "200 分页 items[{id,parent_id,author_name,author_site,is_owner,content,created_at}]",
-        "features.comments=false 返回 403；仅 approved；父评论不存在或目标组合非法返回 422"
-    ),
-    endpoint!(
-        "COMMENT-02",
-        "评论",
-        Post,
-        "/api/v1/comments",
-        "/api/v1/comments",
-        Anonymous,
-        CREATED,
-        "提交游客评论或回复",
-        "JSON: article_slug|moment_id 二选一、parent_id?、author_name/email/site?、content",
-        "201 JSON id、status=pending、created_at",
-        "按 IP+visitor 限流 3/分钟；校验长度与父子同目标；仅通过统一 LLM 的 comment_review 场景写入预审建议，游客初始状态仍为 pending"
-    ),
-    // 说说公开域：HTTP 负责展示、点赞和评论；内容维护走下方后台接口。
+    // 说说公开域：HTTP 负责展示和点赞；内容维护走下方后台接口。
     endpoint!(
         "MOMENT-01",
         "说说",
@@ -481,8 +454,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "分页读取时间轴说说",
         "Query: page/per_page、可选 visitor_id",
-        "200 分页 items[{id,content,images,like_count,reply_count,created_at,liked_by_me}]",
-        "按 created_at 倒序；未传 visitor_id 时 liked_by_me 恒为 false；reply_count 只计 approved"
+        "200 分页 items[{id,content,images,like_count,created_at,liked_by_me}]",
+        "按 created_at 倒序；未传 visitor_id 时 liked_by_me 恒为 false"
     ),
     endpoint!(
         "MOMENT-02",
@@ -731,7 +704,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "删除单篇文章",
         "路径参数 id 为正整数",
         "204 无响应体",
-        "事务删除文章及关联标签/评论；不存在返回 404；对象存储素材不在请求内物理删除"
+        "事务删除文章及关联标签，并通过 Artalk 页面删除接口清理该文章的全部评论；任一同步失败则返回 502；对象存储素材不在请求内物理删除"
     ),
     endpoint!(
         "ADMIN-ARTICLE-06",
@@ -744,73 +717,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "批量修改文章状态",
         "JSON: 非空 article_ids、action=publish|unpublish|delete|pin|unpin",
         "200 JSON affected、failed_ids",
-        "同一事务处理可执行项；发布仍逐篇执行发布校验；空数组或未知 action 返回 422"
-    ),
-    // 后台评论域：AI 只提供预审建议，最终状态由管理员决定。
-    endpoint!(
-        "ADMIN-COMMENT-01",
-        "后台评论",
-        Get,
-        "/api/v1/admin/comments",
-        "/api/v1/admin/comments?status=pending&page=1&per_page=10",
-        AdminJwt,
-        OK,
-        "分页读取审核队列",
-        "Query: status=pending|approved|spam、page/per_page",
-        "200 分页 items，包含 ai_verdict、ai_confidence、target",
-        "文章评论和说说回复混排；按 created_at 倒序；非法状态返回 422"
-    ),
-    endpoint!(
-        "ADMIN-COMMENT-02",
-        "后台评论",
-        Get,
-        "/api/v1/admin/comments/counts",
-        "/api/v1/admin/comments/counts",
-        AdminJwt,
-        OK,
-        "读取评论状态计数",
-        "无查询参数",
-        "200 JSON pending、approved、spam、total",
-        "四个计数来自同一一致性快照，total 等于三个状态之和"
-    ),
-    endpoint!(
-        "ADMIN-COMMENT-03",
-        "后台评论",
-        Patch,
-        "/api/v1/admin/comments/{id}",
-        "/api/v1/admin/comments/1",
-        AdminJwt,
-        OK,
-        "修改评论审核状态",
-        "路径 id；JSON: status=approved|spam|pending",
-        "200 JSON id、status、updated_at",
-        "只允许三种状态互转；目标不存在返回 404；重复设置同状态保持幂等"
-    ),
-    endpoint!(
-        "ADMIN-COMMENT-04",
-        "后台评论",
-        Post,
-        "/api/v1/admin/comments/{id}/reply",
-        "/api/v1/admin/comments/1/reply",
-        AdminJwt,
-        CREATED,
-        "以博主身份回复评论",
-        "路径 id；JSON: content",
-        "201 JSON 回复对象，is_owner=true、status=approved",
-        "回复与父评论目标一致并自动通过；父评论不存在返回 404；内容上限与游客评论相同"
-    ),
-    endpoint!(
-        "ADMIN-COMMENT-05",
-        "后台评论",
-        Post,
-        "/api/v1/admin/comments/approve-all",
-        "/api/v1/admin/comments/approve-all",
-        AdminJwt,
-        OK,
-        "批量通过待审评论",
-        "JSON: 可选 ids；缺省表示全部 pending",
-        "200 JSON affected",
-        "只把 pending 改为 approved；显式 ids 含不存在项时忽略并返回实际 affected"
+        "同一事务处理可执行项；delete 通过 Artalk 页面删除接口清理评论；发布仍逐篇执行发布校验；空数组或未知 action 返回 422"
     ),
     // 后台分类与标签：公开列表仍只统计已发布文章，后台接口负责完整维护。
     endpoint!(
@@ -928,8 +835,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "分页读取全部说说",
         "Query: page/per_page、search?",
-        "200 分页 items，包含 images、like_count、reply_count、created_at、updated_at",
-        "按 created_at 倒序；回复计数包含各审核状态分项"
+        "200 分页 items，包含 images、like_count、created_at、updated_at",
+        "按 created_at 倒序"
     ),
     endpoint!(
         "ADMIN-MOMENT-02",
@@ -955,7 +862,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "编辑说说",
         "路径 id；JSON: content、asset_ids、created_at?",
         "200 返回更新后的完整说说",
-        "事务替换图片引用；不重置点赞和回复；不存在返回 404"
+        "事务替换图片引用且不重置点赞；不存在返回 404"
     ),
     endpoint!(
         "ADMIN-MOMENT-04",
@@ -968,7 +875,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "删除说说",
         "路径 id",
         "204 无响应体",
-        "事务删除点赞、回复和素材引用；素材本体保留；不存在返回 404"
+        "事务删除点赞和素材引用；素材本体保留；不存在返回 404"
     ),
     // 后台游戏：补齐游戏条目的网页维护与排序能力。
     endpoint!(
@@ -1472,7 +1379,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取仪表盘概览",
         "无查询参数",
-        "200 JSON 今日访客及差值、文章/草稿/评论/对话/LLM/运行天数",
+        "200 JSON 今日访客及差值、文章/草稿/对话/LLM/运行天数",
         "所有日维度数据按 Asia/Shanghai；同一响应尽量使用一致性快照"
     ),
     endpoint!(
@@ -1694,6 +1601,11 @@ mod tests {
             admin_username: "test".to_owned(),
             admin_initial_password: Some("test".to_owned()),
             auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
+            artalk_internal_url: None,
+            artalk_site_name: "helt.".to_owned(),
+            artalk_admin_name: "test".to_owned(),
+            artalk_admin_email: "test@example.com".to_owned(),
+            artalk_admin_password: "test".to_owned(),
             llm_encryption_key_version: 1,
             llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
             llm_encryption_previous_key_version: None,
@@ -1713,8 +1625,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_105_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 105);
+    fn catalog_contains_98_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 98);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1782,8 +1694,8 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 84);
-        assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 21);
+        assert_eq!(admin_count, 79);
+        assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 19);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
             .iter()
@@ -1829,7 +1741,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 3_677_461_679_789_008_710,
+            fingerprint, 15_877_613_657_808_461_984,
             "update only after reviewing the full catalog"
         );
     }

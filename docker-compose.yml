@@ -148,6 +148,11 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-helt}
       ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?Copy .env.example to .env and set AUTH_JWT_SECRET}
+      ARTALK_INTERNAL_URL: http://artalk:23366
+      ARTALK_SITE_NAME: helt.
+      ARTALK_ADMIN_NAME: ${ARTALK_ADMIN_NAME:-blog-service}
+      ARTALK_ADMIN_EMAIL: ${ARTALK_ADMIN_EMAIL:-artalk-service@localhost.invalid}
+      ARTALK_ADMIN_PASSWORD: ${ARTALK_ADMIN_PASSWORD:?Copy .env.example to .env and set ARTALK_ADMIN_PASSWORD}
       LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:?Copy .env.example to .env and set an independent LLM_ENCRYPTION_KEY}
       LLM_ENCRYPTION_KEY_VERSION: ${LLM_ENCRYPTION_KEY_VERSION:-1}
       LLM_ENCRYPTION_PREVIOUS_KEY: ${LLM_ENCRYPTION_PREVIOUS_KEY:-}
@@ -194,6 +199,11 @@ services:
       ATK_LOCALE: zh-CN
       ATK_APP_KEY: ${ARTALK_APP_KEY:-${AUTH_JWT_SECRET}}
       ATK_SITE_DEFAULT: helt.
+      ATK_ADMIN_USERS_0_NAME: ${ARTALK_ADMIN_NAME:-blog-service}
+      ATK_ADMIN_USERS_0_EMAIL: ${ARTALK_ADMIN_EMAIL:-artalk-service@localhost.invalid}
+      ATK_ADMIN_USERS_0_PASSWORD: ${ARTALK_ADMIN_PASSWORD:?Copy .env.example to .env and set ARTALK_ADMIN_PASSWORD}
+      ATK_ADMIN_USERS_0_BADGE_NAME: Administrator
+      ATK_ADMIN_USERS_0_RECEIVE_EMAIL: "false"
       ATK_SITE_URL: ${PUBLIC_ORIGIN:?Copy .env.example to .env and set PUBLIC_ORIGIN}
       ATK_TRUSTED_DOMAINS: ${PUBLIC_ORIGIN:?Copy .env.example to .env and set PUBLIC_ORIGIN}
       ATK_DB_TYPE: pgsql

@@ -94,6 +94,11 @@ fn test_config() -> Config {
         admin_username: "test".to_owned(),
         admin_initial_password: None,
         auth_jwt_secret: JWT_SECRET.to_owned(),
+        artalk_internal_url: None,
+        artalk_site_name: "helt.".to_owned(),
+        artalk_admin_name: "test".to_owned(),
+        artalk_admin_email: "test@example.com".to_owned(),
+        artalk_admin_password: "test".to_owned(),
         llm_encryption_key_version: 2,
         llm_encryption_secret: CURRENT_LLM_SECRET.to_owned(),
         llm_encryption_previous_key_version: Some(1),
@@ -204,12 +209,6 @@ fn use_cases(connection_id: Option<i64>, enabled: bool) -> Value {
             "connection_id": connection_id,
             "model": if enabled { "test-model" } else { "" }
         },
-        "comment_review": {
-            "enabled": false,
-            "system_prompt": "Review safely.",
-            "connection_id": null,
-            "model": ""
-        },
         "article_assistant": {
             "enabled": false,
             "system_prompt": "Edit safely.",
@@ -223,6 +222,17 @@ fn use_cases(connection_id: Option<i64>, enabled: bool) -> Value {
 #[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
 async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
     let database = TestDatabase::create().await;
+    let legacy_comments_removed: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = $1 AND table_name = 'comments'
+        )",
+    )
+    .bind(&database.schema)
+    .fetch_one(&database.pool)
+    .await
+    .expect("check legacy comments table");
+    assert!(legacy_comments_removed);
     let app = test_app(database.pool.clone());
     let category_id: i64 = sqlx::query_scalar("SELECT id FROM categories ORDER BY id LIMIT 1")
         .fetch_one(&database.pool)
@@ -325,6 +335,7 @@ async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(public_article["article"]["title"], "Tag synchronization");
+    assert!(public_article["article"].get("comment_count").is_none());
 
     let (status, _) = json_request(
         &app,

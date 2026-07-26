@@ -19,6 +19,11 @@ pub struct Config {
     pub admin_username: String,
     pub admin_initial_password: Option<String>,
     pub auth_jwt_secret: String,
+    pub artalk_internal_url: Option<String>,
+    pub artalk_site_name: String,
+    pub artalk_admin_name: String,
+    pub artalk_admin_email: String,
+    pub artalk_admin_password: String,
     pub llm_encryption_key_version: i32,
     pub llm_encryption_secret: String,
     pub llm_encryption_previous_key_version: Option<i32>,
@@ -124,6 +129,13 @@ impl Config {
                 .ok()
                 .filter(|password| !password.trim().is_empty()),
             auth_jwt_secret,
+            artalk_internal_url: Some(required("ARTALK_INTERNAL_URL")?),
+            artalk_site_name: env::var("ARTALK_SITE_NAME").unwrap_or_else(|_| "helt.".to_owned()),
+            artalk_admin_name: env::var("ARTALK_ADMIN_NAME")
+                .unwrap_or_else(|_| "blog-service".to_owned()),
+            artalk_admin_email: env::var("ARTALK_ADMIN_EMAIL")
+                .unwrap_or_else(|_| "artalk-service@localhost.invalid".to_owned()),
+            artalk_admin_password: required("ARTALK_ADMIN_PASSWORD")?,
             llm_encryption_key_version,
             llm_encryption_secret,
             llm_encryption_previous_key_version,

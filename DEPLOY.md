@@ -39,13 +39,15 @@ Coolify 会自动生成并持久保存以下密码，无需手工创建：
 - `SERVICE_PASSWORD_64_MINIO`
 - `SERVICE_PASSWORD_64_ADMIN`
 - `SERVICE_PASSWORD_64_ARTALK`
+- `SERVICE_PASSWORD_64_ARTALK_ADMIN`
 - `SERVICE_PASSWORD_64_LLM`
 
 首个后台管理员用户名默认为 `helt`（可通过 `ADMIN_USERNAME` 修改），初始密码就是 Coolify 环境变量 `SERVICE_PASSWORD_64_ADMIN` 的值。
 
-首次部署完成后，在 Coolify 的 `artalk` 服务终端执行 `artalk admin`，交互式创建
-评论管理员。评论控制台位于 `https://blog.example.com/artalk/`，它与博客后台使用
-独立账户。默认情况下访客评论需审核；如需直接公开，在 Coolify 环境变量中设置
+评论控制台位于 `https://blog.example.com/artalk/`，登录名为 `blog-service`、邮箱为
+`artalk-service@localhost.invalid`，密码是 Coolify 生成的
+`SERVICE_PASSWORD_64_ARTALK_ADMIN`。该账户也供后端同步文章的禁止评论与删除状态。
+默认情况下访客评论需审核；如需直接公开，在 Coolify 环境变量中设置
 `ARTALK_PENDING_DEFAULT=false` 并重新部署。
 
 部署完成后访问：
@@ -70,13 +72,12 @@ Coolify 总体健康检查中排除。
 ```bash
 cp .env.example .env
 # 编辑 .env：替换 POSTGRES_PASSWORD、MINIO_ROOT_PASSWORD、AUTH_JWT_SECRET、
-# LLM_ENCRYPTION_KEY、ARTALK_APP_KEY，
+# LLM_ENCRYPTION_KEY、ARTALK_APP_KEY、ARTALK_ADMIN_PASSWORD，
 # 并按实际 HTTPS 地址设置 PUBLIC_ORIGIN 和 CORS_ALLOWED_ORIGINS。
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 curl http://127.0.0.1:18080/health/ready
-docker compose exec artalk artalk admin
 ```
 
 数据库密码会嵌入 PostgreSQL URL，请使用足够长的 URL 安全字符组合（字母、数字、`-`、`_`），不要直接使用 `@`、`:`、`/`、`#` 等字符。

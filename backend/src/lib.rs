@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod artalk;
 pub mod auth;
 pub mod config;
 pub mod db;
