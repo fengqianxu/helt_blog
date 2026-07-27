@@ -31,6 +31,14 @@
    将旧 JWT Secret 作为版本 1 previous key，完成一次原子轮换。
 
    如果需要允许其他前端域名跨域访问，再设置逗号分隔的 `CORS_ALLOWED_ORIGINS`；默认与 `PUBLIC_ORIGIN` 相同。
+   两项都只接受精确的 HTTP(S) 源，不能包含路径、查询参数、凭据或通配符。
+   `PUBLIC_ORIGIN` 也决定 canonical 与社交分享链接，因此必须填写访客实际使用的
+   HTTPS 域名。
+
+   普通 API、素材上传/批量下载和外部同步分别使用 30 秒、300 秒和 15 秒超时。
+   慢速大文件上传可单独设置 `ASSET_REQUEST_TIMEOUT_SECS`（30–3600），无需放宽
+   普通 API；对应的 `REQUEST_TIMEOUT_SECS` 范围为 1–300，
+   `UPSTREAM_REQUEST_TIMEOUT_SECS` 范围为 1–120。
 5. 点击 Deploy。不要给 `frontend`、`backend`、`artalk`、`postgres` 或 `minio` 分配域名。
 
 Coolify 会自动生成并持久保存以下密码，无需手工创建：

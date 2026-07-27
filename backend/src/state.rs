@@ -18,12 +18,16 @@ use crate::{
     storage::ObjectStorage,
 };
 
+const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
+const MAX_AUTH_FAILURE_KEYS: usize = 4_096;
+
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
 
 struct Inner {
     pub pool: PgPool,
     pub http_client: Client,
+    pub storage_http_client: Client,
     pub minio_health_url: String,
     pub object_storage: ObjectStorage,
     pub artalk: ArtalkClient,
@@ -42,9 +46,15 @@ struct Inner {
 impl AppState {
     pub fn new(pool: PgPool, config: &Config) -> Result<Self> {
         let http_client = Client::builder()
-            .timeout(Duration::from_secs(3))
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(config.upstream_request_timeout_secs))
             .build()
-            .context("failed to construct internal HTTP client")?;
+            .context("failed to construct upstream HTTP client")?;
+        let storage_http_client = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(config.asset_request_timeout_secs))
+            .build()
+            .context("failed to construct object-storage HTTP client")?;
         let rp_origin = Url::parse(&config.public_origin)
             .context("PUBLIC_ORIGIN must be an absolute URL for Passkey support")?;
         let rp_id = rp_origin
@@ -72,6 +82,7 @@ impl AppState {
         Ok(Self(Arc::new(Inner {
             pool,
             http_client,
+            storage_http_client,
             minio_health_url: format!("{}/minio/health/ready", config.minio_endpoint),
             object_storage: ObjectStorage::new(
                 config.minio_endpoint.clone(),
@@ -99,6 +110,10 @@ impl AppState {
 
     pub fn http_client(&self) -> &Client {
         &self.0.http_client
+    }
+
+    pub fn storage_http_client(&self) -> &Client {
+        &self.0.storage_http_client
     }
 
     pub fn minio_health_url(&self) -> &str {
@@ -182,15 +197,15 @@ impl AppState {
     }
 
     pub fn auth_rate_limited(&self, key: &str) -> bool {
-        let cutoff = Instant::now() - Duration::from_secs(15 * 60);
         let mut failures = self
             .0
             .auth_failures
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let attempts = failures.entry(key.to_owned()).or_default();
-        attempts.retain(|attempt| *attempt >= cutoff);
-        attempts.len() >= 5
+        prune_auth_failures(&mut failures, Instant::now());
+        failures
+            .get(key)
+            .is_some_and(|attempts| attempts.len() >= 5)
     }
 
     pub fn record_auth_failure(&self, key: &str) {
@@ -199,10 +214,18 @@ impl AppState {
             .auth_failures
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        failures
-            .entry(key.to_owned())
-            .or_default()
-            .push(Instant::now());
+        let now = Instant::now();
+        prune_auth_failures(&mut failures, now);
+        if failures.len() >= MAX_AUTH_FAILURE_KEYS
+            && !failures.contains_key(key)
+            && let Some(oldest) = failures
+                .iter()
+                .min_by_key(|(_, attempts)| attempts.last().copied())
+                .map(|(key, _)| key.clone())
+        {
+            failures.remove(&oldest);
+        }
+        failures.entry(key.to_owned()).or_default().push(now);
     }
 
     pub fn clear_auth_failures(&self, key: &str) {
@@ -212,5 +235,34 @@ impl AppState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         failures.remove(key);
+    }
+}
+
+fn prune_auth_failures(failures: &mut HashMap<String, Vec<Instant>>, now: Instant) {
+    failures.retain(|_, attempts| {
+        attempts.retain(|attempt| now.saturating_duration_since(*attempt) < AUTH_FAILURE_WINDOW);
+        !attempts.is_empty()
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AUTH_FAILURE_WINDOW, prune_auth_failures};
+    use std::{collections::HashMap, time::Instant};
+
+    #[test]
+    fn expired_auth_failure_keys_are_removed() {
+        let now = Instant::now();
+        let expired = now.checked_sub(AUTH_FAILURE_WINDOW).expect("test instant");
+        let recent = now;
+        let mut failures = HashMap::from([
+            ("expired".to_owned(), vec![expired]),
+            ("mixed".to_owned(), vec![expired, recent]),
+        ]);
+
+        prune_auth_failures(&mut failures, now);
+
+        assert!(!failures.contains_key("expired"));
+        assert_eq!(failures["mixed"], [recent]);
     }
 }

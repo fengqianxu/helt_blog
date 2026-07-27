@@ -1,6 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::state::AppState;
 
@@ -32,16 +33,15 @@ pub async fn live(State(state): State<AppState>) -> Json<LiveResponse> {
 }
 
 pub async fn ready(State(state): State<AppState>) -> (StatusCode, Json<ReadyResponse>) {
-    let postgres_ok = sqlx::query_scalar::<_, i32>("SELECT 1")
-        .fetch_one(state.pool())
-        .await
-        .is_ok();
-    let minio_ok = state
+    let postgres = sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(state.pool());
+    let minio = state
         .http_client()
         .get(state.minio_health_url())
-        .send()
-        .await
-        .is_ok_and(|response| response.status().is_success());
+        .timeout(Duration::from_secs(3))
+        .send();
+    let (postgres, minio) = tokio::join!(postgres, minio);
+    let postgres_ok = postgres.is_ok();
+    let minio_ok = minio.is_ok_and(|response| response.status().is_success());
 
     let ready = postgres_ok && minio_ok;
     (

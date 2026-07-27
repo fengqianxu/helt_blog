@@ -48,7 +48,7 @@ impl ObjectStorage {
             Method::PUT,
             object_key,
             Some(content_type),
-            &body,
+            body,
             Utc::now(),
         )?;
         let response = client
@@ -58,14 +58,20 @@ impl ObjectStorage {
         if !response.status().is_success() {
             let status = response.status();
             let message = response.text().await.unwrap_or_default();
-            bail!("MinIO rejected avatar upload with {status}: {message}");
+            bail!("MinIO rejected object upload with {status}: {message}");
         }
         Ok(())
     }
 
     pub async fn delete_public_object(&self, client: &Client, object_key: &str) -> Result<()> {
-        let request =
-            self.signed_request(client, Method::DELETE, object_key, None, &[], Utc::now())?;
+        let request = self.signed_request(
+            client,
+            Method::DELETE,
+            object_key,
+            None,
+            Vec::new(),
+            Utc::now(),
+        )?;
         let response = client
             .execute(request)
             .await
@@ -77,8 +83,14 @@ impl ObjectStorage {
     }
 
     pub async fn get_public_object(&self, client: &Client, object_key: &str) -> Result<Vec<u8>> {
-        let request =
-            self.signed_request(client, Method::GET, object_key, None, &[], Utc::now())?;
+        let request = self.signed_request(
+            client,
+            Method::GET,
+            object_key,
+            None,
+            Vec::new(),
+            Utc::now(),
+        )?;
         let response = client
             .execute(request)
             .await
@@ -99,7 +111,7 @@ impl ObjectStorage {
         method: Method,
         object_key: &str,
         content_type: Option<&str>,
-        body: &[u8],
+        body: Vec<u8>,
         now: DateTime<Utc>,
     ) -> Result<reqwest::Request> {
         let host = self
@@ -112,7 +124,7 @@ impl ObjectStorage {
         let url = format!("{}{}", self.endpoint, canonical_uri);
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let date = now.format("%Y%m%d").to_string();
-        let payload_hash = sha256_hex(body);
+        let payload_hash = sha256_hex(&body);
         let (canonical_headers, signed_headers) = if let Some(content_type) = content_type {
             (
                 format!(
@@ -160,7 +172,7 @@ impl ObjectStorage {
             request = request.header("content-type", content_type);
         }
         request
-            .body(body.to_vec())
+            .body(body)
             .build()
             .context("signed MinIO request could not be built")
     }
@@ -201,7 +213,7 @@ mod tests {
                 Method::PUT,
                 "avatars/admin/1/example.png",
                 Some("image/png"),
-                b"image",
+                b"image".to_vec(),
                 now,
             )
             .unwrap();

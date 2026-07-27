@@ -12,14 +12,12 @@ pub mod storage;
 pub mod storage_gc;
 pub mod telemetry;
 
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::{
-        HeaderName, HeaderValue, Method, StatusCode,
+        HeaderName, HeaderValue, Method,
         header::{self, AUTHORIZATION, CONTENT_TYPE},
     },
 };
@@ -29,7 +27,6 @@ use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     set_header::SetResponseHeaderLayer,
-    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 
@@ -66,14 +63,13 @@ pub fn build_app(state: AppState, config: &Config) -> Result<Router> {
     let request_id_header = HeaderName::from_static("x-request-id");
 
     Ok(Router::new()
-        .merge(routes::router())
+        .merge(routes::router(
+            config.request_timeout_secs,
+            config.asset_request_timeout_secs,
+        ))
         .fallback(error::not_found)
         .layer(DefaultBodyLimit::max(
             routes::contract::DEFAULT_REQUEST_BODY_LIMIT_BYTES,
-        ))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::GATEWAY_TIMEOUT,
-            Duration::from_secs(config.request_timeout_secs),
         ))
         .layer(CatchPanicLayer::new())
         .layer(CompressionLayer::new())

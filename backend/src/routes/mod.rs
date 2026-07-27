@@ -7,8 +7,11 @@ mod health;
 mod llm;
 mod raiments;
 
-use axum::{Json, Router, routing::get};
+use std::time::Duration;
+
+use axum::{Json, Router, http::StatusCode, routing::get};
 use serde::Serialize;
+use tower_http::timeout::TimeoutLayer;
 
 use crate::{auth, state::AppState};
 
@@ -26,10 +29,9 @@ struct HealthLinks {
     ready: &'static str,
 }
 
-pub fn router() -> Router<AppState> {
-    Router::new()
+pub fn router(request_timeout_secs: u64, asset_request_timeout_secs: u64) -> Router<AppState> {
+    let regular_routes = Router::new()
         .merge(auth::router())
-        .merge(assets::router())
         .merge(articles::router())
         .merge(bangumi::router())
         .merge(games::router())
@@ -42,6 +44,15 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1", get(index))
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
+        .layer(timeout(request_timeout_secs));
+
+    Router::new()
+        .merge(assets::router().layer(timeout(asset_request_timeout_secs)))
+        .merge(regular_routes)
+}
+
+fn timeout(seconds: u64) -> TimeoutLayer {
+    TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, Duration::from_secs(seconds))
 }
 
 async fn index() -> Json<ApiIndex> {
@@ -97,6 +108,8 @@ mod tests {
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,
+            asset_request_timeout_secs: 300,
+            upstream_request_timeout_secs: 15,
         }
     }
 

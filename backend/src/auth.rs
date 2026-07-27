@@ -811,7 +811,12 @@ async fn upload_avatar(
     let bytes = body.to_vec();
     state
         .object_storage()
-        .put_public_object(state.http_client(), &object_key, media.mime, bytes.clone())
+        .put_public_object(
+            state.storage_http_client(),
+            &object_key,
+            media.mime,
+            bytes.clone(),
+        )
         .await
         .map_err(|err| {
             error!(error = %err, object_key, "administrator avatar upload failed");
@@ -832,7 +837,7 @@ async fn upload_avatar(
     if let Err(error) = persisted {
         if let Err(cleanup_error) = state
             .object_storage()
-            .delete_public_object(state.http_client(), &object_key)
+            .delete_public_object(state.storage_http_client(), &object_key)
             .await
         {
             warn!(error = %cleanup_error, object_key, "orphaned avatar object could not be cleaned up");
@@ -1827,6 +1832,8 @@ mod tests {
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,
+            asset_request_timeout_secs: 300,
+            upstream_request_timeout_secs: 15,
         };
         AppState::new(
             PgPoolOptions::new()

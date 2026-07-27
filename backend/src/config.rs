@@ -1,5 +1,6 @@
 use std::{env, net::IpAddr, str::FromStr};
 
+use reqwest::Url;
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -32,6 +33,8 @@ pub struct Config {
     pub public_origin: String,
     pub cors_allowed_origins: Vec<String>,
     pub request_timeout_secs: u64,
+    pub asset_request_timeout_secs: u64,
+    pub upstream_request_timeout_secs: u64,
 }
 
 #[derive(Debug, Error)]
@@ -40,7 +43,7 @@ pub enum ConfigError {
     Missing(&'static str),
     #[error("environment variable {name} has invalid value {value:?}")]
     Invalid { name: &'static str, value: String },
-    #[error("DB_MIN_CONNECTIONS cannot be greater than DB_MAX_CONNECTIONS")]
+    #[error("DB_MAX_CONNECTIONS must be 1..100 and DB_MIN_CONNECTIONS cannot exceed it")]
     InvalidPoolSize,
     #[error("AUTH_JWT_SECRET must contain at least 32 characters")]
     WeakAuthSecret,
@@ -58,19 +61,39 @@ pub enum ConfigError {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
+        let environment = env::var("APP_ENV")
+            .unwrap_or_else(|_| "development".to_owned())
+            .trim()
+            .to_ascii_lowercase();
+        if !matches!(environment.as_str(), "development" | "test" | "production") {
+            return Err(ConfigError::Invalid {
+                name: "APP_ENV",
+                value: environment,
+            });
+        }
+
         let db_max_connections = parse_or("DB_MAX_CONNECTIONS", 10_u32)?;
         let db_min_connections = parse_or("DB_MIN_CONNECTIONS", 1_u32)?;
-        if db_min_connections > db_max_connections {
+        if !(1..=100).contains(&db_max_connections) || db_min_connections > db_max_connections {
             return Err(ConfigError::InvalidPoolSize);
         }
 
-        let cors_allowed_origins = env::var("CORS_ALLOWED_ORIGINS")
+        let public_origin = normalize_origin(
+            "PUBLIC_ORIGIN",
+            &env::var("PUBLIC_ORIGIN").unwrap_or_else(|_| "http://localhost".to_owned()),
+        )?;
+        let mut cors_allowed_origins = Vec::new();
+        for origin in env::var("CORS_ALLOWED_ORIGINS")
             .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_owned())
             .split(',')
             .map(str::trim)
             .filter(|origin| !origin.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        {
+            let origin = normalize_origin("CORS_ALLOWED_ORIGINS", origin)?;
+            if !cors_allowed_origins.contains(&origin) {
+                cors_allowed_origins.push(origin);
+            }
+        }
 
         if cors_allowed_origins.is_empty() {
             return Err(ConfigError::Invalid {
@@ -108,9 +131,13 @@ impl Config {
             return Err(ConfigError::InvalidLlmEncryptionKeyVersions);
         }
         let llm_private_host_allowlist = parse_host_allowlist()?;
+        let request_timeout_secs = bounded_u64("REQUEST_TIMEOUT_SECS", 30, 1, 300)?;
+        let asset_request_timeout_secs = bounded_u64("ASSET_REQUEST_TIMEOUT_SECS", 300, 30, 3_600)?;
+        let upstream_request_timeout_secs =
+            bounded_u64("UPSTREAM_REQUEST_TIMEOUT_SECS", 15, 1, 120)?;
 
         Ok(Self {
-            environment: env::var("APP_ENV").unwrap_or_else(|_| "development".to_owned()),
+            environment,
             host: parse_or("APP_HOST", IpAddr::from_str("0.0.0.0").unwrap())?,
             port: parse_or("APP_PORT", 3000_u16)?,
             database_url: required("DATABASE_URL")?,
@@ -141,10 +168,50 @@ impl Config {
             llm_encryption_previous_key_version,
             llm_encryption_previous_secret,
             llm_private_host_allowlist,
-            public_origin: env::var("PUBLIC_ORIGIN")
-                .unwrap_or_else(|_| "http://localhost".to_owned()),
+            public_origin,
             cors_allowed_origins,
-            request_timeout_secs: parse_or("REQUEST_TIMEOUT_SECS", 30_u64)?,
+            request_timeout_secs,
+            asset_request_timeout_secs,
+            upstream_request_timeout_secs,
+        })
+    }
+}
+
+fn normalize_origin(name: &'static str, value: &str) -> Result<String, ConfigError> {
+    let value = value.trim();
+    let url = Url::parse(value).map_err(|_| ConfigError::Invalid {
+        name,
+        value: value.to_owned(),
+    })?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ConfigError::Invalid {
+            name,
+            value: value.to_owned(),
+        });
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+fn bounded_u64(
+    name: &'static str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, ConfigError> {
+    let value = parse_or(name, default)?;
+    if (minimum..=maximum).contains(&value) {
+        Ok(value)
+    } else {
+        Err(ConfigError::Invalid {
+            name,
+            value: value.to_string(),
         })
     }
 }
@@ -214,5 +281,42 @@ where
             .parse()
             .map_err(|_| ConfigError::Invalid { name, value }),
         Err(_) => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bounded_u64, normalize_origin};
+
+    #[test]
+    fn origins_are_exact_and_normalized() {
+        assert_eq!(
+            normalize_origin("PUBLIC_ORIGIN", " https://Example.com:443/ ").unwrap(),
+            "https://example.com"
+        );
+        assert_eq!(
+            normalize_origin("PUBLIC_ORIGIN", "http://localhost:18080").unwrap(),
+            "http://localhost:18080"
+        );
+        for invalid in [
+            "*",
+            "//example.com",
+            "ftp://example.com",
+            "https://user@example.com",
+            "https://example.com/blog",
+            "https://example.com?redirect=evil",
+        ] {
+            assert!(
+                normalize_origin("PUBLIC_ORIGIN", invalid).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn timeout_bounds_reject_zero_and_excessive_values() {
+        assert_eq!(bounded_u64("TIMEOUT", 30, 1, 300).unwrap(), 30);
+        assert!(bounded_u64("TIMEOUT", 0, 1, 300).is_err());
+        assert!(bounded_u64("TIMEOUT", 301, 1, 300).is_err());
     }
 }

@@ -679,16 +679,6 @@ async fn cache_cover(state: &AppState, media_id: i64, source: &str) -> Result<St
     {
         bail!("Bilibili cover exceeded 5 MB");
     }
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .unwrap_or("image/jpeg")
-        .to_owned();
-    if !content_type.starts_with("image/") {
-        bail!("Bilibili cover response was not an image");
-    }
     let bytes = response
         .bytes()
         .await
@@ -696,18 +686,34 @@ async fn cache_cover(state: &AppState, media_id: i64, source: &str) -> Result<St
     if bytes.is_empty() || bytes.len() as u64 > MAX_COVER_BYTES {
         bail!("Bilibili cover size was invalid");
     }
+    let content_type = raster_image_content_type(&bytes)
+        .context("Bilibili cover was not a supported raster image")?;
     let object_key = format!("bangumi/covers/{media_id}");
     state
         .object_storage()
         .put_public_object(
-            state.http_client(),
+            state.storage_http_client(),
             &object_key,
-            &content_type,
+            content_type,
             bytes.to_vec(),
         )
         .await
         .context("Bilibili cover could not be stored")?;
     Ok(object_key)
+}
+
+fn raster_image_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 async fn record_sync_failure(state: &AppState, sync_error: &anyhow::Error) {
@@ -780,8 +786,8 @@ impl IntoResponse for BangumiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        episode_number, normalized_cover_url, pagination_offset, validated_bilibili_cover_url,
-        validated_bilibili_page_url,
+        episode_number, normalized_cover_url, pagination_offset, raster_image_content_type,
+        validated_bilibili_cover_url, validated_bilibili_page_url,
     };
 
     #[test]
@@ -801,6 +807,15 @@ mod tests {
         assert!(validated_bilibili_page_url("https://www.bilibili.com/bangumi/play/ss1").is_some());
         assert!(validated_bilibili_page_url("javascript:alert(1)").is_none());
         assert!(validated_bilibili_page_url("https://bilibili.com.example.org/").is_none());
+        assert_eq!(
+            raster_image_content_type(b"\xff\xd8\xffbody"),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            raster_image_content_type(b"\x89PNG\r\n\x1a\nbody"),
+            Some("image/png")
+        );
+        assert_eq!(raster_image_content_type(b"not an image"), None);
         assert_eq!(pagination_offset(2, 8), Some(8));
         assert_eq!(pagination_offset(i64::MAX, 100), None);
     }

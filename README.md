@@ -16,7 +16,7 @@ Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compo
 | `artalk` | Artalk 2.10 评论、审核、回复与反垃圾服务 | 由网关代理到 `/artalk/` |
 | `postgres` | PostgreSQL 16 业务数据库 | 仅 `database` 容器网络 |
 | `minio` | S3 兼容对象存储 | 仅 `storage` 容器网络 |
-| `minio-init` | 创建公开/私有桶、设置访问策略并幂等写入默认灵衣封面 | 一次性任务，成功后退出 |
+| `minio-init` | 创建公开/私有桶、设置访问策略并幂等写入默认封面、语音和头像 | 一次性任务，成功后退出 |
 
 浏览器和正式客户端只应访问 `gateway`。容器之间使用 Compose 服务名通信，
 不要把 `localhost` 写成容器内的 PostgreSQL 或 MinIO 地址。
@@ -77,7 +77,19 @@ PUBLIC_ORIGIN=http://localhost:18080
 CORS_ALLOWED_ORIGINS=http://localhost:18080
 ```
 
-生产环境应把这两项改成实际 HTTPS 域名。
+生产环境应把这两项改成实际 HTTPS 域名。它们必须是精确的 `http`/`https`
+源（协议、主机和可选端口），不能包含路径、查询参数、凭据或通配符；
+`PUBLIC_ORIGIN` 同时用于生成服务端页面的 canonical 与社交分享地址。
+
+普通 API、素材传输和外部同步使用彼此独立的超时预算。通常无需修改默认值；
+大文件经慢速网络上传时，可只提高 `ASSET_REQUEST_TIMEOUT_SECS`，而不让普通
+请求长期占用连接：
+
+```dotenv
+REQUEST_TIMEOUT_SECS=30
+ASSET_REQUEST_TIMEOUT_SECS=300
+UPSTREAM_REQUEST_TIMEOUT_SECS=15
+```
 
 ### 3. 构建并启动
 
@@ -88,7 +100,7 @@ docker compose ps
 ```
 
 首次构建需要下载基础镜像和依赖，耗时通常比后续启动长。`postgres` 和
-`minio` 健康后，`minio-init` 会创建桶并写入默认灵衣封面，随后后端执行 SQL 迁移；前后端健康后
+`minio` 健康后，`minio-init` 会创建桶并写入默认封面、语音和头像，随后后端执行 SQL 迁移；前后端健康后
 `gateway` 才会启动。`minio-init` 显示 `Exited (0)` 是正常状态。
 
 所有长期运行服务都应显示 `Up ... (healthy)`。启动完成后访问：
@@ -256,12 +268,12 @@ docker compose logs --tail 200 artalk
 docker build --target test -t helt-blog-frontend-test ./frontend
 docker build --target test -t helt-blog-backend-test ./backend
 
-# 启动 PostgreSQL，并在独立 schema 中执行文章与 LLM 数据库集成测试
+# 启动 PostgreSQL，并在独立 schema 中执行已实现业务的数据库集成测试
 docker compose -f docker-compose.yml -f docker-compose.debug.yml --profile test run --rm --build backend-integration-test
 ```
 
-前端测试镜像执行构建、HTML 测试和 ESLint；后端测试镜像执行 Rust 单元测试和
-Clippy。数据库集成测试会逐项应用全部迁移，并在结束后删除隔离 schema，不会清空
+前端测试镜像执行构建、HTML 测试和 ESLint；后端测试镜像执行 rustfmt 检查、
+Rust 单元测试和严格 Clippy。数据库集成测试会逐项应用全部迁移，并在结束后删除隔离 schema，不会清空
 开发数据库。后端未实现的契约接口会返回标准 JSON `501 Not Implemented`。
 
 生产部署、Coolify、离线打包和镜像仓库部署见 [DEPLOY.md](DEPLOY.md)。

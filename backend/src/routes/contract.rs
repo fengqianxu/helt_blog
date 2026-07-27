@@ -24,6 +24,10 @@ pub const DEFAULT_REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 /// 素材库单文件上限，与最新设计稿的 200 MB 要求一致。
 pub const ASSET_UPLOAD_LIMIT_BYTES: usize = 200 * 1024 * 1024;
 
+/// multipart 请求还需要容纳边界、文件名和表单字段；网关使用相同的 202 MB 上限。
+pub const ASSET_MULTIPART_BODY_LIMIT_BYTES: usize =
+    ASSET_UPLOAD_LIMIT_BYTES + DEFAULT_REQUEST_BODY_LIMIT_BYTES;
+
 /// 契约支持的 HTTP 方法。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HttpMethod {
@@ -109,7 +113,7 @@ pub struct EndpointContract {
     pub response: &'static str,
     /// 状态转换、过滤范围、副作用和主要失败分支。
     pub business_rule: &'static str,
-    /// 路由允许读取的最大请求体；普通接口 2 MB，素材上传 200 MB。
+    /// 路由允许读取的最大请求体；普通接口 2 MB，素材上传请求 202 MB。
     pub max_body_bytes: usize,
 }
 
@@ -171,7 +175,7 @@ macro_rules! asset_upload_endpoint {
             $request,
             $response,
             $rule,
-            ASSET_UPLOAD_LIMIT_BYTES
+            ASSET_MULTIPART_BODY_LIMIT_BYTES
         )
     };
 }
@@ -1584,6 +1588,8 @@ mod tests {
             public_origin: "http://localhost".to_owned(),
             cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
             request_timeout_secs: 5,
+            asset_request_timeout_secs: 300,
+            upstream_request_timeout_secs: 15,
         };
         let pool = PgPoolOptions::new()
             .connect_lazy(&config.database_url)
@@ -1654,7 +1660,7 @@ mod tests {
             );
             assert!(
                 contract.max_body_bytes > 0
-                    && contract.max_body_bytes <= super::ASSET_UPLOAD_LIMIT_BYTES,
+                    && contract.max_body_bytes <= super::ASSET_MULTIPART_BODY_LIMIT_BYTES,
                 "{} has an invalid request-body limit",
                 contract.id
             );
@@ -1669,7 +1675,7 @@ mod tests {
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
             .iter()
-            .filter(|contract| contract.max_body_bytes == super::ASSET_UPLOAD_LIMIT_BYTES)
+            .filter(|contract| contract.max_body_bytes == super::ASSET_MULTIPART_BODY_LIMIT_BYTES)
             .map(|contract| (contract.method.as_str(), contract.path))
             .collect::<HashSet<_>>();
         assert_eq!(
@@ -1711,7 +1717,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 5_860_880_855_373_982_969,
+            fingerprint, 10_790_356_531_026_020_931,
             "update only after reviewing the full catalog"
         );
     }

@@ -69,7 +69,7 @@ async fn process_due(state: &AppState) -> Result<(), sqlx::Error> {
     for job in jobs {
         match state
             .object_storage()
-            .delete_public_object(state.http_client(), &job.object_key)
+            .delete_public_object(state.storage_http_client(), &job.object_key)
             .await
         {
             Ok(()) => {

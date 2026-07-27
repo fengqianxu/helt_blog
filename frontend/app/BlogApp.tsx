@@ -126,6 +126,51 @@ const DEFAULT_RAIMENT_CATALOG: RaimentCatalog = {
 };
 
 const RaimentContext = createContext<RaimentCatalog>(DEFAULT_RAIMENT_CATALOG);
+const RAIMENT_STORAGE_KEY = "helt-raiment";
+const COLOR_SCHEME_STORAGE_KEY = "helt-color-scheme";
+const LEGACY_THEME_STORAGE_KEY = "helt-theme";
+
+function readStoredRaiment() {
+  try {
+    const raimentId = localStorage.getItem(RAIMENT_STORAGE_KEY);
+    const legacyTheme = localStorage.getItem(LEGACY_THEME_STORAGE_KEY) as Theme | null;
+    const savedColorScheme = localStorage.getItem(COLOR_SCHEME_STORAGE_KEY) as Theme | null;
+    return {
+      raimentId,
+      legacyTheme: legacyTheme === "day" || legacyTheme === "night" ? legacyTheme : null,
+      colorScheme: savedColorScheme === "day" || savedColorScheme === "night" ? savedColorScheme : null,
+    };
+  } catch {
+    return { raimentId: null, legacyTheme: null, colorScheme: null };
+  }
+}
+
+function persistColorScheme(theme: Theme) {
+  try {
+    localStorage.setItem(COLOR_SCHEME_STORAGE_KEY, theme);
+  } catch {
+    // Storage can be unavailable in hardened/private browsing contexts.
+  }
+}
+
+function persistRaimentPreference(id: string, theme: Theme) {
+  try {
+    localStorage.setItem(RAIMENT_STORAGE_KEY, id);
+    localStorage.setItem(COLOR_SCHEME_STORAGE_KEY, theme);
+    localStorage.removeItem(LEGACY_THEME_STORAGE_KEY);
+  } catch {
+    // Theme switching must still work when persistence is unavailable.
+  }
+}
+
+function clearStoredRaimentPreference() {
+  try {
+    localStorage.removeItem(RAIMENT_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_THEME_STORAGE_KEY);
+  } catch {
+    // The in-memory schedule remains authoritative.
+  }
+}
 
 const resolveRaiment = (catalog: RaimentCatalog): Raiment =>
   catalog.items[catalog.activeId]
@@ -266,13 +311,12 @@ export function BlogApp() {
   const storedRaimentId = useRef<string | null>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem("helt-raiment");
-    const legacyTheme = localStorage.getItem("helt-theme") as Theme | null;
+    const { raimentId: saved, legacyTheme, colorScheme } = readStoredRaiment();
     const fallbackId = legacyTheme === "night" ? "alter-saber" : "saber";
     const nextId = saved || fallbackId;
     storedRaimentPreference.current = Boolean(saved || legacyTheme);
     storedRaimentId.current = nextId;
-    const nextTheme = DEFAULT_RAIMENTS[nextId]?.mode || "day";
+    const nextTheme = colorScheme || DEFAULT_RAIMENTS[nextId]?.mode || "day";
     document.documentElement.dataset.theme = nextTheme;
     window.requestAnimationFrame(() => {
       setActiveRaimentId(nextId);
@@ -280,8 +324,10 @@ export function BlogApp() {
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let controller: AbortController | null = null;
     const loadRaiments = () => {
+      controller?.abort();
+      controller = new AbortController();
       void fetch("/api/v1/raiments", { signal: controller.signal, cache: "no-store" })
         .then(async (response) => {
           if (!response.ok) throw new Error("灵衣目录加载失败");
@@ -295,8 +341,7 @@ export function BlogApp() {
           if (saved && !savedIsAvailable) {
             storedRaimentPreference.current = false;
             storedRaimentId.current = null;
-            localStorage.removeItem("helt-raiment");
-            localStorage.removeItem("helt-theme");
+            clearStoredRaimentPreference();
           }
           const nextId = saved && savedIsAvailable ? saved : raimentFromSchedule(catalog);
           setActiveRaimentId(nextId);
@@ -310,7 +355,7 @@ export function BlogApp() {
     loadRaiments();
     window.addEventListener("helt:raiments-updated", loadRaiments);
     return () => {
-      controller.abort();
+      controller?.abort();
       window.removeEventListener("helt:raiments-updated", loadRaiments);
     };
   }, []);
@@ -342,6 +387,7 @@ export function BlogApp() {
     document.documentElement.style.setProperty("--danger", activeRaiment.colors.danger);
     document.documentElement.style.setProperty("--green", activeRaiment.colors.success);
     document.documentElement.style.setProperty("--shadow", `0 14px 38px color-mix(in srgb, ${activeRaiment.colors.text} 14%, transparent)`);
+    persistColorScheme(activeRaiment.mode);
   }, [raimentCatalog, activeRaimentId]);
 
   useEffect(() => {
@@ -385,8 +431,7 @@ export function BlogApp() {
         || "saber";
       storedRaimentPreference.current = true;
       storedRaimentId.current = nextId;
-      localStorage.setItem("helt-raiment", nextId);
-      localStorage.removeItem("helt-theme");
+      persistRaimentPreference(nextId, raimentCatalog.items[nextId]?.mode || "day");
       setActiveRaimentId(nextId);
     }, 310);
     window.setTimeout(() => setThemeTransition(false), 760);

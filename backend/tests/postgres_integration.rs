@@ -107,6 +107,8 @@ fn test_config() -> Config {
         public_origin: "http://localhost".to_owned(),
         cors_allowed_origins: vec!["http://localhost".to_owned()],
         request_timeout_secs: 10,
+        asset_request_timeout_secs: 300,
+        upstream_request_timeout_secs: 15,
     }
 }
 
@@ -171,10 +173,15 @@ async fn json_request(
         .await
         .expect("read response")
         .to_bytes();
-    let payload = if bytes.is_empty() {
+    let payload = if bytes.iter().all(u8::is_ascii_whitespace) {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).expect("JSON response")
+        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!(
+                "JSON response for {status} could not be decoded: {error}; body={:?}",
+                String::from_utf8_lossy(&bytes)
+            )
+        })
     };
     (status, payload)
 }
@@ -272,6 +279,9 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
     let revision = saber["revision"].as_i64().expect("revision");
     let cover_asset_id = saber["cover_asset_id"].as_i64().expect("cover asset");
     let voice_asset_id = saber["cover_voice_asset_id"].as_i64().expect("voice asset");
+    let success_voice_asset_id = saber["login_success_voice_asset_id"]
+        .as_i64()
+        .expect("login success voice asset");
     let theme = saber["theme"].clone();
 
     let update = json!({
@@ -279,6 +289,9 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
         "name": "Saber Lily",
         "cover_asset_id": cover_asset_id,
         "theme": theme,
+        "enabled": true,
+        "sort_order": 0,
+        "is_default": true,
         "color_scheme": "day",
         "cover_title": "Saber Lily\n新的封面",
         "cover_subtitle": "测试副标题",
@@ -286,6 +299,7 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
         "cover_dialogue": "欢迎回来。",
         "cover_voice_label": "播放 Lily 语音",
         "cover_voice_asset_id": voice_asset_id,
+        "login_success_voice_asset_id": success_voice_asset_id,
         "kanban_asset_id": null
     });
     let (status, saved) = json_request(
@@ -313,6 +327,9 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
         "name": "午后模式",
         "cover_asset_id": cover_asset_id,
         "theme": saved["theme"].clone(),
+        "enabled": true,
+        "sort_order": 10,
+        "is_default": false,
         "color_scheme": "day",
         "cover_title": "午后的标题",
         "cover_subtitle": "午后副标题",
@@ -320,6 +337,7 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
         "cover_dialogue": "午后好。",
         "cover_voice_label": "播放午后语音",
         "cover_voice_asset_id": voice_asset_id,
+        "login_success_voice_asset_id": null,
         "kanban_asset_id": null
     });
     let (status, created) =
@@ -513,7 +531,7 @@ async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    let (status, _) = json_request(
+    let (status, synchronized) = json_request(
         &app,
         Method::PUT,
         &format!("/api/v1/admin/articles/{article_id}"),
@@ -526,6 +544,12 @@ async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let synchronized_updated_at = synchronized["updated_at"]
+        .as_str()
+        .expect("synchronized timestamp");
+    let synchronized_timestamp = synchronized_updated_at
+        .parse::<chrono::DateTime<Utc>>()
+        .expect("parse synchronized timestamp");
     let stored_tags: Vec<i64> =
         sqlx::query_scalar("SELECT tag_id FROM article_tags WHERE article_id=$1")
             .bind(article_id)
@@ -547,6 +571,28 @@ async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(public_article["article"]["title"], "Tag synchronization");
     assert!(public_article["article"].get("comment_count").is_none());
+    let timestamp_after_view: chrono::DateTime<Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM articles WHERE id=$1")
+            .bind(article_id)
+            .fetch_one(&database.pool)
+            .await
+            .expect("timestamp after public view");
+    assert_eq!(timestamp_after_view, synchronized_timestamp);
+
+    let (status, saved_after_view) = json_request(
+        &app,
+        Method::PUT,
+        &format!("/api/v1/admin/articles/{article_id}"),
+        Some(article_payload(
+            category_id,
+            &tag_ids[1..],
+            synchronized_updated_at,
+            "Saved after public view",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved_after_view["status"], "published");
 
     let (status, _) = json_request(
         &app,

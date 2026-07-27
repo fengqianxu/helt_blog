@@ -23,7 +23,7 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 use crate::{
     auth,
     error::{ErrorBody, ErrorEnvelope},
-    routes::contract::{ASSET_UPLOAD_LIMIT_BYTES, HttpMethod},
+    routes::contract::{ASSET_MULTIPART_BODY_LIMIT_BYTES, ASSET_UPLOAD_LIMIT_BYTES, HttpMethod},
     state::AppState,
     storage_gc,
 };
@@ -37,7 +37,7 @@ pub fn router() -> Router<AppState> {
             "/api/v1/admin/assets",
             get(list_assets)
                 .post(upload_asset)
-                .layer(DefaultBodyLimit::max(ASSET_UPLOAD_LIMIT_BYTES)),
+                .layer(DefaultBodyLimit::max(ASSET_MULTIPART_BODY_LIMIT_BYTES)),
         )
         .route("/api/v1/admin/assets/batch-delete", post(batch_delete))
         .route("/api/v1/admin/assets/batch-download", post(batch_download))
@@ -47,7 +47,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/v1/admin/assets/{id}/replace",
-            post(replace_asset).layer(DefaultBodyLimit::max(ASSET_UPLOAD_LIMIT_BYTES)),
+            post(replace_asset).layer(DefaultBodyLimit::max(ASSET_MULTIPART_BODY_LIMIT_BYTES)),
         )
 }
 
@@ -233,15 +233,12 @@ async fn upload_asset(
 ) -> Result<(StatusCode, Json<Value>), AssetError> {
     let admin_id = require_admin(&state, &headers)?;
     let upload = read_upload(multipart).await?;
-    let name = upload
-        .name
-        .clone()
-        .unwrap_or_else(|| upload.filename.clone());
+    let name = normalized_asset_name(upload.name.as_deref(), &upload.filename)?;
     let stored = store_upload(&state, admin_id, upload, None).await?;
     let asset_result = sqlx::query_scalar(
         "INSERT INTO assets (name, media_type, upload_id) VALUES ($1, $2, $3) RETURNING id",
     )
-    .bind(name.trim())
+    .bind(name)
     .bind(&stored.media_type)
     .bind(stored.upload_id)
     .fetch_one(state.pool())
@@ -393,7 +390,7 @@ async fn batch_download(
     for (index, row) in rows.into_iter().enumerate() {
         let data = state
             .object_storage()
-            .get_public_object(state.http_client(), &row.object_key)
+            .get_public_object(state.storage_http_client(), &row.object_key)
             .await
             .map_err(AssetError::Storage)?;
         let filename = safe_archive_name(&row.name, row.id, index);
@@ -528,6 +525,11 @@ async fn read_upload(mut multipart: Multipart) -> Result<IncomingUpload, AssetEr
     if bytes.len() > ASSET_UPLOAD_LIMIT_BYTES {
         return Err(AssetError::validation("单文件不能超过 200 MB"));
     }
+    if filename.trim().is_empty() || filename.chars().count() > 512 {
+        return Err(AssetError::validation(
+            "原始文件名不能为空且不能超过 512 个字符",
+        ));
+    }
     Ok(IncomingUpload {
         bytes,
         filename,
@@ -558,6 +560,7 @@ async fn store_upload(
         .filter(|v| !v.trim().is_empty())
         .unwrap_or("application/octet-stream");
     let checksum = format!("{:x}", Sha256::digest(&upload.bytes));
+    let size_bytes = upload.bytes.len() as i64;
     let extension = upload
         .filename
         .rsplit_once('.')
@@ -571,14 +574,14 @@ async fn store_upload(
     );
     state
         .object_storage()
-        .put_public_object(state.http_client(), &object_key, mime, upload.bytes.clone())
+        .put_public_object(state.storage_http_client(), &object_key, mime, upload.bytes)
         .await
         .map_err(AssetError::Storage)?;
     let result = sqlx::query_scalar::<_, i64>(
         "INSERT INTO uploads (object_key, bucket, mime, size_bytes, kind, original_filename, checksum_sha256, metadata)
          VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb) RETURNING id"
     ).bind(&object_key).bind(state.object_storage().public_bucket()).bind(mime)
-        .bind(upload.bytes.len() as i64).bind(&media_type).bind(&upload.filename).bind(checksum)
+        .bind(size_bytes).bind(&media_type).bind(&upload.filename).bind(checksum)
         .fetch_one(state.pool()).await;
     match result {
         Ok(upload_id) => Ok(StoredUpload {
@@ -589,7 +592,7 @@ async fn store_upload(
         Err(error) => {
             if let Err(cleanup_error) = state
                 .object_storage()
-                .delete_public_object(state.http_client(), &object_key)
+                .delete_public_object(state.storage_http_client(), &object_key)
                 .await
             {
                 warn!(
@@ -804,7 +807,23 @@ fn validate_batch(ids: &[i64]) -> Result<(), AssetError> {
             "asset_ids 必须包含 1 到 100 个有效 ID",
         ));
     }
+    if ids.iter().copied().collect::<HashSet<_>>().len() != ids.len() {
+        return Err(AssetError::validation("asset_ids 不能包含重复 ID"));
+    }
     Ok(())
+}
+
+fn normalized_asset_name(requested: Option<&str>, filename: &str) -> Result<String, AssetError> {
+    let name = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| filename.trim());
+    if name.is_empty() || name.chars().count() > 255 {
+        return Err(AssetError::validation(
+            "素材名称不能为空且不能超过 255 个字符",
+        ));
+    }
+    Ok(name.to_owned())
 }
 
 fn sanitize(value: &str) -> String {
@@ -822,6 +841,7 @@ fn safe_archive_name(name: &str, id: i64, index: usize) -> String {
     if clean.is_empty() {
         format!("asset-{id}-{index}")
     } else {
+        let clean = clean.chars().take(180).collect::<String>();
         format!("{id}-{clean}")
     }
 }
@@ -920,8 +940,8 @@ impl IntoResponse for AssetError {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_BATCH, detect_media_type, normalized_filter, reference_type_label, safe_archive_name,
-        sanitize, validate_batch, validate_file_signature,
+        MAX_BATCH, detect_media_type, normalized_asset_name, normalized_filter,
+        reference_type_label, safe_archive_name, sanitize, validate_batch, validate_file_signature,
     };
     use std::io::Write;
 
@@ -1045,10 +1065,24 @@ mod tests {
         assert!(validate_batch(&[]).is_err());
         assert!(validate_batch(&[0]).is_err());
         assert!(validate_batch(&(1..=(MAX_BATCH as i64 + 1)).collect::<Vec<_>>()).is_err());
+        assert!(validate_batch(&[1, 1]).is_err());
         assert!(validate_batch(&[1, 2, 3]).is_ok());
+        assert_eq!(
+            normalized_asset_name(Some("  "), "cover.png").unwrap(),
+            "cover.png"
+        );
+        assert_eq!(
+            normalized_asset_name(Some(" 海边 "), "cover.png").unwrap(),
+            "海边"
+        );
+        assert!(normalized_asset_name(Some(&"a".repeat(256)), "cover.png").is_err());
         assert_eq!(sanitize("PNG<script>"), "pngscript");
         assert_eq!(safe_archive_name("../a\\b.png", 9, 0), "9-_a_b.png");
         assert_eq!(safe_archive_name("...", 9, 2), "asset-9-2");
+        assert_eq!(
+            safe_archive_name(&"图".repeat(300), 9, 2).chars().count(),
+            182
+        );
         assert_eq!(reference_type_label("article_cover"), "文章封面");
         assert_eq!(reference_type_label("raiment_voice"), "灵衣封面语音");
         assert_eq!(reference_type_label("unknown"), "其他引用");

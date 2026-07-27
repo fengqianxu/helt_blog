@@ -27,8 +27,9 @@ test("server-renders the finished blog", async () => {
 });
 
 test("keeps project assets and API-backed front-end routes in place", async () => {
-  const [shell, login, account, assets, llm, raiments, siteSettings, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
+  const [shell, layout, login, account, assets, llm, raiments, siteSettings, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
+    readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminAccountCenter.tsx", root), "utf8"),
     readFile(new URL("app/admin/AssetManager.tsx", root), "utf8"),
@@ -56,6 +57,10 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(app, /\/api\/v1\/admin\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles\/batch/);
   assert.match(shell, /\/api\/v1\/raiments/);
+  assert.match(layout, /process\.env\.PUBLIC_ORIGIN/);
+  assert.doesNotMatch(layout, /x-forwarded-host|headers\(\)/);
+  assert.match(layout, /helt-color-scheme/);
+  assert.match(shell, /persistColorScheme/);
   assert.match(raiments, /method: "POST"/);
   assert.match(raiments, /method: "DELETE"/);
   assert.match(raiments, /\/api\/v1\/admin\/raiments\/\$\{encodeURIComponent\(selected\.id\)\}/);
