@@ -35,6 +35,7 @@ import {
   RaimentSchedule,
   responseMessage,
   scheduledPeriod,
+  SitePayload,
   Theme,
   ThemeTokens,
 } from "./admin/shared";
@@ -131,9 +132,34 @@ const DEFAULT_RAIMENT_CATALOG: RaimentCatalog = {
 };
 
 const RaimentContext = createContext<RaimentCatalog>(DEFAULT_RAIMENT_CATALOG);
+const DEFAULT_SITE: SitePayload = {
+  basic: {
+    name: "helt.",
+    tagline: "记录技术、生活与热爱",
+    domain: "",
+    icp: "",
+    founded_at: "2026-07-23",
+    logo_asset_id: null,
+    logo_url: null,
+    favicon_asset_id: null,
+    favicon_url: null,
+  },
+  features: {
+    splash: true,
+    comments: true,
+    kanban: true,
+    music: true,
+    stats: true,
+    easter_egg: true,
+  },
+  stats: { article_count: 0, total_words: 0, total_visits: 0, uptime_days: 1 },
+  updated_at: "",
+};
+const SiteContext = createContext<SitePayload>(DEFAULT_SITE);
 const RAIMENT_STORAGE_KEY = "helt-raiment";
 const COLOR_SCHEME_STORAGE_KEY = "helt-color-scheme";
 const LEGACY_THEME_STORAGE_KEY = "helt-theme";
+const VISITOR_STORAGE_KEY = "helt-visitor-id";
 
 function readStoredRaiment() {
   try {
@@ -177,6 +203,20 @@ function clearStoredRaimentPreference() {
   }
 }
 
+function visitorId() {
+  try {
+    const saved = localStorage.getItem(VISITOR_STORAGE_KEY);
+    if (saved) return saved;
+    const created = typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `visitor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(VISITOR_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return null;
+  }
+}
+
 const resolveRaiment = (catalog: RaimentCatalog): Raiment =>
   catalog.items[catalog.activeId]
   || catalog.items[catalog.defaultId]
@@ -184,6 +224,7 @@ const resolveRaiment = (catalog: RaimentCatalog): Raiment =>
   || DEFAULT_RAIMENTS.saber;
 
 const useRaiment = () => resolveRaiment(useContext(RaimentContext));
+const useSite = () => useContext(SiteContext);
 
 const catalogFromPayload = (payload: PublicRaimentPayload): RaimentCatalog => ({
   items: Object.fromEntries(payload.items.map((item) => {
@@ -292,6 +333,7 @@ const MDEditor = dynamic(() => import("@uiw/react-md-editor/nohighlight"), { ssr
 
 export function BlogApp() {
   const pathname = usePathname() || "/";
+  const [site, setSite] = useState<SitePayload>(DEFAULT_SITE);
   const [raimentCatalog, setRaimentCatalog] = useState<RaimentCatalog>(DEFAULT_RAIMENT_CATALOG);
   const [activeRaimentId, setActiveRaimentId] = useState("saber");
   const theme = raimentCatalog.items[activeRaimentId]?.mode || "day";
@@ -303,6 +345,63 @@ export function BlogApp() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const storedRaimentPreference = useRef(false);
   const storedRaimentId = useRef<string | null>(null);
+
+  useEffect(() => {
+    let controller: AbortController | null = null;
+    const loadSite = () => {
+      controller?.abort();
+      controller = new AbortController();
+      void fetch("/api/v1/site", { signal: controller.signal, cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("站点资料加载失败");
+          return response.json() as Promise<SitePayload>;
+        })
+        .then(setSite)
+        .catch((error) => {
+          if (!(error instanceof DOMException && error.name === "AbortError")) {
+            console.warn("Falling back to bundled site configuration", error);
+          }
+        });
+    };
+    loadSite();
+    window.addEventListener("helt:site-settings-updated", loadSite);
+    return () => {
+      controller?.abort();
+      window.removeEventListener("helt:site-settings-updated", loadSite);
+    };
+  }, []);
+
+  useEffect(() => {
+    document.title = site.basic.tagline
+      ? `${site.basic.name} | ${site.basic.tagline}`
+      : site.basic.name;
+    const faviconUrl = site.basic.favicon_url || "/saber-day.png";
+    const icons = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel~="icon"]'));
+    const targets = icons.length ? icons : [document.head.appendChild(document.createElement("link"))];
+    targets.forEach((link) => {
+      link.rel = "icon";
+      link.href = faviconUrl;
+    });
+  }, [site.basic.favicon_url, site.basic.name, site.basic.tagline]);
+
+  useEffect(() => {
+    if (pathname.startsWith("/admin") || !site.features.stats) return;
+    const id = visitorId();
+    if (!id) return;
+    const visitKey = `helt-visited:${pathname}`;
+    try {
+      if (sessionStorage.getItem(visitKey)) return;
+      sessionStorage.setItem(visitKey, "1");
+    } catch {
+      // A visit can still be recorded if session storage is unavailable.
+    }
+    void fetch("/api/v1/stats/visit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ visitor_id: id, path: pathname }),
+      keepalive: true,
+    }).catch(() => undefined);
+  }, [pathname, site.features.stats]);
 
   useEffect(() => {
     const { raimentId: saved, legacyTheme, colorScheme } = readStoredRaiment();
@@ -395,6 +494,7 @@ export function BlogApp() {
   }, [pathname]);
 
   useEffect(() => {
+    if (!site.features.easter_egg) return;
     const sequence = ["ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowLeft", "ArrowRight", "b", "a"];
     let cursor = 0;
     const onKey = (event: KeyboardEvent) => {
@@ -403,7 +503,7 @@ export function BlogApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [site.features.easter_egg]);
 
   const notify = useCallback<Notify>((message, tone = "normal") => {
     setToast({ message, tone });
@@ -436,7 +536,7 @@ export function BlogApp() {
   };
   const common = { toggleTheme, pathname, menuOpen, setMenuOpen, searchOpen, setSearchOpen };
 
-  if (pathname.startsWith("/admin")) return <RaimentContext.Provider value={activeCatalog}><AdminRouter pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />{themeTransition && <ThemeBlade />}{toast && <Toast {...toast} />}</RaimentContext.Provider>;
+  if (pathname.startsWith("/admin")) return <SiteContext.Provider value={site}><RaimentContext.Provider value={activeCatalog}><AdminRouter pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />{themeTransition && <ThemeBlade />}{toast && <Toast {...toast} />}</RaimentContext.Provider></SiteContext.Provider>;
 
   let page: React.ReactNode;
   if (pathname === "/") page = <HomePage toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
@@ -452,17 +552,17 @@ export function BlogApp() {
   else page = <NotFound />;
 
   return (
-    <RaimentContext.Provider value={activeCatalog}><div className="site-shell">
+    <SiteContext.Provider value={site}><RaimentContext.Provider value={activeCatalog}><div className="site-shell">
       {pathname !== "/" && <TopNav {...common} />}
       {page}
       {pathname !== "/" && <Footer />}
-      <BackgroundMusic schedule={raimentCatalog.schedule} />
-      <FloatingTools toggleTheme={toggleTheme} />
+      {site.features.music && <BackgroundMusic schedule={raimentCatalog.schedule} />}
+      <FloatingTools toggleTheme={toggleTheme} showKanban={site.features.kanban} />
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
       {themeTransition && <ThemeBlade />}
       {toast && <Toast {...toast} />}
-      {easterEgg && <EasterEgg onClose={() => setEasterEgg(false)} />}
-    </div></RaimentContext.Provider>
+      {site.features.easter_egg && easterEgg && <EasterEgg onClose={() => setEasterEgg(false)} />}
+    </div></RaimentContext.Provider></SiteContext.Provider>
   );
 }
 
@@ -903,10 +1003,22 @@ function ThemeSwitch({ onClick, compact = false }: { onClick: () => void; compac
   );
 }
 
+function SiteBrand({ href = "/", suffix }: { href?: string; suffix?: React.ReactNode }) {
+  const site = useSite();
+  const text = site.basic.name || "helt.";
+  const stem = text.endsWith(".") ? text.slice(0, -1) : text;
+  return <Link href={href} className={cx("brand", site.basic.logo_url && "image-brand")} aria-label={`${text} 首页`}>
+    {site.basic.logo_url
+      ? <Image src={site.basic.logo_url} width={360} height={96} unoptimized alt={text} />
+      : <>{stem}{text.endsWith(".") && <span>.</span>}</>}
+    {suffix}
+  </Link>;
+}
+
 function TopNav({ pathname, toggleTheme, menuOpen, setMenuOpen, setSearchOpen, floating = false, elevated = false }: { pathname: string; toggleTheme: () => void; menuOpen: boolean; setMenuOpen: (v: boolean) => void; searchOpen: boolean; setSearchOpen: (v: boolean) => void; floating?: boolean; elevated?: boolean }) {
   return (
     <header className={cx("top-nav", floating && "home-touchbar", elevated && "is-elevated")}>
-      <Link href="/" className="brand">helt<span>.</span></Link>
+      <SiteBrand />
       <nav id="primary-navigation" aria-label="主导航" className={cx("main-nav", menuOpen && "open")}>
         {navItems.map(([href, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}>{label}</Link>)}
       </nav>
@@ -921,6 +1033,7 @@ function TopNav({ pathname, toggleTheme, menuOpen, setMenuOpen, setSearchOpen, f
 
 function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; notify: Notify; onSearch: () => void }) {
   const raiment = useRaiment();
+  const site = useSite();
   const [page, setPage] = useState(1);
   const [posts, setPosts] = useState<Post[]>([]);
   const [total, setTotal] = useState(0);
@@ -956,7 +1069,7 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
   }, [page]);
   const visiblePosts = posts;
   const commentCountKey = visiblePosts.map((post) => post.slug).join("|");
-  useArtalkCommentCounts(!loading && !error ? commentCountKey : "");
+  useArtalkCommentCounts(site.features.comments && !loading && !error ? commentCountKey : "");
   const enter = () => document.getElementById("articles")?.scrollIntoView({ behavior: "smooth" });
   useEffect(() => {
     const updateNav = () => setNavElevated(window.scrollY > 56);
@@ -1020,8 +1133,8 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
       : "暂时还没有已发布文章。";
   return (
     <>
-      <TopNav pathname="/" toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating elevated={navElevated} />
-      <section className="hero">
+      <TopNav pathname="/" toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating={site.features.splash} elevated={navElevated} />
+      {site.features.splash && <section className="hero">
         <div className="hero-stripe stripe-one" /><div className="hero-stripe stripe-two" />
         <Image className="hero-art" src={raiment.cover} width={5120} height={2160} sizes="(max-width: 768px) 100vw, 64vw" priority unoptimized alt={`${raiment.name} 灵衣封面`} />
         <div className="hero-copy">
@@ -1035,9 +1148,9 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
         </div>
         <div className="dialog-box hero-dialog"><b>{raiment.coverCharacterName}</b><p>{raiment.coverDialogue}{latestLabel}</p><span>▼</span></div>
         <button className="scroll-cue" onClick={enter}>SCROLL ▼</button>
-      </section>
-      <section id="articles" className="home-content">
-        <Stats total={total} />
+      </section>}
+      <section id="articles" className={cx("home-content", !site.features.splash && "without-splash")}>
+        {site.features.stats && <Stats />}
         <div className="section-intro reveal"><div><span>RECENT WRITING</span><h2>最近写下的东西</h2></div><p>技术、生活与热爱的作品。每一页都尽量留下真实的温度。</p></div>
         <div className="post-list">
           <div className="post-page" key={page}>
@@ -1053,15 +1166,22 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
   );
 }
 
-function Stats({ total }: { total: number }) {
-  return <div className="stats">{[[total.toLocaleString(), "文章"], ["—", "总字数"], ["—", "访客"], ["—", "运行天数"]].map(([n, l]) => <div key={l}><b>{n}</b><span>{l}</span></div>)}</div>;
+function Stats() {
+  const { stats } = useSite();
+  return <div className="stats">{[
+    [stats.article_count.toLocaleString(), "文章"],
+    [stats.total_words.toLocaleString(), "总字数"],
+    [stats.total_visits.toLocaleString(), "访问"],
+    [stats.uptime_days.toLocaleString(), "运行天数"],
+  ].map(([n, l]) => <div key={l}><b>{n}</b><span>{l}</span></div>)}</div>;
 }
 
 function PostCard({ post }: { post: Post }) {
+  const site = useSite();
   return (
     <Link href={`/posts/${post.slug}`} className={cx("post-card", post.is_pinned && "pinned")}>
       {post.is_pinned && <span className="pin">置顶 PINNED</span>}
-      <div className="post-main"><div className="post-meta"><span className="tag">{categoryName(post)}</span><span>{articleDate(post)}</span></div><h2>{post.title}</h2><p>{post.summary}</p><div className="post-stats"><span>{articleTime(post)}</span><span>{articleWords(post)}</span><span>评论 <span className="artalk-comment-count" data-page-key={articleCommentKey(post.slug)}>0</span></span></div></div>
+      <div className="post-main"><div className="post-meta"><span className="tag">{categoryName(post)}</span><span>{articleDate(post)}</span></div><h2>{post.title}</h2><p>{post.summary}</p><div className="post-stats"><span>{articleTime(post)}</span><span>{articleWords(post)}</span>{site.features.comments && <span>评论 <span className="artalk-comment-count" data-page-key={articleCommentKey(post.slug)}>0</span></span>}</div></div>
       {post.cover_url && <Image src={post.cover_url} width={512} height={288} sizes="240px" alt={`${post.title} 封面`} unoptimized />}
     </Link>
   );
@@ -1070,6 +1190,7 @@ function PostCard({ post }: { post: Post }) {
 function PageHeading({ title, subtitle }: { title: string; subtitle: string }) { return <div className="page-heading"><h1>{title}</h1><span>{subtitle}</span></div>; }
 
 function ArticlePage({ slug, theme, notify }: { slug: string; theme: Theme; notify: Notify }) {
+  const site = useSite();
   const [progress, setProgress] = useState(0);
   const [liked, setLiked] = useState(false);
   const [payload, setPayload] = useState<ArticleDetailPayload | null>(null);
@@ -1126,9 +1247,9 @@ function ArticlePage({ slug, theme, notify }: { slug: string; theme: Theme; noti
         <MarkdownBody source={post.content_md || "这篇文章还没有正文。"} />
         <div id="article-actions" className="article-actions"><button className={liked ? "liked" : ""} onClick={() => { setLiked(!liked); notify(liked ? "已取消喜欢" : "感谢你的喜欢", "success"); }}>{liked ? "♥ 已喜欢" : "♡ 喜欢"}</button><button onClick={shareArticle}>⌁ 分享文章</button></div>
         <div className="article-nav">{previousPost ? <Link href={`/posts/${previousPost.slug}`}>← 上一篇<br /><b>{previousPost.title}</b></Link> : <span />}{nextPost ? <Link href={`/posts/${nextPost.slug}`}>下一篇 →<br /><b>{nextPost.title}</b></Link> : <span />}</div>
-        {payload.allow_comment
+        {site.features.comments && payload.allow_comment
           ? <Comments slug={post.slug} title={post.title} theme={theme} />
-          : <section className="comments comments-disabled"><h2>评论</h2><p>这篇文章已关闭评论。</p></section>}
+          : <section className="comments comments-disabled"><h2>评论</h2><p>{site.features.comments ? "这篇文章已关闭评论。" : "站点当前已关闭全站评论。"}</p></section>}
       </article>
       <aside className="article-aside"><div className="toc"><b>目录 CONTENTS <small>{Math.round(progress)}%</small></b><Link href="#article-content" className="active">正文</Link><Link href="#article-actions">互动</Link></div><div className="recommend"><b>相关文章</b>{related.length ? related.map((item) => <Link key={item.id} href={`/posts/${item.slug}`}>{item.title}</Link>) : <Link href="/archives">浏览全部文章</Link>}</div></aside>
     </main></>
@@ -1426,7 +1547,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   return <div className="search-overlay" role="dialog" aria-modal="true" aria-label="搜索文章" onClick={onClose}><div className="search-panel" onClick={(e) => e.stopPropagation()}><div><span aria-hidden="true">⌕</span><input aria-label="搜索关键词" autoFocus value={query} onChange={(e) => { setQuery(e.target.value); if (!e.target.value.trim()) setResult([]); }} placeholder="搜索标题、分类或关键词…" /><button onClick={onClose} aria-label="关闭搜索">×</button></div>{query ? <section aria-live="polite">{result.length ? result.map((p) => <Link key={p.id} href={`/posts/${p.slug}`}><span className="tag">{categoryName(p)}</span><b>{p.title}</b><small>{articleDate(p)}</small></Link>) : <p>没有找到相关内容，换个关键词试试。</p>}</section> : <div className="search-suggestions"><small>热门关键词</small><div>{["React", "Fate", "Live2D", "博客重构"].map((item) => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div></div>}<small>ESC 关闭 · 输入关键词实时检索文章库</small></div></div>;
 }
 
-function FloatingTools({ toggleTheme }: { toggleTheme: () => void }) {
+function FloatingTools({ toggleTheme, showKanban }: { toggleTheme: () => void; showKanban: boolean }) {
   const raiment = useRaiment();
   const [showTop, setShowTop] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -1434,10 +1555,14 @@ function FloatingTools({ toggleTheme }: { toggleTheme: () => void }) {
   const [chatReply, setChatReply] = useState<{ raimentId: string; text: string } | null>(null);
   useEffect(() => { const watch = () => setShowTop(window.scrollY > 500); watch(); window.addEventListener("scroll", watch, { passive: true }); return () => window.removeEventListener("scroll", watch); }, []);
   const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply({ raimentId: raiment.id, text: "我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。" }); setChatText(""); };
-  return <>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.raimentId === raiment.id ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
+  return <>{showKanban && chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.raimentId === raiment.id ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}{showKanban && <button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button>}<button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
 }
 
-function Footer() { return <footer><Link href="/" className="brand">helt<span>.</span></Link><p>写代码、追番、折腾博客的个人小站。</p><span>© 2020—2026 helt. · POWERED BY REACT</span></footer>; }
+function Footer() {
+  const site = useSite();
+  const year = new Date().getFullYear();
+  return <footer><SiteBrand /><p>{site.basic.tagline}</p><span>© 2020—{year} {site.basic.name} · POWERED BY REACT{site.basic.icp ? ` · ${site.basic.icp}` : ""}</span></footer>;
+}
 
 function AdminRouter({ pathname, theme, toggleTheme, notify }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify }) {
   if (pathname === "/admin/login") return <AdminLogin />;
@@ -1526,7 +1651,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   return (
     <div className="admin-shell">
       <aside className="admin-sidebar">
-        <Link href="/admin" className="brand">helt<span>.</span> <small>ADMIN</small></Link>
+        <SiteBrand href="/admin" suffix={<small>ADMIN</small>} />
         <nav aria-label="后台主导航">
           {adminNav.map(([href, icon, label]) => (
             <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}>
@@ -1591,8 +1716,55 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
 
 function AdminTitle({ title, sub, action }: { title: string; sub: string; action?: React.ReactNode }) { return <div className="admin-title"><div><h1>{title}</h1><p>{sub}</p></div>{action}</div>; }
 
+type DashboardOverview = {
+  today_pv: number;
+  today_uv: number;
+  yesterday_pv: number;
+  yesterday_uv: number;
+  article_count: number;
+  published_count: number;
+  draft_count: number;
+  total_visits: number;
+  uptime_days: number;
+};
+
+type DashboardDailyStat = { date: string; pv: number; uv: number };
+
 function Dashboard() {
-  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · 2026.07.23" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} /><div className="admin-stats">{[["128", "文章总数", "+3 本月"], ["187,203", "累计访客", "+12.4%"], ["Artalk", "评论系统", "独立审核控制台"], ["2,048", "运行天数", "99.98%"]].map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS</small></h2><div className="chart">{[35, 52, 43, 66, 58, 78, 72, 88, 60, 82, 76, 94, 86, 100].map((n, i) => <i key={i} style={{ height: `${n}%` }} />)}</div></section><section className="admin-panel recent-comments"><h2>评论系统 <Link href="/admin/comments">管理 →</Link></h2><div><span>A</span><p><b>Artalk 已接入</b>最新评论、审核队列与评论统计请在评论控制台查看。</p></div></section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/assets">▧<span>上传素材</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
+  const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [trend, setTrend] = useState<DashboardDailyStat[]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.all([
+      fetch("/api/v1/admin/stats/overview", { credentials: "include", signal: controller.signal }),
+      fetch("/api/v1/admin/stats/pv-uv?days=14", { credentials: "include", signal: controller.signal }),
+    ]).then(async ([overviewResponse, trendResponse]) => {
+      if (!overviewResponse.ok) throw new Error(await responseMessage(overviewResponse, "仪表盘概览加载失败"));
+      if (!trendResponse.ok) throw new Error(await responseMessage(trendResponse, "访问趋势加载失败"));
+      const [nextOverview, nextTrend] = await Promise.all([
+        overviewResponse.json() as Promise<DashboardOverview>,
+        trendResponse.json() as Promise<{ items: DashboardDailyStat[] }>,
+      ]);
+      setOverview(nextOverview);
+      setTrend(nextTrend.items);
+      setError("");
+    }).catch((reason) => {
+      if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+        setError(reason instanceof Error ? reason.message : "仪表盘加载失败");
+      }
+    });
+    return () => controller.abort();
+  }, []);
+  const maxPv = Math.max(1, ...trend.map((item) => item.pv));
+  const visitorDelta = overview ? overview.today_uv - overview.yesterday_uv : 0;
+  const cards = overview ? [
+    [overview.article_count.toLocaleString(), "文章总数", `${overview.published_count} 已发布 · ${overview.draft_count} 草稿`],
+    [overview.total_visits.toLocaleString(), "累计访问", `今日 ${overview.today_pv} PV / ${overview.today_uv} UV`],
+    [overview.today_uv.toLocaleString(), "今日访客", `${visitorDelta >= 0 ? "+" : ""}${visitorDelta} 较昨日`],
+    [overview.uptime_days.toLocaleString(), "运行天数", "自站点创建日期起"],
+  ] : [["—", "文章总数", "正在读取"], ["—", "累计访问", "正在读取"], ["—", "今日访客", "正在读取"], ["—", "运行天数", "正在读取"]];
+  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · LIVE SITE DATA" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} />{error && <div className="admin-dashboard-error" role="alert">{error}</div>}<div className="admin-stats">{cards.map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS · PV</small></h2><div className="chart">{trend.length ? trend.map((item) => <i key={item.date} title={`${item.date} · ${item.pv} PV / ${item.uv} UV`} style={{ height: `${Math.max(4, Math.round(item.pv / maxPv * 100))}%` }} />) : Array.from({ length: 14 }, (_, index) => <i className="loading" key={index} style={{ height: "4%" }} />)}</div></section><section className="admin-panel recent-comments"><h2>评论系统 <Link href="/admin/comments">管理 →</Link></h2><div><span>A</span><p><b>Artalk 已接入</b>最新评论、审核队列与评论统计请在评论控制台查看。</p></div></section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/assets">▧<span>上传素材</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
 }
 
 function ArticleManager({ notify }: { notify: Notify }) {

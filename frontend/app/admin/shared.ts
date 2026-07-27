@@ -77,6 +77,35 @@ export type AdminIdentity = {
 
 export type PublicProfile = Pick<AdminIdentity, "username" | "email" | "avatar_url">;
 
+export type SitePayload = {
+  basic: {
+    name: string;
+    tagline: string;
+    domain: string;
+    icp: string;
+    founded_at: string;
+    logo_asset_id: number | null;
+    logo_url: string | null;
+    favicon_asset_id: number | null;
+    favicon_url: string | null;
+  };
+  features: {
+    splash: boolean;
+    comments: boolean;
+    kanban: boolean;
+    music: boolean;
+    stats: boolean;
+    easter_egg: boolean;
+  };
+  stats: {
+    article_count: number;
+    total_words: number;
+    total_visits: number;
+    uptime_days: number;
+  };
+  updated_at: string;
+};
+
 export type AdminAsset = {
   id: number;
   name: string;

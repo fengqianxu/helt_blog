@@ -539,7 +539,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取全站初始化聚合信息",
         "无查询参数",
-        "200 JSON basic、features、theme_rule、stats、about",
+        "200 JSON basic（含 Logo 与 favicon）、features、stats、updated_at",
         "聚合只读配置和派生统计；uptime_days 以 Asia/Shanghai 日界计算；不得下发私密配置"
     ),
     endpoint!(
@@ -1415,8 +1415,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取全部站点设置",
         "无查询参数",
-        "200 返回按 basic/features/theme/about/music/bangumi_sync 等分组的完整 JSON",
-        "只下发可编辑配置，数据库连接、MinIO/LLM 密钥等环境机密必须排除"
+        "200 返回 basic、features、stats 与 updated_at；图片字段同时返回素材 ID 和公开 URL",
+        "只下发站点可编辑配置和公开统计，数据库连接、MinIO/LLM 密钥等环境机密必须排除"
     ),
     endpoint!(
         "ADMIN-SITE-02",
@@ -1427,9 +1427,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存站点基本信息",
-        "JSON: basic{name,tagline,icp}，domain 为只读不可修改",
-        "200 JSON basic，包含服务端保留的 domain/founded_at",
-        "全量覆盖 basic 可编辑字段；清理空白并校验长度；更新后使公开 site 缓存失效"
+        "JSON: basic{name,tagline,icp,logo_asset_id?,favicon_asset_id?}、features 与 updated_at?；domain 为只读",
+        "200 JSON 返回完整站点设置；Logo/favicon 必须引用有效图片素材",
+        "全量更新可编辑字段并同步素材引用；updated_at 冲突返回 409"
     ),
     endpoint!(
         "ADMIN-SITE-03",
@@ -1440,9 +1440,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "乐观更新单个站点配置",
-        "JSON 每次只能包含一个允许的开关或配置叶字段",
-        "200 返回被更新字段及 updated_at",
-        "拒绝多字段和未知路径；uid 变化后提交异步全量追番同步；相关公开缓存立即失效"
+        "JSON: path、value、updated_at?；每次只能更新一个允许的 basic/features 叶字段",
+        "200 返回更新后的完整站点设置",
+        "拒绝未知路径和错误值类型；updated_at 冲突返回 409；图片变更同步素材引用"
     ),
     endpoint!(
         "ADMIN-BANGUMI-01",
@@ -1515,6 +1515,7 @@ pub fn router() -> Router<AppState> {
                 && !super::llm::implements(contract.method, contract.path)
                 && !super::playlists::implements(contract.method, contract.path)
                 && !super::raiments::implements(contract.method, contract.path)
+                && !super::site::implements(contract.method, contract.path)
         })
         .fold(Router::new(), |router, contract| {
             let route = match contract.authentication {

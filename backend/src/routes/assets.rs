@@ -105,6 +105,7 @@ fn reference_type_label(source_type: &str) -> &'static str {
         "game_cover" => "游戏封面",
         "bangumi_cover" => "追番封面",
         "friend_avatar" => "友链头像",
+        "site_branding" => "站点品牌",
         _ => "其他引用",
     }
 }
@@ -697,7 +698,7 @@ fn detect_media_type(
     let lower = filename.to_ascii_lowercase();
     let detected = if lower.ends_with(".zip") || lower.ends_with(".model3.json") {
         "live2d"
-    } else if mime.is_some_and(|v| v.starts_with("image/")) {
+    } else if lower.ends_with(".ico") || mime.is_some_and(|v| v.starts_with("image/")) {
         "image"
     } else if mime.is_some_and(|v| v.starts_with("audio/")) {
         "audio"
@@ -740,6 +741,7 @@ fn validate_file_signature(
                 || bytes.starts_with(b"GIF87a")
                 || bytes.starts_with(b"GIF89a")
                 || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"))
+                || (lower.ends_with(".ico") && bytes.starts_with(b"\x00\x00\x01\x00"))
         }
         "audio" => {
             bytes.starts_with(b"ID3")
@@ -1008,6 +1010,7 @@ mod tests {
         assert!(validate_file_signature("a.png", "image", b"\x89PNG\r\n\x1a\n").is_ok());
         assert!(validate_file_signature("a.jpg", "image", b"\xff\xd8\xff").is_ok());
         assert!(validate_file_signature("a.gif", "image", b"GIF89a").is_ok());
+        assert!(validate_file_signature("favicon.ico", "image", b"\x00\x00\x01\x00").is_ok());
         assert!(validate_file_signature("a.mp3", "audio", b"ID3payload").is_ok());
         assert!(validate_file_signature("a.wav", "audio", b"RIFFxxxxWAVE").is_ok());
         assert!(validate_file_signature("a.mp4", "video", b"xxxxftyp").is_ok());

@@ -8,6 +8,7 @@ mod health;
 mod llm;
 mod playlists;
 mod raiments;
+mod site;
 
 use std::time::Duration;
 
@@ -41,6 +42,7 @@ pub fn router(request_timeout_secs: u64, asset_request_timeout_secs: u64) -> Rou
         .merge(llm::router())
         .merge(playlists::router())
         .merge(raiments::router())
+        .merge(site::router())
         // 尚未实现的业务处理器继续注册契约占位路由；每个占位端点返回统一 501。
         // 已实现的业务域会在 contract::router 中自动排除，契约测试仍校验路径和方法不漂移。
         .merge(contract::router())

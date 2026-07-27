@@ -33,6 +33,7 @@ struct Inner {
     pub artalk: ArtalkClient,
     pub meting_api_url: Option<String>,
     pub meting_http_client: Client,
+    pub public_origin: String,
     pub started_at: DateTime<Utc>,
     pub auth_jwt_secret: String,
     pub llm_keyring: LlmKeyring,
@@ -101,6 +102,7 @@ impl AppState {
             artalk,
             meting_api_url: config.meting_api_url.clone(),
             meting_http_client,
+            public_origin: config.public_origin.clone(),
             started_at: Utc::now(),
             auth_jwt_secret: config.auth_jwt_secret.clone(),
             llm_keyring,
@@ -144,6 +146,10 @@ impl AppState {
 
     pub fn meting_http_client(&self) -> &Client {
         &self.0.meting_http_client
+    }
+
+    pub fn public_origin(&self) -> &str {
+        &self.0.public_origin
     }
 
     pub fn started_at(&self) -> DateTime<Utc> {
