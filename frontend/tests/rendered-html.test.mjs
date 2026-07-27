@@ -27,7 +27,7 @@ test("server-renders the finished blog", async () => {
 });
 
 test("keeps project assets and API-backed front-end routes in place", async () => {
-  const [shell, layout, login, account, assets, llm, raiments, siteSettings, playlistSettings, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
+  const [shell, layout, login, account, assets, llm, raiments, siteSettings, playlistSettings, review, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
@@ -37,6 +37,7 @@ test("keeps project assets and API-backed front-end routes in place", async () =
     readFile(new URL("app/admin/RaimentSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/SiteSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/PlaylistSettings.tsx", root), "utf8"),
+    readFile(new URL("app/admin/ReviewManager.tsx", root), "utf8"),
     readFile(new URL("app/admin/shared.ts", root), "utf8"),
     readFile(new URL("app/media/MediaPage.tsx", root), "utf8"),
     readFile(new URL("app/media/AnimePage.tsx", root), "utf8"),
@@ -52,7 +53,7 @@ test("keeps project assets and API-backed front-end routes in place", async () =
     access(new URL("public/og.png", root)),
   ]);
   const media = [mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination].join("\n");
-  const app = [shell, login, account, assets, llm, raiments, siteSettings, playlistSettings, shared, media].join("\n");
+  const app = [shell, login, account, assets, llm, raiments, siteSettings, playlistSettings, review, shared, media].join("\n");
   assert.doesNotMatch(app, /const posts = \[/);
   assert.match(app, /\/api\/v1\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles/);
@@ -107,8 +108,18 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.doesNotMatch(shell, /\.comment_count/);
   assert.match(shell, /pageKey: articleCommentKey\(slug\)/);
   assert.match(shell, /payload\.allow_comment/);
-  assert.match(shell, /ARTALK_ADMIN_PASSWORD/);
+  assert.match(review, /ARTALK_ADMIN_PASSWORD/);
   assert.doesNotMatch(shell, /评论已进入审核队列（Mock）|恢复演示数据/);
+  assert.match(shell, /\["\/admin\/comments",\s*"◫",\s*"审核"\]/);
+  assert.doesNotMatch(shell, /评论审核/);
+  assert.match(shell, /\/api\/v1\/friends\?per_page=50/);
+  assert.match(shell, /contact_email/);
+  assert.doesNotMatch(shell, /申请已提交（Mock）|这是 Mock 友链/);
+  assert.match(review, /\/api\/v1\/admin\/friends/);
+  assert.match(review, /usable_for=friend_avatar/);
+  assert.match(review, /updateStatus\(item,\s*"approved"\)/);
+  assert.match(review, /updateStatus\(item,\s*"rejected"\)/);
+  assert.match(review, />友链申请</);
   assert.match(app, /\/api\/v1\/admin\/categories/);
   assert.match(app, /\/api\/v1\/admin\/tags/);
   assert.match(app, /function AdminLayout/);

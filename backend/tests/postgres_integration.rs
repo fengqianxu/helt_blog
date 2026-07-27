@@ -228,6 +228,152 @@ fn use_cases(connection_id: Option<i64>, enabled: bool) -> Value {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
+async fn friend_applications_are_private_until_reviewed_and_rate_limited() {
+    let database = TestDatabase::create().await;
+    let app = test_app(database.pool.clone());
+
+    let application = json!({
+        "name": "Integration Notes",
+        "url": "https://integration.example",
+        "avatar_url": "https://integration.example/avatar.png",
+        "contact_email": "owner@integration.example",
+        "description": "A database-backed friend application."
+    });
+    let (status, created) = json_request(
+        &app,
+        Method::POST,
+        "/api/v1/friends",
+        Some(application.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["status"], "pending");
+    let friend_id = created["id"].as_i64().expect("friend id");
+
+    let (status, public_before_review) =
+        json_request(&app, Method::GET, "/api/v1/friends", None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "public friend list failed: {public_before_review}"
+    );
+    assert_eq!(public_before_review["total"], 0);
+
+    let (status, duplicate) =
+        json_request(&app, Method::POST, "/api/v1/friends", Some(application)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(duplicate["error"]["code"], "conflict");
+
+    let (status, pending) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/admin/friends?status=pending",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pending["counts"]["pending"], 1);
+    assert_eq!(
+        pending["items"][0]["contact_email"],
+        "owner@integration.example"
+    );
+
+    let (status, missing_avatar) = json_request(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/admin/friends/{friend_id}"),
+        Some(json!({ "status": "approved" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(missing_avatar["error"]["code"], "validation_error");
+
+    let avatar_asset_id: i64 = sqlx::query_scalar(
+        "SELECT id
+         FROM assets
+         WHERE status = 'active'
+           AND media_type = 'image'
+           AND upload_id IS NOT NULL
+         ORDER BY id
+         LIMIT 1",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .expect("seeded image asset");
+    let (status, approved) = json_request(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/admin/friends/{friend_id}"),
+        Some(json!({
+            "status": "approved",
+            "avatar_asset_id": avatar_asset_id
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(approved["status"], "approved");
+    assert!(approved["reviewed_at"].is_string());
+
+    let (status, public_after_review) =
+        json_request(&app, Method::GET, "/api/v1/friends", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(public_after_review["total"], 1);
+    assert_eq!(public_after_review["items"][0]["name"], "Integration Notes");
+    assert!(
+        public_after_review["items"][0]["avatar_url"]
+            .as_str()
+            .expect("public avatar URL")
+            .starts_with("/storage/")
+    );
+    assert!(
+        public_after_review["items"][0]
+            .get("contact_email")
+            .is_none()
+    );
+    assert!(public_after_review["items"][0].get("id").is_none());
+
+    let (status, second) = json_request(
+        &app,
+        Method::POST,
+        "/api/v1/friends",
+        Some(json!({
+            "name": "Second Site",
+            "url": "https://second.example",
+            "contact_email": "owner@second.example"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let second_id = second["id"].as_i64().expect("second friend id");
+    let (status, rejected) = json_request(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/admin/friends/{second_id}"),
+        Some(json!({ "status": "rejected" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rejected["status"], "rejected");
+
+    let (status, limited) = json_request(
+        &app,
+        Method::POST,
+        "/api/v1/friends",
+        Some(json!({
+            "name": "Third Site",
+            "url": "https://third.example",
+            "contact_email": "owner@third.example"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited["error"]["code"], "rate_limited");
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
 async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
     let database = TestDatabase::create().await;
     let app = test_app(database.pool.clone());

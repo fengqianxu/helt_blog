@@ -19,6 +19,7 @@ import { LlmSettings } from "./admin/LlmSettings";
 import { RaimentSettings } from "./admin/RaimentSettings";
 import { SiteSettings } from "./admin/SiteSettings";
 import { PlaylistSettings } from "./admin/PlaylistSettings";
+import { ReviewManager } from "./admin/ReviewManager";
 import {
   AdminIdentity,
   AdminAsset,
@@ -1281,18 +1282,123 @@ function AboutPage({ notify }: { notify: Notify }) {
   return <main className="page-wrap about-layout page-enter"><aside className="profile-card"><div className="avatar"><Image src={avatarUrl} width={216} height={216} sizes="108px" unoptimized alt={`${displayName} 的头像`} /></div><h1>{displayName}.</h1><p>写代码 / 追番 / 折腾博客<br />骑士王的头号 Master</p><div className="profile-stats"><span><b>128</b>文章</span><span><b>2,048</b>天</span></div><div className="socials"><button aria-label="GitHub" onClick={() => notify("GitHub 主页为演示链接")}>GH</button><button aria-label="哔哩哔哩" onClick={() => notify("哔哩哔哩主页为演示链接")}>BL</button><button aria-label="复制联系邮箱" onClick={copyEmail} disabled={!profile.email}>✉</button></div></aside><div className="about-content"><PageHeading title="关于我" subtitle="ABOUT · MASTER PROFILE" /><div className="dialog-box"><b>{displayName}</b><p>你好，欢迎来到我的小站。白天是普通的程序员，晚上是熬夜追番的 Master。这个博客从 2020 年写到现在，记录技术、生活，和那些让我热血的作品。</p></div><SectionTitle index="01" title="技能与兴趣" /><div className="skill-grid">{["React / TypeScript", "Node.js", "UI Engineering", "Fate Series", "摄影与键盘", "动画与游戏"].map((s) => <span key={s}>{s}</span>)}</div><SectionTitle index="02" title="关于本站" /><p>本站从设计到代码都在持续重构中。按下 Konami 秘技（↑↑↓↓←→←→BA）会触发隐藏彩蛋；日夜切换时，Saber 与 Alter 的视觉也会一起切换。</p></div></main>;
 }
 
+type PublicFriend = {
+  name: string;
+  url: string;
+  avatar_url: string;
+  description: string;
+};
+
+type PublicFriendPayload = {
+  page: number;
+  per_page: number;
+  total: number;
+  items: PublicFriend[];
+};
+
 function FriendsPage({ notify }: { notify: Notify }) {
+  const [selected, setSelected] = useState<PublicFriend | null>(null);
+  const [friends, setFriends] = useState<PublicFriend[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
-  const [selected, setSelected] = useState<{ name: string; desc: string; color: string } | null>(null);
-  const friends = [{ name: "Aki's Notes", desc: "设计、代码与生活碎片", color: "blue" }, { name: "Rin Lab", desc: "前端工程与视觉实验", color: "red" }, { name: "Mooncell", desc: "Fate 系作品考据笔记", color: "gold" }, { name: "夜航船", desc: "独立开发与数字生活", color: "violet" }, { name: "Kumo", desc: "摄影、旅行和咖啡", color: "green" }, { name: "404 Garden", desc: "在互联网角落种花", color: "dark" }];
-  const submit = (e: FormEvent) => { e.preventDefault(); setSent(true); notify("友链申请已提交", "success"); };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch("/api/v1/friends?per_page=50", {
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await responseMessage(response, "读取友链失败"));
+        const payload = await response.json() as PublicFriendPayload;
+        setFriends(payload.items);
+        setTotal(payload.total);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setLoadError(error instanceof Error ? error.message : "读取友链失败");
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, []);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setSubmitting(true);
+    setSent(false);
+    setSubmitError("");
+    try {
+      const response = await fetch("/api/v1/friends", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          name: String(data.get("name") || ""),
+          url: String(data.get("url") || ""),
+          avatar_url: String(data.get("avatar_url") || ""),
+          contact_email: String(data.get("contact_email") || ""),
+          description: String(data.get("description") || ""),
+        }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "提交友链申请失败"));
+      form.reset();
+      setSent(true);
+      notify("友链申请已提交，审核通过后会公开展示", "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "提交友链申请失败";
+      setSubmitError(message);
+      notify(message, "danger");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   useEffect(() => {
     if (!selected) return;
     const close = (event: KeyboardEvent) => event.key === "Escape" && setSelected(null);
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [selected]);
-  return <main className="page-wrap page-enter"><PageHeading title="友情链接" subtitle="FRIENDS · 12 位" /><div className="friends-grid">{friends.map((f) => <button key={f.name} className="friend-card" onClick={() => setSelected(f)}><span className={`friend-avatar ${f.color}`}>{f.name[0]}</span><span><b>{f.name}</b><p>{f.desc}</p></span><i>→</i></button>)}</div><form className="friend-form dialog-box" onSubmit={submit}><b>申请友链</b><p>交换的不只是链接，也是彼此在网络世界留下的一盏灯。</p><div className="form-grid"><input aria-label="站点名称" placeholder="站点名称" required /><input aria-label="站点地址" placeholder="站点地址" type="url" required /><input aria-label="头像地址" placeholder="头像地址" type="url" /><input aria-label="联系邮箱" placeholder="联系邮箱" type="email" required /></div><textarea aria-label="站点介绍" placeholder="一句话介绍你的小站" required /><button className="primary-button">提交申请</button>{sent && <span className="success" role="status">申请已提交（Mock）</span>}</form>{selected && <div className="friend-drawer" role="dialog" aria-modal="true" aria-labelledby="friend-drawer-title"><button aria-label="关闭友链详情" onClick={() => setSelected(null)}>×</button><span className={`friend-avatar ${selected.color}`}>{selected.name[0]}</span><small>FRIEND PROFILE</small><h2 id="friend-drawer-title">{selected.name}</h2><p>{selected.desc}</p><button className="primary-button" onClick={() => notify("这是 Mock 友链，暂未配置外部地址")}>访问站点 ↗</button></div>}</main>;
+
+  return <main className="page-wrap page-enter">
+    <PageHeading title="友情链接" subtitle={`FRIENDS · ${total} 位`} />
+    {loading ? <div className="friends-empty" role="status">正在读取友链…</div>
+      : loadError ? <div className="friends-empty error" role="alert">{loadError}</div>
+        : friends.length ? <div className="friends-grid">{friends.map((friend) => <button key={friend.url} className="friend-card" onClick={() => setSelected(friend)}>
+          <span className="friend-avatar">{friend.avatar_url ? <Image src={friend.avatar_url} width={52} height={52} unoptimized alt="" /> : friend.name.slice(0, 1).toUpperCase()}</span>
+          <span><b>{friend.name}</b><p>{friend.description || "这位朋友还没有留下简介。"}</p></span><i>→</i>
+        </button>)}</div>
+          : <div className="friends-empty"><b>友链正在生长</b><p>还没有已通过的友链，欢迎提交第一份申请。</p></div>}
+    <form className="friend-form dialog-box" onSubmit={submit}>
+      <b>申请友链</b>
+      <p>交换的不只是链接，也是彼此在网络世界留下的一盏灯。申请会先进入后台审核，不会立即公开。</p>
+      <div className="form-grid">
+        <input aria-label="站点名称" name="name" maxLength={100} placeholder="站点名称" required />
+        <input aria-label="站点地址" name="url" maxLength={2048} placeholder="站点地址" type="url" required />
+        <input aria-label="头像地址" name="avatar_url" maxLength={2048} placeholder="头像地址（可选）" type="url" />
+        <input aria-label="联系邮箱" name="contact_email" maxLength={254} placeholder="联系邮箱（仅管理员可见）" type="email" required />
+      </div>
+      <textarea aria-label="站点介绍" name="description" maxLength={500} placeholder="一句话介绍你的小站（最多 500 字）" required />
+      <button className="primary-button" disabled={submitting}>{submitting ? "正在提交…" : "提交申请"}</button>
+      {sent && <span className="success" role="status">申请已提交，等待审核。</span>}
+      {submitError && <span className="friend-submit-error" role="alert">{submitError}</span>}
+    </form>
+    {selected && <div className="friend-drawer" role="dialog" aria-modal="true" aria-labelledby="friend-drawer-title">
+      <button aria-label="关闭友链详情" onClick={() => setSelected(null)}>×</button>
+      <span className="friend-avatar">{selected.avatar_url ? <Image src={selected.avatar_url} width={52} height={52} unoptimized alt="" /> : selected.name.slice(0, 1).toUpperCase()}</span>
+      <small>FRIEND PROFILE</small><h2 id="friend-drawer-title">{selected.name}</h2><p>{selected.description || "这位朋友还没有留下简介。"}</p>
+      <a className="primary-button" href={selected.url} target="_blank" rel="noreferrer">访问站点 ↗</a>
+    </div>}
+  </main>;
 }
 
 function NotFound({ message }: { message?: string } = {}) { return <main className="empty-state"><b>404</b><h1>前方并非约定之地</h1><p>{message || "Master，这条路径似乎不存在。"}</p><Link href="/" className="primary-button">返回首页</Link></main>; }
@@ -1382,7 +1488,7 @@ function AdminSessionGate({ children }: { children: (admin: AdminIdentity) => Re
   return children(admin);
 }
 
-const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/comments", "◫", "评论审核"], ["/admin/assets", "▧", "素材库"], ["/admin/raiments", "♙", "灵衣"], ["/admin/llm", "✦", "LLM"], ["/admin/playlists", "♫", "歌单"], ["/admin/settings", "⚙", "站点设置"]];
+const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/comments", "◫", "审核"], ["/admin/assets", "▧", "素材库"], ["/admin/raiments", "♙", "灵衣"], ["/admin/llm", "✦", "LLM"], ["/admin/playlists", "♫", "歌单"], ["/admin/settings", "⚙", "站点设置"]];
 
 function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify; admin: AdminIdentity }) {
   const [commandOpen, setCommandOpen] = useState(false);
@@ -1393,7 +1499,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   if (pathname === "/admin") content = <Dashboard />;
   else if (pathname === "/admin/articles") content = <ArticleManager notify={notify} />;
   else if (pathname.includes("/admin/articles/")) content = <ArticleEditor pathname={pathname} theme={theme} notify={notify} />;
-  else if (pathname === "/admin/comments") content = <CommentManager />;
+  else if (pathname === "/admin/comments") content = <ReviewManager notify={notify} />;
   else if (pathname === "/admin/assets") content = <AssetManager notify={notify} />;
   else if (pathname === "/admin/raiments" || pathname === "/admin/appearance") content = <RaimentSettings notify={notify} />;
   else if (pathname === "/admin/llm" || pathname === "/admin/kanban") content = <LlmSettings notify={notify} />;
@@ -2233,18 +2339,4 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
       {coverPickerOpen && <div className="editor-cover-modal" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setCoverPickerOpen(false)}><section role="dialog" aria-modal="true" aria-labelledby="cover-picker-title"><header><div><span>ASSET LIBRARY</span><h2 id="cover-picker-title">选择封面素材</h2></div><button type="button" aria-label="关闭封面素材选择" onClick={() => setCoverPickerOpen(false)}>×</button></header><div className="editor-cover-grid">{assets.length ? assets.map((asset) => <button type="button" key={asset.id} className={cx(asset.id === data.cover_asset_id && "selected")} onClick={() => { update("cover_asset_id", asset.id); setCoverPickerOpen(false); }}><Image src={asset.file.url} width={180} height={105} unoptimized alt={asset.name} /><b>{asset.name}</b><small>{assetLabels[asset.media_type]}</small></button>) : <p>素材库中还没有图片，请先上传图片素材。</p>}</div><footer><Link href="/admin/assets">去素材库上传 →</Link><button type="button" onClick={() => setCoverPickerOpen(false)}>取消</button></footer></section></div>}
     </div>
   );
-}
-
-function CommentManager() {
-  return <>
-    <AdminTitle title="评论审核" sub="COMMENTS · POWERED BY ARTALK" action={<a className="admin-primary" href="/artalk/" target="_blank" rel="noreferrer">打开评论控制台 ↗</a>} />
-    <section className="admin-panel comment-admin-card">
-      <div className="comment-admin-mark" aria-hidden="true">A</div>
-      <div>
-        <h2>Artalk 评论控制台</h2>
-        <p>评论、嵌套回复、待审队列、垃圾内容、用户和页面统计统一由 Artalk 管理。控制台使用独立的评论管理员账户。</p>
-        <p>评论管理员由部署环境中的 <code>ARTALK_ADMIN_NAME</code>、<code>ARTALK_ADMIN_EMAIL</code> 和 <code>ARTALK_ADMIN_PASSWORD</code> 配置，请使用这组独立凭据登录。</p>
-      </div>
-    </section>
-  </>;
 }

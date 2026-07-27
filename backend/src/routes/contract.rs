@@ -524,7 +524,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         Anonymous,
         CREATED,
         "提交友链申请",
-        "JSON: name、url、avatar_url?、description?",
+        "JSON: name、url、avatar_url?、contact_email、description?",
         "201 JSON id、status=pending",
         "按 IP 限流 2/小时；avatar_url 只是待审核来源，批准前须转存 MinIO 并建立 avatar_asset_id；重复 URL 返回 409；申请只能创建为 pending"
     ),
@@ -1510,6 +1510,7 @@ pub fn router() -> Router<AppState> {
                 && !super::assets::implements(contract.method, contract.path)
                 && !super::articles::implements(contract.method, contract.path)
                 && !super::bangumi::implements(contract.method, contract.path)
+                && !super::friends::implements(contract.method, contract.path)
                 && !super::games::implements(contract.method, contract.path)
                 && !super::llm::implements(contract.method, contract.path)
                 && !super::playlists::implements(contract.method, contract.path)

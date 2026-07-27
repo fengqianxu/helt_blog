@@ -2,6 +2,7 @@ mod articles;
 mod assets;
 pub mod bangumi;
 pub mod contract;
+mod friends;
 pub mod games;
 mod health;
 mod llm;
@@ -35,6 +36,7 @@ pub fn router(request_timeout_secs: u64, asset_request_timeout_secs: u64) -> Rou
         .merge(auth::router())
         .merge(articles::router())
         .merge(bangumi::router())
+        .merge(friends::router())
         .merge(games::router())
         .merge(llm::router())
         .merge(playlists::router())
