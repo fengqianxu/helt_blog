@@ -1824,6 +1824,7 @@ mod tests {
             artalk_admin_name: "test".to_owned(),
             artalk_admin_email: "test@example.com".to_owned(),
             artalk_admin_password: "test".to_owned(),
+            meting_api_url: None,
             llm_encryption_key_version: 1,
             llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
             llm_encryption_previous_key_version: None,

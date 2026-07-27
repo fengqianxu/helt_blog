@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  AdminPlaylist,
   Notify,
+  PlaylistPayload,
   RaimentSchedule,
   RaimentSchedulePeriod,
   responseMessage,
@@ -26,15 +28,17 @@ const newPeriodId = () => `period-${typeof crypto !== "undefined" && "randomUUID
 export function SiteSettings({ notify }: { notify: Notify }) {
   const [schedule, setSchedule] = useState<RaimentSchedule | null>(null);
   const [raiments, setRaiments] = useState<RaimentOption[]>([]);
+  const [playlists, setPlaylists] = useState<AdminPlaylist[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      const [scheduleResponse, raimentResponse] = await Promise.all([
+      const [scheduleResponse, raimentResponse, playlistResponse] = await Promise.all([
         fetch("/api/v1/admin/site/raiment-schedule", { credentials: "include", signal }),
         fetch("/api/v1/admin/raiments", { credentials: "include", signal }),
+        fetch("/api/v1/admin/playlists", { credentials: "include", signal }),
       ]);
       if (!scheduleResponse.ok) {
         throw new Error(await responseMessage(scheduleResponse, "灵衣时间段加载失败"));
@@ -42,12 +46,17 @@ export function SiteSettings({ notify }: { notify: Notify }) {
       if (!raimentResponse.ok) {
         throw new Error(await responseMessage(raimentResponse, "灵衣列表加载失败"));
       }
-      const [nextSchedule, nextRaiments] = await Promise.all([
+      if (!playlistResponse.ok) {
+        throw new Error(await responseMessage(playlistResponse, "歌单列表加载失败"));
+      }
+      const [nextSchedule, nextRaiments, nextPlaylists] = await Promise.all([
         scheduleResponse.json() as Promise<RaimentSchedule>,
         raimentResponse.json() as Promise<RaimentPayload>,
+        playlistResponse.json() as Promise<PlaylistPayload>,
       ]);
       setSchedule(nextSchedule);
       setRaiments(nextRaiments.items.filter((item) => item.enabled));
+      setPlaylists(nextPlaylists.items.filter((item) => item.enabled));
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       notify(error instanceof Error ? error.message : "站点设置加载失败", "danger");
@@ -84,6 +93,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
         start_at: "08:00",
         end_at: "18:00",
         raiment_id: raiments[0].id,
+        playlist_id: null,
       }],
     } : current);
   };
@@ -133,7 +143,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
       </section>
       <section className="admin-panel toggles">
         <h2>功能开关</h2>
-        {[["开屏页", "关闭后直接进入文章流"], ["看板娘", "显示 Live2D 角色与对话"], ["背景音乐", "显示全局音乐播放器"], ["Konami 彩蛋", "启用键盘隐藏彩蛋"]].map(([label, description], index) => <div key={label}>
+        {[["开屏页", "关闭后直接进入文章流"], ["看板娘", "显示 Live2D 角色与对话"], ["歌单目录", "发布素材库、网易云音乐与 QQ 音乐歌单供站内功能引用"], ["Konami 彩蛋", "启用键盘隐藏彩蛋"]].map(([label, description], index) => <div key={label}>
           <span><b>{label}</b><small>{description}</small></span>
           <label className="toggle"><input type="checkbox" defaultChecked={index !== 3} onChange={(event) => notify(`${label}已${event.target.checked ? "开启" : "关闭"}`)} /><i /></label>
         </div>)}
@@ -142,7 +152,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
 
     <section className="admin-panel raiment-schedule-panel">
       <header>
-        <div><span>AUTOMATION</span><h2>灵衣时间段</h2><p>使用访客设备的本地时间，以 24 小时制匹配。跨午夜可直接填写，例如 19:00—07:00。</p></div>
+        <div><span>AUTOMATION</span><h2>灵衣与背景音乐时间段</h2><p>使用访客设备的本地时间，以 24 小时制匹配。每段可引用一份已启用歌单；跨午夜可直接填写，例如 19:00—07:00。</p></div>
         <button type="button" onClick={addPeriod} disabled={loading || !schedule}>＋ 新增时间段</button>
       </header>
       {loading && <div className="raiment-schedule-empty">正在读取时间段…</div>}
@@ -154,12 +164,16 @@ export function SiteSettings({ notify }: { notify: Notify }) {
           <span>→</span>
           <label>结束<input type="time" step={60} value={period.end_at} onChange={(event) => updatePeriod(period.id, { end_at: event.target.value })} /></label>
           <label>使用灵衣<select value={period.raiment_id} onChange={(event) => updatePeriod(period.id, { raiment_id: event.target.value })}>{raiments.map((raiment) => <option value={raiment.id} key={raiment.id}>{raiment.name}</option>)}</select></label>
+          <label>背景音乐<select value={period.playlist_id ?? ""} onChange={(event) => updatePeriod(period.id, { playlist_id: event.target.value ? Number(event.target.value) : null })}>
+            <option value="">不播放</option>
+            {playlists.map((playlist) => <option value={playlist.id} key={playlist.id}>{playlist.name}{playlist.status === "unavailable" ? "（暂不可用）" : ""}</option>)}
+          </select></label>
           <small>{wraps ? "跨午夜" : "当日"}</small>
           <button type="button" aria-label={`删除第 ${index + 1} 个时间段`} onClick={() => removePeriod(period.id)}>×</button>
         </div>;
       })}
       {!loading && schedule && !schedule.periods.length && <div className="raiment-schedule-empty">尚未设置自动时间段；前台将使用默认灵衣，访客仍可手动切换。</div>}
-      <footer>时间段不可重叠；开始时间包含在内，结束时间不包含在内。未覆盖的时刻使用默认灵衣。</footer>
+      <footer>时间段不可重叠；开始时间包含在内，结束时间不包含在内。未覆盖的时刻使用默认灵衣且不播放背景音乐。歌单可在“歌单”页面维护。</footer>
     </section>
   </>;
 }

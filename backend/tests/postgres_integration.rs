@@ -99,6 +99,7 @@ fn test_config() -> Config {
         artalk_admin_name: "test".to_owned(),
         artalk_admin_email: "test@example.com".to_owned(),
         artalk_admin_password: "test".to_owned(),
+        meting_api_url: None,
         llm_encryption_key_version: 2,
         llm_encryption_secret: CURRENT_LLM_SECRET.to_owned(),
         llm_encryption_previous_key_version: Some(1),
@@ -351,6 +352,41 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
             .expect("created id")
             .starts_with("raiment-")
     );
+    let created_revision = created["revision"].as_i64().expect("created revision");
+    let mut created_update = created.clone();
+    let created_update = created_update
+        .as_object_mut()
+        .expect("created raiment object");
+    created_update.remove("id");
+    created_update.remove("cover_asset");
+    created_update.remove("cover_voice_asset");
+    created_update.remove("login_success_voice_asset");
+    created_update.remove("is_builtin");
+    created_update.remove("created_at");
+    created_update.remove("updated_at");
+    let (status, edited_created) = json_request(
+        &app,
+        Method::PUT,
+        &format!(
+            "/api/v1/admin/raiments/{}",
+            created["id"].as_str().expect("created id")
+        ),
+        Some(Value::Object(created_update.clone())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(edited_created["revision"], created_revision + 1);
+
+    let created_id = created["id"].as_str().expect("created id");
+    let (status, stale_delete) = json_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/admin/raiments/{created_id}"),
+        Some(json!({ "revision": created_revision })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(stale_delete["error"]["code"], "conflict");
 
     let (status, public) = json_request(&app, Method::GET, "/api/v1/raiments", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -382,7 +418,6 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
     .expect("raiment cover reference");
     assert_eq!(referenced_asset, cover_asset_id);
 
-    let created_id = created["id"].as_str().expect("created id");
     let (status, schedule) = json_request(
         &app,
         Method::GET,
@@ -392,6 +427,35 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let schedule_revision = schedule["revision"].as_i64().expect("schedule revision");
+    let (status, playlists) =
+        json_request(&app, Method::GET, "/api/v1/admin/playlists", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let playlist = playlists["items"]
+        .as_array()
+        .expect("playlists")
+        .first()
+        .expect("seed playlist");
+    let playlist_id = playlist["id"].as_i64().expect("playlist id");
+    assert!(playlist.get("tracks").is_none());
+    assert!(playlist.get("track_count").is_some());
+    let (status, playlist_tracks) = json_request(
+        &app,
+        Method::GET,
+        &format!("/api/v1/admin/playlists/{playlist_id}/tracks?page=1&per_page=10"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(playlist_tracks["page"], 1);
+    assert_eq!(playlist_tracks["per_page"], 10);
+    let playlist_track_page = playlist_tracks["items"]
+        .as_array()
+        .expect("playlist tracks");
+    assert!(playlist_track_page.len() <= 10);
+    assert!(
+        playlist_tracks["total"].as_i64().expect("playlist total")
+            >= playlist_track_page.len() as i64
+    );
     let (status, saved_schedule) = json_request(
         &app,
         Method::PUT,
@@ -399,21 +463,50 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
         Some(json!({
             "revision": schedule_revision,
             "periods": [
-                {"id":"morning","start_at":"06:00","end_at":"12:00","raiment_id":"saber"},
-                {"id":"afternoon","start_at":"12:00","end_at":"18:00","raiment_id":created_id},
-                {"id":"night","start_at":"18:00","end_at":"06:00","raiment_id":"alter-saber"}
+                {"id":"morning","start_at":"06:00","end_at":"12:00","raiment_id":"saber","playlist_id":playlist_id},
+                {"id":"afternoon","start_at":"12:00","end_at":"18:00","raiment_id":created_id,"playlist_id":null},
+                {"id":"night","start_at":"18:00","end_at":"06:00","raiment_id":"alter-saber","playlist_id":null}
             ]
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(saved_schedule["revision"], schedule_revision + 1);
+    assert_eq!(saved_schedule["periods"][0]["playlist_id"], playlist_id);
+
+    let (status, public) = json_request(&app, Method::GET, "/api/v1/raiments", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(public["schedule"]["periods"][0]["playlist_id"], playlist_id);
+
+    let (status, playlist_conflict) = json_request(
+        &app,
+        Method::PUT,
+        &format!("/api/v1/admin/playlists/{playlist_id}"),
+        Some(json!({
+            "name": playlist["name"],
+            "description": playlist["description"],
+            "enabled": false
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(playlist_conflict["error"]["code"], "conflict");
+
+    let (status, playlist_delete_conflict) = json_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/admin/playlists/{playlist_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(playlist_delete_conflict["error"]["code"], "conflict");
 
     let (status, conflict) = json_request(
         &app,
         Method::DELETE,
         &format!("/api/v1/admin/raiments/{created_id}"),
-        None,
+        Some(json!({ "revision": edited_created["revision"] })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -426,8 +519,8 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
         Some(json!({
             "revision": saved_schedule["revision"],
             "periods": [
-                {"id":"day","start_at":"06:00","end_at":"18:00","raiment_id":"saber"},
-                {"id":"night","start_at":"18:00","end_at":"06:00","raiment_id":"alter-saber"}
+                {"id":"day","start_at":"06:00","end_at":"18:00","raiment_id":"saber","playlist_id":null},
+                {"id":"night","start_at":"18:00","end_at":"06:00","raiment_id":"alter-saber","playlist_id":null}
             ]
         })),
     )
@@ -438,11 +531,35 @@ async fn raiments_and_site_schedule_support_crud_and_revision_conflicts() {
         &app,
         Method::DELETE,
         &format!("/api/v1/admin/raiments/{created_id}"),
-        None,
+        Some(json!({ "revision": edited_created["revision"] })),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(body.is_null());
+
+    sqlx::query("UPDATE site_settings SET settings = settings - 'raiment_schedule' WHERE id = 1")
+        .execute(&database.pool)
+        .await
+        .expect("remove schedule to exercise legacy fallback");
+    let (status, fallback_schedule) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/admin/site/raiment-schedule",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fallback_schedule["revision"], 1);
+    assert_eq!(fallback_schedule["periods"], json!([]));
+    let (status, initialized_schedule) = json_request(
+        &app,
+        Method::PUT,
+        "/api/v1/admin/site/raiment-schedule",
+        Some(json!({ "revision": 1, "periods": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(initialized_schedule["revision"], 2);
 
     database.cleanup().await;
 }

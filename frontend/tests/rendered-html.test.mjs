@@ -27,7 +27,7 @@ test("server-renders the finished blog", async () => {
 });
 
 test("keeps project assets and API-backed front-end routes in place", async () => {
-  const [shell, layout, login, account, assets, llm, raiments, siteSettings, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
+  const [shell, layout, login, account, assets, llm, raiments, siteSettings, playlistSettings, shared, mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination, packageJson, viteConfig, styles] = await Promise.all([
     readFile(new URL("app/BlogApp.tsx", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/admin/AdminLogin.tsx", root), "utf8"),
@@ -36,6 +36,7 @@ test("keeps project assets and API-backed front-end routes in place", async () =
     readFile(new URL("app/admin/LlmSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/RaimentSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/SiteSettings.tsx", root), "utf8"),
+    readFile(new URL("app/admin/PlaylistSettings.tsx", root), "utf8"),
     readFile(new URL("app/admin/shared.ts", root), "utf8"),
     readFile(new URL("app/media/MediaPage.tsx", root), "utf8"),
     readFile(new URL("app/media/AnimePage.tsx", root), "utf8"),
@@ -51,7 +52,7 @@ test("keeps project assets and API-backed front-end routes in place", async () =
     access(new URL("public/og.png", root)),
   ]);
   const media = [mediaPage, animePage, gamesPage, mediaApi, mediaHooks, pagination].join("\n");
-  const app = [shell, login, account, assets, llm, raiments, siteSettings, shared, media].join("\n");
+  const app = [shell, login, account, assets, llm, raiments, siteSettings, playlistSettings, shared, media].join("\n");
   assert.doesNotMatch(app, /const posts = \[/);
   assert.match(app, /\/api\/v1\/articles/);
   assert.match(app, /\/api\/v1\/admin\/articles/);
@@ -61,10 +62,13 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.doesNotMatch(layout, /x-forwarded-host|headers\(\)/);
   assert.match(layout, /helt-color-scheme/);
   assert.match(shell, /persistColorScheme/);
+  assert.match(shell, /raimentCatalog\.order\.length < 2/);
   assert.match(raiments, /method: "POST"/);
   assert.match(raiments, /method: "DELETE"/);
+  assert.match(raiments, /method: "DELETE"[\s\S]*?body: JSON\.stringify\(\{ revision: selected\.revision \}\)/);
   assert.match(raiments, /\/api\/v1\/admin\/raiments\/\$\{encodeURIComponent\(selected\.id\)\}/);
   assert.match(raiments, /revision:\s*selected\.revision/);
+  assert.doesNotMatch(shell, /<HomePage key=\{activeRaimentId\}/);
   assert.match(raiments, /cover_asset_id:\s*selected\.cover_asset_id/);
   assert.doesNotMatch(raiments, /switch_at|启用时间|raiment-add-tab/);
   assert.doesNotMatch(raiments, /外观基调|明亮外观|深色外观|ID ·|BUILT-IN|CUSTOM PROFILE|☀|☾/);
@@ -77,6 +81,9 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(raiments, /items\.length >= payload\.total/);
   assert.match(raiments, /kanban_asset_id:\s*selected\.kanban_asset_id/);
   assert.match(siteSettings, /\/api\/v1\/admin\/site\/raiment-schedule/);
+  assert.match(siteSettings, /\/api\/v1\/admin\/playlists/);
+  assert.match(siteSettings, /playlist_id/);
+  assert.match(siteSettings, /背景音乐/);
   assert.match(siteSettings, /type="time"/);
   assert.match(siteSettings, /新增时间段/);
   assert.doesNotMatch(raiments, /Mock|角色展示|默认招呼语/);
@@ -211,6 +218,25 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(app, /\/api\/v1\/admin\/auth\/change-password/);
   assert.match(app, /\/api\/v1\/admin\/auth\/profile/);
   assert.match(app, /\/api\/v1\/admin\/assets\?media_type=image/);
+  assert.match(playlistSettings, /media_type:\s*"audio"/);
+  assert.match(playlistSettings, /\/api\/v1\/admin\/assets\?\$\{params\}/);
+  assert.match(playlistSettings, /\/api\/v1\/admin\/playlists/);
+  assert.match(playlistSettings, /source_kind:\s*sourceKind/);
+  assert.match(playlistSettings, /网易云音乐/);
+  assert.match(playlistSettings, /QQ 音乐/);
+  assert.match(playlistSettings, /重命名/);
+  assert.match(playlistSettings, /createPortal/);
+  assert.match(playlistSettings, /params\.set\("search"/);
+  assert.match(playlistSettings, /TRACK_PAGE_SIZE = 10/);
+  assert.match(playlistSettings, /\/tracks\?\$\{params\}/);
+  assert.match(playlistSettings, /playlist-track-pagination/);
+  assert.doesNotMatch(playlistSettings, /<select|<audio|播放器设置|默认音量/);
+  assert.match(shell, /function BackgroundMusic/);
+  assert.match(shell, /scheduledPeriod\(schedule\)\?\.playlist_id/);
+  assert.match(shell, /\/api\/v1\/playlists/);
+  assert.match(shell, /<audio/);
+  assert.match(styles, /\.background-music-player/);
+  assert.doesNotMatch(shell, /THIS ILLUSION|to the beginning|BGM 播放列表|音乐与语音/);
   assert.match(app, /avatar_asset_id/);
   assert.match(app, /更换头像/);
   assert.doesNotMatch(app, /头像从素材库引用，替换素材版本后会自动同步/);

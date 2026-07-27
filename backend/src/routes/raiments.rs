@@ -348,6 +348,12 @@ struct UpdateRaimentRequest {
     kanban_asset_id: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteRaimentRequest {
+    revision: i64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct SchedulePeriod {
@@ -355,6 +361,7 @@ struct SchedulePeriod {
     start_at: String,
     end_at: String,
     raiment_id: String,
+    playlist_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -461,6 +468,25 @@ async fn admin_update_schedule(
             "时间段引用了不存在或未启用的灵衣：{missing}"
         )));
     }
+    let referenced_playlist_ids = request
+        .periods
+        .iter()
+        .filter_map(|period| period.playlist_id)
+        .collect::<HashSet<_>>();
+    let available_playlist_ids =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM playlists WHERE enabled = true FOR SHARE")
+            .fetch_all(&mut *transaction)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+    if let Some(missing) = referenced_playlist_ids
+        .iter()
+        .find(|id| !available_playlist_ids.contains(id))
+    {
+        return Err(RaimentError::validation(format!(
+            "时间段引用了不存在或未启用的歌单：{missing}"
+        )));
+    }
 
     let next = RaimentSchedule {
         revision: next_revision(request.revision)?,
@@ -472,7 +498,7 @@ async fn admin_update_schedule(
         "UPDATE site_settings
          SET settings = jsonb_set(settings, '{raiment_schedule}', $1, true)
          WHERE id = 1
-           AND COALESCE((settings #>> '{raiment_schedule,revision}')::bigint, 0) = $2",
+           AND COALESCE((settings #>> '{raiment_schedule,revision}')::bigint, 1) = $2",
     )
     .bind(next_json)
     .bind(request.revision)
@@ -495,19 +521,18 @@ async fn admin_create(
 ) -> Result<(StatusCode, Json<AdminRaiment>), RaimentError> {
     require_admin(&state, &headers)?;
     let color_scheme = validate_create(&request)?;
+    let id = format!("raiment-{}", Uuid::now_v7().simple());
+    let theme = serde_json::to_value(&request.theme)
+        .map_err(|error| RaimentError::CorruptData(error.to_string()))?;
+    let mut transaction = state.pool().begin().await?;
     validate_assets(
-        &state,
+        &mut transaction,
         request.cover_asset_id,
         request.cover_voice_asset_id,
         request.login_success_voice_asset_id,
         request.kanban_asset_id,
     )
     .await?;
-
-    let id = format!("raiment-{}", Uuid::now_v7().simple());
-    let theme = serde_json::to_value(&request.theme)
-        .map_err(|error| RaimentError::CorruptData(error.to_string()))?;
-    let mut transaction = state.pool().begin().await?;
     if request.is_default {
         sqlx::query("SELECT id FROM raiments FOR UPDATE")
             .fetch_all(&mut *transaction)
@@ -573,18 +598,17 @@ async fn admin_update(
 ) -> Result<Json<AdminRaiment>, RaimentError> {
     require_admin(&state, &headers)?;
     let color_scheme = validate_update(&request)?;
+    let theme = serde_json::to_value(&request.theme)
+        .map_err(|error| RaimentError::CorruptData(error.to_string()))?;
+    let mut transaction = state.pool().begin().await?;
     validate_assets(
-        &state,
+        &mut transaction,
         request.cover_asset_id,
         request.cover_voice_asset_id,
         request.login_success_voice_asset_id,
         request.kanban_asset_id,
     )
     .await?;
-
-    let theme = serde_json::to_value(&request.theme)
-        .map_err(|error| RaimentError::CorruptData(error.to_string()))?;
-    let mut transaction = state.pool().begin().await?;
     lock_site_settings(&mut transaction).await?;
     sqlx::query("SELECT id FROM raiments FOR UPDATE")
         .fetch_all(&mut *transaction)
@@ -694,25 +718,34 @@ async fn admin_delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Json(request): Json<DeleteRaimentRequest>,
 ) -> Result<StatusCode, RaimentError> {
     require_admin(&state, &headers)?;
+    if request.revision < 1 {
+        return Err(RaimentError::validation("revision 必须为正整数"));
+    }
     let mut transaction = state.pool().begin().await?;
     lock_site_settings(&mut transaction).await?;
-    let rows = sqlx::query_as::<_, (String, bool, bool)>(
-        "SELECT id, enabled, is_default FROM raiments FOR UPDATE",
+    let rows = sqlx::query_as::<_, (String, bool, bool, i64)>(
+        "SELECT id, enabled, is_default, revision FROM raiments FOR UPDATE",
     )
     .fetch_all(&mut *transaction)
     .await?;
-    let (_, target_enabled, target_is_default) = rows
+    let (_, target_enabled, target_is_default, target_revision) = rows
         .iter()
-        .find(|(candidate, _, _)| candidate == &id)
+        .find(|(candidate, _, _, _)| candidate == &id)
         .ok_or(RaimentError::NotFound)?;
+    if *target_revision != request.revision {
+        return Err(RaimentError::Conflict(
+            "灵衣已被其他页面更新，请刷新后再删除".to_owned(),
+        ));
+    }
     if *target_is_default {
         return Err(RaimentError::Conflict(
             "默认灵衣不能删除，请先将另一套已启用灵衣设为默认".to_owned(),
         ));
     }
-    if *target_enabled && rows.iter().filter(|(_, enabled, _)| *enabled).count() == 1 {
+    if *target_enabled && rows.iter().filter(|(_, enabled, _, _)| *enabled).count() == 1 {
         return Err(RaimentError::Conflict(
             "至少需要保留一套已启用灵衣供博客展示".to_owned(),
         ));
@@ -733,10 +766,17 @@ async fn admin_delete(
     .bind(&id)
     .execute(&mut *transaction)
     .await?;
-    sqlx::query("DELETE FROM raiments WHERE id = $1")
+    let deleted = sqlx::query("DELETE FROM raiments WHERE id = $1 AND revision = $2")
         .bind(&id)
+        .bind(request.revision)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected();
+    if deleted == 0 {
+        return Err(RaimentError::Conflict(
+            "灵衣已被其他页面更新，请刷新后再删除".to_owned(),
+        ));
+    }
     transaction.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -781,76 +821,67 @@ async fn raiment_is_scheduled(
 }
 
 async fn validate_assets(
-    state: &AppState,
+    transaction: &mut Transaction<'_, Postgres>,
     cover_asset_id: i64,
     cover_voice_asset_id: Option<i64>,
     login_success_voice_asset_id: Option<i64>,
     kanban_asset_id: Option<i64>,
 ) -> Result<(), RaimentError> {
-    let cover_is_valid: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1 FROM assets
-            WHERE id = $1 AND status = 'active' AND media_type = 'image'
-        )",
+    validate_asset(
+        transaction,
+        cover_asset_id,
+        "image",
+        "封面必须引用素材库中处于 active 状态的图片",
     )
-    .bind(cover_asset_id)
-    .fetch_one(state.pool())
     .await?;
-    if !cover_is_valid {
-        return Err(RaimentError::validation(
-            "封面必须引用素材库中处于 active 状态的图片",
-        ));
-    }
 
     if let Some(asset_id) = cover_voice_asset_id {
-        let voice_is_valid: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
-                SELECT 1 FROM assets
-                WHERE id = $1 AND status = 'active' AND media_type = 'audio'
-            )",
+        validate_asset(
+            transaction,
+            asset_id,
+            "audio",
+            "封面语音必须引用素材库中处于 active 状态的音频",
         )
-        .bind(asset_id)
-        .fetch_one(state.pool())
         .await?;
-        if !voice_is_valid {
-            return Err(RaimentError::validation(
-                "封面语音必须引用素材库中处于 active 状态的音频",
-            ));
-        }
     }
 
     if let Some(asset_id) = login_success_voice_asset_id {
-        let voice_is_valid: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
-                SELECT 1 FROM assets
-                WHERE id = $1 AND status = 'active' AND media_type = 'audio'
-            )",
+        validate_asset(
+            transaction,
+            asset_id,
+            "audio",
+            "登录成功语音必须引用素材库中处于 active 状态的音频",
         )
-        .bind(asset_id)
-        .fetch_one(state.pool())
         .await?;
-        if !voice_is_valid {
-            return Err(RaimentError::validation(
-                "登录成功语音必须引用素材库中处于 active 状态的音频",
-            ));
-        }
     }
 
     if let Some(asset_id) = kanban_asset_id {
-        let kanban_is_valid: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
-                SELECT 1 FROM assets
-                WHERE id = $1 AND status = 'active' AND media_type = 'live2d'
-            )",
+        validate_asset(
+            transaction,
+            asset_id,
+            "live2d",
+            "看板娘必须引用素材库中处于 active 状态的 Live2D 素材",
         )
-        .bind(asset_id)
-        .fetch_one(state.pool())
         .await?;
-        if !kanban_is_valid {
-            return Err(RaimentError::validation(
-                "看板娘必须引用素材库中处于 active 状态的 Live2D 素材",
-            ));
-        }
+    }
+    Ok(())
+}
+
+async fn validate_asset(
+    transaction: &mut Transaction<'_, Postgres>,
+    asset_id: i64,
+    expected_media_type: &str,
+    message: &'static str,
+) -> Result<(), RaimentError> {
+    let asset = sqlx::query_as::<_, (String, String)>(
+        "SELECT status, media_type FROM assets WHERE id = $1 FOR SHARE",
+    )
+    .bind(asset_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    if !matches!(asset, Some((ref status, ref media_type)) if status == "active" && media_type == expected_media_type)
+    {
+        return Err(RaimentError::validation(message));
     }
     Ok(())
 }
@@ -1107,11 +1138,13 @@ fn parse_theme(value: Value) -> Result<ThemeTokens, RaimentError> {
 }
 
 async fn load_schedule(state: &AppState) -> Result<RaimentSchedule, RaimentError> {
-    let value: Option<Value> =
+    let row: Option<Option<Value>> =
         sqlx::query_scalar("SELECT settings -> 'raiment_schedule' FROM site_settings WHERE id = 1")
             .fetch_optional(state.pool())
-            .await?
-            .flatten();
+            .await?;
+    let Some(value) = row else {
+        return Err(RaimentError::CorruptData("站点设置记录不存在".to_owned()));
+    };
     let Some(value) = value else {
         return Ok(RaimentSchedule {
             revision: 1,
@@ -1125,11 +1158,25 @@ async fn load_schedule(state: &AppState) -> Result<RaimentSchedule, RaimentError
             "灵衣时间段 revision 无效".to_owned(),
         ));
     }
+    repair_legacy_full_day_schedule(&mut schedule);
     normalize_and_validate_schedule(&mut schedule.periods).map_err(|error| match error {
         RaimentError::Validation(message) => RaimentError::CorruptData(message),
         other => other,
     })?;
     Ok(schedule)
+}
+
+fn repair_legacy_full_day_schedule(schedule: &mut RaimentSchedule) {
+    let is_legacy_full_day = schedule.periods.len() == 1
+        && parse_time(&schedule.periods[0].start_at)
+            .ok()
+            .zip(parse_time(&schedule.periods[0].end_at).ok())
+            .is_some_and(|(start, end)| start == end);
+    if is_legacy_full_day {
+        // Migration 0020 represented one enabled raiment as a same-time range.
+        // An empty schedule has the same meaning because the default applies all day.
+        schedule.periods.clear();
+    }
 }
 
 fn normalize_and_validate_schedule(periods: &mut [SchedulePeriod]) -> Result<(), RaimentError> {
@@ -1149,8 +1196,13 @@ fn normalize_and_validate_schedule(periods: &mut [SchedulePeriod]) -> Result<(),
         if !ids.insert(period.id.clone()) {
             return Err(RaimentError::validation("时间段 id 不能重复"));
         }
-        if period.raiment_id.is_empty() {
-            return Err(RaimentError::validation("每个时间段都必须选择灵衣"));
+        if period.raiment_id.is_empty() || period.raiment_id.chars().count() > 100 {
+            return Err(RaimentError::validation(
+                "每个时间段都必须选择有效且不超过 100 个字符的灵衣 id",
+            ));
+        }
+        if period.playlist_id.is_some_and(|id| id <= 0) {
+            return Err(RaimentError::validation("背景音乐歌单 id 必须为正整数"));
         }
         let start = parse_time(&period.start_at)?;
         let end = parse_time(&period.end_at)?;
@@ -1308,8 +1360,9 @@ fn next_revision(revision: i64) -> Result<i64, RaimentError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorScheme, RaimentFields, SchedulePeriod, ThemeTokens, is_hex_color, next_revision,
-        normalize_and_validate_schedule, parse_time, validate_fields,
+        ColorScheme, RaimentFields, RaimentSchedule, SchedulePeriod, ThemeTokens, is_hex_color,
+        next_revision, normalize_and_validate_schedule, parse_time,
+        repair_legacy_full_day_schedule, validate_fields,
     };
 
     fn theme() -> ThemeTokens {
@@ -1377,12 +1430,14 @@ mod tests {
                 start_at: "07:00".to_owned(),
                 end_at: "19:00".to_owned(),
                 raiment_id: "saber".to_owned(),
+                playlist_id: Some(1),
             },
             SchedulePeriod {
                 id: "night".to_owned(),
                 start_at: "19:00".to_owned(),
                 end_at: "07:00".to_owned(),
                 raiment_id: "alter-saber".to_owned(),
+                playlist_id: None,
             },
         ];
         assert!(normalize_and_validate_schedule(&mut valid).is_ok());
@@ -1393,8 +1448,26 @@ mod tests {
             start_at: "23:00".to_owned(),
             end_at: "23:30".to_owned(),
             raiment_id: "saber".to_owned(),
+            playlist_id: None,
         });
         assert!(normalize_and_validate_schedule(&mut overlap).is_err());
+    }
+
+    #[test]
+    fn legacy_single_raiment_full_day_schedule_uses_the_default_fallback() {
+        let mut schedule = RaimentSchedule {
+            revision: 3,
+            periods: vec![SchedulePeriod {
+                id: "period-saber".to_owned(),
+                start_at: "07:00".to_owned(),
+                end_at: "07:00".to_owned(),
+                raiment_id: "saber".to_owned(),
+                playlist_id: None,
+            }],
+        };
+        repair_legacy_full_day_schedule(&mut schedule);
+        assert!(schedule.periods.is_empty());
+        assert_eq!(schedule.revision, 3);
     }
 
     #[test]

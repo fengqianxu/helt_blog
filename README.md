@@ -14,6 +14,7 @@ Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compo
 | `frontend` | Vinext/React SSR 前端 | 仅容器网络 |
 | `backend` | Rust/Axum API；启动时执行数据库迁移 | 仅 `api` 容器网络 |
 | `artalk` | Artalk 2.10 评论、审核、回复与反垃圾服务 | 由网关代理到 `/artalk/` |
+| `meting` | 自托管的网易云音乐 / QQ 音乐公开歌单解析服务 | 仅 `api` 容器网络，不对外暴露管理面板 |
 | `postgres` | PostgreSQL 16 业务数据库 | 仅 `database` 容器网络 |
 | `minio` | S3 兼容对象存储 | 仅 `storage` 容器网络 |
 | `minio-init` | 创建公开/私有桶、设置访问策略并幂等写入默认封面、语音和头像 | 一次性任务，成功后退出 |
@@ -28,7 +29,7 @@ Node.js、Rust、PostgreSQL 或 MinIO，只需要 Docker Engine 和 Docker Compo
 | --- | --- |
 | `edge` | 仅 `gateway`，承载宿主机或平台反向代理入口 |
 | `web` | `gateway`、`frontend` |
-| `api` | `gateway`、`backend`、`artalk` |
+| `api` | `gateway`、`backend`、`artalk`、`meting` |
 | `database` | `backend`、`artalk`、`postgres` |
 | `storage` | `gateway`、`backend`、`minio`、`minio-init` |
 
@@ -90,6 +91,15 @@ REQUEST_TIMEOUT_SECS=30
 ASSET_REQUEST_TIMEOUT_SECS=300
 UPSTREAM_REQUEST_TIMEOUT_SECS=15
 ```
+
+后台“歌单”支持两种来源：本地歌单从素材库选择音频，外部歌单可直接粘贴
+网易云音乐或 QQ 音乐的歌单链接/ID。Compose 默认通过内网 `meting` 服务解析
+公开曲目；会员、下架和地区受限内容仍受原平台规则约束。若使用独立维护的
+Meting 兼容服务，可覆盖 `METING_API_URL`，但不要把带管理能力的接口公开给访客。
+歌单作为可复用的数据目录。可在“站点设置 → 灵衣与背景音乐时间段”中为每个
+时间段引用一份已启用歌单；博客会按访客本地时间加载对应歌单，并显示背景音乐
+播放器。浏览器阻止自动播放时，访客点击播放按钮即可继续。公开数据由
+`GET /api/v1/playlists` 提供。
 
 ### 3. 构建并启动
 

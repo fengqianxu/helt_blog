@@ -96,7 +96,7 @@ fn reference_type_label(source_type: &str) -> &'static str {
         "theme_voice" => "开屏语音",
         "raiment_voice" => "灵衣封面语音",
         "raiment_success_voice" => "灵衣登录成功语音",
-        "music_track" => "背景音乐",
+        "music_track" | "playlist_track" => "歌单歌曲",
         "article_cover" => "文章封面",
         "article_content" => "文章内容",
         "theme_cover" | "raiment_cover" => "灵衣封面",

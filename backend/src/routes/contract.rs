@@ -180,7 +180,7 @@ macro_rules! asset_upload_endpoint {
     };
 }
 
-/// v1 的全部 106 个业务端点。
+/// v1 的全部 99 个业务端点。
 ///
 /// 健康检查和 API 索引属于运维入口，不计入产品端点总数。数组顺序按“认证 → 公开
 /// 业务 → 后台业务”排列，与 `技术文档/03-API接口总表.md` 保持一致。
@@ -608,7 +608,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取公开灵衣目录与站点时间段",
         "无查询参数",
-        "200 JSON items[{id,name,cover_url,theme,color_scheme,cover_title,cover_subtitle,cover_character_name,cover_dialogue,cover_voice_label,cover_voice_url?,kanban_configured}]、schedule{revision,periods[{id,start_at,end_at,raiment_id}]}",
+        "200 JSON items[{id,name,cover_url,theme,color_scheme,cover_title,cover_subtitle,cover_character_name,cover_dialogue,cover_voice_label,cover_voice_url?,login_success_voice_url?,kanban_configured}]、schedule{revision,periods[{id,start_at,end_at,raiment_id,playlist_id?}]}、default_raiment_id",
         "封面 URL 可公开访问；不得返回素材 object key、revision、管理字段或内部 object metadata"
     ),
     endpoint!(
@@ -619,10 +619,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/music",
         Anonymous,
         OK,
-        "读取 BGM 列表和播放配置",
+        "读取启用歌单与歌曲引用数据",
         "无查询参数",
-        "200 JSON items[{id,title,artist,file_url,duration_s}]、autoplay、default_volume",
-        "features.music=false 返回 403；曲目按 sort_order/id 排序"
+        "200 JSON items[{id,name,description,source_kind,tracks[]}]",
+        "features.music=false 返回 403；歌单及歌曲按 sort_order/id 排序"
     ),
     // 旧 GET /themes 被 RAIMENT-01 取代并删除。看板娘接口仍是独立待办，
     // 不复用或绕过灵衣已实现的封面/主题持久化。
@@ -1048,7 +1048,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取全部灵衣",
         "无查询参数；v1 数据量小，免分页",
-        "200 JSON items[{id,name,cover_asset_id,cover_asset,theme,enabled,color_scheme,cover_title,cover_subtitle,cover_character_name,cover_dialogue,cover_voice_label,cover_voice_asset_id?,cover_voice_asset?,kanban_asset_id?,is_builtin,revision,created_at,updated_at}]",
+        "200 JSON items[{id,name,cover_asset_id,cover_asset,theme,enabled,sort_order,is_default,color_scheme,cover_title,cover_subtitle,cover_character_name,cover_dialogue,cover_voice_label,cover_voice_asset_id?,cover_voice_asset?,login_success_voice_asset_id?,login_success_voice_asset?,kanban_asset_id?,is_builtin,revision,created_at,updated_at}]",
         "素材 URL/文件信息由服务端派生；返回 revision 供写入时做乐观并发控制"
     ),
     endpoint!(
@@ -1060,7 +1060,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存单套灵衣",
-        "路径 id 为稳定 slug；JSON: revision、name、cover_asset_id、theme、color_scheme、cover_title、cover_subtitle、cover_character_name、cover_dialogue、cover_voice_label、cover_voice_asset_id?、kanban_asset_id?",
+        "路径 id 为稳定 slug；JSON: revision、name、cover_asset_id、theme、enabled、sort_order、is_default、color_scheme、cover_title、cover_subtitle、cover_character_name、cover_dialogue、cover_voice_label、cover_voice_asset_id?、login_success_voice_asset_id?、kanban_asset_id?",
         "200 返回规范化后的灵衣与新 revision",
         "只更新目标灵衣，禁止全量覆盖其它灵衣；revision 冲突返回 409；素材必须 active 且类型匹配；id 创建后不可修改"
     ),
@@ -1073,9 +1073,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         CREATED,
         "新增灵衣",
-        "JSON: name、cover_asset_id、theme、color_scheme、cover_title、cover_subtitle、cover_character_name、cover_dialogue、cover_voice_label、cover_voice_asset_id?、kanban_asset_id?",
+        "JSON: name、cover_asset_id、theme、enabled、sort_order、is_default、color_scheme、cover_title、cover_subtitle、cover_character_name、cover_dialogue、cover_voice_label、cover_voice_asset_id?、login_success_voice_asset_id?、kanban_asset_id?",
         "201 返回创建后的完整灵衣；服务端生成稳定 id",
-        "封面必须为 active 图片；封面语音若提供则必须为 active 音频；看板娘字段若提供则必须为 active Live2D 素材"
+        "封面必须为 active 图片；封面语音和登录成功语音若提供则必须为 active 音频；看板娘字段若提供则必须为 active Live2D 素材"
     ),
     endpoint!(
         "ADMIN-RAIMENT-04",
@@ -1086,9 +1086,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         NO_CONTENT,
         "删除灵衣",
-        "路径 id 为稳定 slug",
+        "路径 id 为稳定 slug；JSON: revision",
         "204 无响应体",
-        "内置灵衣允许删除，但系统必须至少保留一套灵衣；仍被站点时间段引用时返回 409；同步清理封面、语音和看板娘素材引用"
+        "revision 冲突返回 409；内置灵衣允许删除，但系统必须至少保留一套灵衣；仍被站点时间段引用时返回 409；同步清理封面、语音和看板娘素材引用"
     ),
     endpoint!(
         "ADMIN-RAIMENT-05",
@@ -1101,7 +1101,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "读取站点灵衣时间段",
         "无查询参数",
         "200 JSON revision、periods[{id,start_at,end_at,raiment_id}]",
-        "时间使用 24 小时制 HH:MM；允许跨午夜；时间段引用可用灵衣"
+        "时间使用 24 小时制 HH:MM；允许跨午夜；时间段引用可用灵衣，背景音乐可选引用已启用歌单"
     ),
     endpoint!(
         "ADMIN-RAIMENT-06",
@@ -1112,9 +1112,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存站点灵衣时间段",
-        "JSON: revision、periods[{id,start_at,end_at,raiment_id}]",
+        "JSON: revision、periods[{id,start_at,end_at,raiment_id,playlist_id?}]",
         "200 返回规范化时间段与新 revision",
-        "时间段不可重叠且开始/结束不能相同；引用必须存在；revision 冲突返回 409"
+        "时间段不可重叠且开始/结束不能相同；灵衣及歌单引用必须存在且启用；revision 冲突返回 409"
     ),
     endpoint!(
         "ADMIN-MUSIC-01",
@@ -1124,10 +1124,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/music",
         AdminJwt,
         OK,
-        "读取全部 BGM 和播放配置",
+        "读取全部歌单摘要",
         "无查询参数且免分页",
-        "200 JSON items、autoplay、default_volume",
-        "按 sort_order/id 返回全部曲目"
+        "200 JSON items",
+        "按 sort_order/id 返回歌单元数据；本地歌单包含 track_count，曲目通过分页端点按需读取"
     ),
     endpoint!(
         "ADMIN-MUSIC-02",
@@ -1137,10 +1137,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/music",
         AdminJwt,
         CREATED,
-        "新增 BGM 曲目",
-        "JSON: title、artist、asset_id、duration_s?",
-        "201 返回完整曲目",
-        "asset_id 必须是 active 音频素材；时长优先取素材元数据；追加到排序末尾"
+        "新增歌单",
+        "JSON: name?、description、source_kind、external_reference?、enabled",
+        "201 返回歌单摘要",
+        "本地歌单可引用素材库；网易云与 QQ 歌单创建时验证公开曲目"
     ),
     endpoint!(
         "ADMIN-MUSIC-03",
@@ -1150,10 +1150,10 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/music/order",
         AdminJwt,
         OK,
-        "批量调整 BGM 顺序",
-        "JSON: order 为无重复曲目 id 数组",
+        "批量调整歌单顺序",
+        "JSON: order 为无重复歌单 id 数组",
         "200 JSON items 为新顺序",
-        "order 必须完整覆盖当前曲目集合；事务更新连续 sort_order，缺失/重复 id 返回 422"
+        "order 必须完整覆盖当前歌单集合；事务更新连续 sort_order，缺失/重复 id 返回 422"
     ),
     endpoint!(
         "ADMIN-MUSIC-04",
@@ -1163,23 +1163,62 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "/api/v1/admin/music/1",
         AdminJwt,
         NO_CONTENT,
-        "删除 BGM 曲目",
+        "删除歌单",
         "路径参数 id 为正整数",
         "204 无响应体",
-        "删除曲目记录并压缩排序；素材对象仅解除引用，不在此端点物理删除；不存在返回 404"
+        "被灵衣时间段引用的歌单不能删除；删除其它歌单及其本地曲目；素材对象仅解除引用，不在此端点物理删除；不存在返回 404"
     ),
     endpoint!(
         "ADMIN-MUSIC-05",
         "后台主题媒体",
         Put,
-        "/api/v1/admin/music/settings",
-        "/api/v1/admin/music/settings",
+        "/api/v1/admin/playlists/{id}",
+        "/api/v1/admin/playlists/1",
         AdminJwt,
         OK,
-        "保存 BGM 播放设置",
-        "JSON: autoplay、default_volume=0..1",
-        "200 JSON autoplay、default_volume",
-        "音量越界返回 422；写入 site_settings.music 并使公开缓存失效"
+        "更新歌单名称、说明与启用状态",
+        "路径参数 id 为正整数；JSON: name、description、enabled",
+        "200 返回更新后的歌单摘要",
+        "歌单名称不能为空且最多 120 字符；被灵衣时间段引用的歌单不能停用；不存在返回 404"
+    ),
+    endpoint!(
+        "ADMIN-MUSIC-06",
+        "后台主题媒体",
+        Get,
+        "/api/v1/admin/playlists/{id}/tracks",
+        "/api/v1/admin/playlists/1/tracks?page=1&per_page=10",
+        AdminJwt,
+        OK,
+        "分页读取指定歌单的歌曲",
+        "路径参数 id 为正整数；Query: page>=1、per_page=1..100",
+        "200 JSON page、per_page、total、items、status、status_message",
+        "本地歌曲通过数据库 LIMIT/OFFSET 分页；外部来源不可用时返回 unavailable 状态与空列表"
+    ),
+    endpoint!(
+        "ADMIN-MUSIC-07",
+        "后台主题媒体",
+        Post,
+        "/api/v1/admin/playlists/{id}/tracks",
+        "/api/v1/admin/playlists/1/tracks",
+        AdminJwt,
+        CREATED,
+        "向本地歌单添加素材歌曲",
+        "路径参数 id 为正整数；JSON: asset_id、title?、artist、duration_s",
+        "201 返回新建歌曲",
+        "仅本地歌单可添加素材库中的 active 音频；重复引用返回 409"
+    ),
+    endpoint!(
+        "ADMIN-MUSIC-08",
+        "后台主题媒体",
+        Delete,
+        "/api/v1/admin/playlists/{id}/tracks/{track_id}",
+        "/api/v1/admin/playlists/1/tracks/1",
+        AdminJwt,
+        NO_CONTENT,
+        "从本地歌单移除歌曲",
+        "路径参数 id、track_id 为正整数",
+        "204 无响应体",
+        "只删除歌单歌曲引用，不删除素材对象；歌单或歌曲不存在返回 404"
     ),
     endpoint!(
         "ADMIN-VOICE-01",
@@ -1473,6 +1512,7 @@ pub fn router() -> Router<AppState> {
                 && !super::bangumi::implements(contract.method, contract.path)
                 && !super::games::implements(contract.method, contract.path)
                 && !super::llm::implements(contract.method, contract.path)
+                && !super::playlists::implements(contract.method, contract.path)
                 && !super::raiments::implements(contract.method, contract.path)
         })
         .fold(Router::new(), |router, contract| {
@@ -1580,6 +1620,7 @@ mod tests {
             artalk_admin_name: "test".to_owned(),
             artalk_admin_email: "test@example.com".to_owned(),
             artalk_admin_password: "test".to_owned(),
+            meting_api_url: None,
             llm_encryption_key_version: 1,
             llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
             llm_encryption_previous_key_version: None,
@@ -1601,8 +1642,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_96_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 96);
+    fn catalog_contains_99_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 99);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1670,7 +1711,7 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 77);
+        assert_eq!(admin_count, 80);
         assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 19);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
@@ -1717,7 +1758,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 10_790_356_531_026_020_931,
+            fingerprint, 8_960_414_761_448_318_737,
             "update only after reviewing the full catalog"
         );
     }

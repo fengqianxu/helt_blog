@@ -21,6 +21,7 @@ export type RaimentSchedulePeriod = {
   start_at: string;
   end_at: string;
   raiment_id: string;
+  playlist_id: number | null;
 };
 
 export type RaimentSchedule = {
@@ -52,16 +53,7 @@ export type PublicRaimentPayload = {
 
 export function scheduledRaimentId(payload: PublicRaimentPayload, date = new Date()) {
   const available = new Set(payload.items.map((item) => item.id));
-  const minutes = date.getHours() * 60 + date.getMinutes();
-  const active = payload.schedule.periods.find((period) => {
-    const [startHour, startMinute] = period.start_at.split(":").map(Number);
-    const [endHour, endMinute] = period.end_at.split(":").map(Number);
-    const start = startHour * 60 + startMinute;
-    const end = endHour * 60 + endMinute;
-    return start < end
-      ? minutes >= start && minutes < end
-      : minutes >= start || minutes < end;
-  });
+  const active = scheduledPeriod(payload.schedule, date);
   if (active && available.has(active.raiment_id)) return active.raiment_id;
   if (available.has(payload.default_raiment_id)) return payload.default_raiment_id;
   return payload.items[0]?.id || "";
@@ -108,6 +100,61 @@ export type AssetDetailPayload = {
     admin_path: string;
   }>;
 };
+
+export type PlaylistTrack = {
+  id: string;
+  title: string;
+  artist: string;
+  url: string;
+  cover_url: string | null;
+  source_kind: "local" | "netease" | "qq";
+  duration_s: number;
+  sort_order: number;
+  asset_id: number | null;
+};
+
+export type AdminPlaylist = {
+  id: number;
+  name: string;
+  description: string;
+  source_kind: "local" | "netease" | "qq";
+  external_id: string | null;
+  external_url: string | null;
+  enabled: boolean;
+  sort_order: number;
+  status: "ready" | "unavailable";
+  status_message: string | null;
+  track_count: number | null;
+  tracks?: PlaylistTrack[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlaylistPayload = {
+  items: AdminPlaylist[];
+};
+
+export type PlaylistTracksPayload = {
+  page: number;
+  per_page: number;
+  total: number;
+  items: PlaylistTrack[];
+  status: "ready" | "unavailable";
+  status_message: string | null;
+};
+
+export function scheduledPeriod(schedule: RaimentSchedule, date = new Date()) {
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  return schedule.periods.find((period) => {
+    const [startHour, startMinute] = period.start_at.split(":").map(Number);
+    const [endHour, endMinute] = period.end_at.split(":").map(Number);
+    const start = startHour * 60 + startMinute;
+    const end = endHour * 60 + endMinute;
+    return start < end
+      ? minutes >= start && minutes < end
+      : minutes >= start || minutes < end;
+  }) || null;
+}
 
 type ApiErrorPayload = {
   error?: { code?: string; message?: string };

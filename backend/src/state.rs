@@ -31,6 +31,8 @@ struct Inner {
     pub minio_health_url: String,
     pub object_storage: ObjectStorage,
     pub artalk: ArtalkClient,
+    pub meting_api_url: Option<String>,
+    pub meting_http_client: Client,
     pub started_at: DateTime<Utc>,
     pub auth_jwt_secret: String,
     pub llm_keyring: LlmKeyring,
@@ -55,6 +57,12 @@ impl AppState {
             .timeout(Duration::from_secs(config.asset_request_timeout_secs))
             .build()
             .context("failed to construct object-storage HTTP client")?;
+        let meting_http_client = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(config.upstream_request_timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to construct music-provider HTTP client")?;
         let rp_origin = Url::parse(&config.public_origin)
             .context("PUBLIC_ORIGIN must be an absolute URL for Passkey support")?;
         let rp_id = rp_origin
@@ -91,6 +99,8 @@ impl AppState {
                 config.minio_public_bucket.clone(),
             ),
             artalk,
+            meting_api_url: config.meting_api_url.clone(),
+            meting_http_client,
             started_at: Utc::now(),
             auth_jwt_secret: config.auth_jwt_secret.clone(),
             llm_keyring,
@@ -126,6 +136,14 @@ impl AppState {
 
     pub fn artalk(&self) -> &ArtalkClient {
         &self.0.artalk
+    }
+
+    pub fn meting_api_url(&self) -> Option<&str> {
+        self.0.meting_api_url.as_deref()
+    }
+
+    pub fn meting_http_client(&self) -> &Client {
+        &self.0.meting_http_client
     }
 
     pub fn started_at(&self) -> DateTime<Utc> {

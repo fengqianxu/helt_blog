@@ -17,7 +17,7 @@ type AdminRaiment = {
   id: string;
   name: string;
   cover_asset_id: number;
-  cover_asset: AdminAsset;
+  cover_asset: LinkedRaimentAsset;
   theme: ThemeTokens;
   enabled: boolean;
   sort_order: number;
@@ -29,15 +29,17 @@ type AdminRaiment = {
   cover_dialogue: string;
   cover_voice_label: string;
   cover_voice_asset_id: number | null;
-  cover_voice_asset: AdminAsset | null;
+  cover_voice_asset: LinkedRaimentAsset | null;
   login_success_voice_asset_id: number | null;
-  login_success_voice_asset: AdminAsset | null;
+  login_success_voice_asset: LinkedRaimentAsset | null;
   kanban_asset_id: number | null;
   is_builtin: boolean;
   revision: number;
   created_at: string;
   updated_at: string;
 };
+
+type LinkedRaimentAsset = Pick<AdminAsset, "id" | "name" | "media_type" | "file">;
 
 type AdminRaimentPayload = {
   items: AdminRaiment[];
@@ -301,6 +303,8 @@ export function RaimentSettings({ notify }: { notify: Notify }) {
       const response = await fetch(`/api/v1/admin/raiments/${encodeURIComponent(selected.id)}`, {
         method: "DELETE",
         credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision: selected.revision }),
       });
       if (!response.ok) {
         throw new Error(await responseMessage(response, "灵衣删除失败"));

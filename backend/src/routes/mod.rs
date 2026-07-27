@@ -5,6 +5,7 @@ pub mod contract;
 pub mod games;
 mod health;
 mod llm;
+mod playlists;
 mod raiments;
 
 use std::time::Duration;
@@ -36,6 +37,7 @@ pub fn router(request_timeout_secs: u64, asset_request_timeout_secs: u64) -> Rou
         .merge(bangumi::router())
         .merge(games::router())
         .merge(llm::router())
+        .merge(playlists::router())
         .merge(raiments::router())
         // 尚未实现的业务处理器继续注册契约占位路由；每个占位端点返回统一 501。
         // 已实现的业务域会在 contract::router 中自动排除，契约测试仍校验路径和方法不漂移。
@@ -100,6 +102,7 @@ mod tests {
             artalk_admin_name: "test".to_owned(),
             artalk_admin_email: "test@example.com".to_owned(),
             artalk_admin_password: "test".to_owned(),
+            meting_api_url: None,
             llm_encryption_key_version: 1,
             llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
             llm_encryption_previous_key_version: None,

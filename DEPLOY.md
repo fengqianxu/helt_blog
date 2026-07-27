@@ -6,7 +6,7 @@
 - `docker-compose.yml`：用于 Docker Engine + 官方 Compose 插件，默认只监听宿主机 `127.0.0.1:18080`。
 - `docker-compose.debug.yml`：可选的本机调试覆盖文件，显式开放后端、数据库和 MinIO；生产环境不加载。
 
-两种方式都会启动网关、前端、后端、Artalk、PostgreSQL 与 MinIO；数据库迁移和对象桶初始化会在首次启动时自动完成。
+两种方式都会启动网关、前端、后端、Artalk、Meting 歌单解析、PostgreSQL 与 MinIO；数据库迁移和对象桶初始化会在首次启动时自动完成。
 
 ## Coolify（推荐）
 
@@ -39,7 +39,7 @@
    慢速大文件上传可单独设置 `ASSET_REQUEST_TIMEOUT_SECS`（30–3600），无需放宽
    普通 API；对应的 `REQUEST_TIMEOUT_SECS` 范围为 1–300，
    `UPSTREAM_REQUEST_TIMEOUT_SECS` 范围为 1–120。
-5. 点击 Deploy。不要给 `frontend`、`backend`、`artalk`、`postgres` 或 `minio` 分配域名。
+5. 点击 Deploy。不要给 `frontend`、`backend`、`artalk`、`meting`、`postgres` 或 `minio` 分配域名。
 
 Coolify 会自动生成并持久保存以下密码，无需手工创建：
 
@@ -67,7 +67,7 @@ https://blog.example.com/health/ready
 
 Coolify 配置不发布任何宿主机端口，并使用入口 `edge` 网络，以及 `web`、
 `api`、`database` 和 `storage` 四个隔离的内部网络。持久化数据保存在 `postgres_data`、
-`minio_data` 和 `artalk_data` 命名卷中。`minio-init` 是正常执行后退出的一次性任务，已从
+`minio_data`、`artalk_data` 和 `meting_data` 命名卷中。`minio-init` 是正常执行后退出的一次性任务，已从
 Coolify 总体健康检查中排除。
 
 > `exclude_from_hc` 是 Coolify 的 Compose 扩展字段，因此不要用原生 `docker compose` 运行 `docker-compose.coolify.yml`；原生部署请使用默认的 `docker-compose.yml`。

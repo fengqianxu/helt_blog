@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import dynamic from "next/dynamic";
-import { createContext, FormEvent, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, type CSSProperties, FormEvent, type PointerEvent as ReactPointerEvent, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -18,18 +18,22 @@ import { AssetManager } from "./admin/AssetManager";
 import { LlmSettings } from "./admin/LlmSettings";
 import { RaimentSettings } from "./admin/RaimentSettings";
 import { SiteSettings } from "./admin/SiteSettings";
+import { PlaylistSettings } from "./admin/PlaylistSettings";
 import {
   AdminIdentity,
   AdminAsset,
+  AdminPlaylist,
   assetLabels,
   cx,
   DEFAULT_PROFILE_AVATAR_URL,
   isJsonResponse,
   Notify,
+  PlaylistPayload,
   PublicRaimentPayload,
   PublicProfile,
   RaimentSchedule,
   responseMessage,
+  scheduledPeriod,
   Theme,
   ThemeTokens,
 } from "./admin/shared";
@@ -119,8 +123,8 @@ const DEFAULT_RAIMENT_CATALOG: RaimentCatalog = {
   schedule: {
     revision: 1,
     periods: [
-      { id: "period-saber", start_at: "07:00", end_at: "19:00", raiment_id: "saber" },
-      { id: "period-alter-saber", start_at: "19:00", end_at: "07:00", raiment_id: "alter-saber" },
+      { id: "period-saber", start_at: "07:00", end_at: "19:00", raiment_id: "saber", playlist_id: null },
+      { id: "period-alter-saber", start_at: "19:00", end_at: "07:00", raiment_id: "alter-saber", playlist_id: null },
     ],
   },
 };
@@ -210,17 +214,7 @@ const catalogFromPayload = (payload: PublicRaimentPayload): RaimentCatalog => ({
 
 const raimentFromSchedule = (catalog: RaimentCatalog): string => {
   if (!catalog.order.length) return "saber";
-  const now = new Date();
-  const minutes = now.getHours() * 60 + now.getMinutes();
-  const active = catalog.schedule.periods.find((period) => {
-    const [startHour, startMinute] = period.start_at.split(":").map(Number);
-    const [endHour, endMinute] = period.end_at.split(":").map(Number);
-    const start = startHour * 60 + startMinute;
-    const end = endHour * 60 + endMinute;
-    return start < end
-      ? minutes >= start && minutes < end
-      : minutes >= start || minutes < end;
-  });
+  const active = scheduledPeriod(catalog.schedule);
   return active && catalog.items[active.raiment_id]
     ? active.raiment_id
     : catalog.items[catalog.defaultId]
@@ -302,7 +296,6 @@ export function BlogApp() {
   const theme = raimentCatalog.items[activeRaimentId]?.mode || "day";
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [playerOpen, setPlayerOpen] = useState(true);
   const [themeTransition, setThemeTransition] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: "normal" | "success" | "danger" } | null>(null);
   const [easterEgg, setEasterEgg] = useState(false);
@@ -423,6 +416,10 @@ export function BlogApp() {
 
   const toggleTheme = () => {
     if (themeTransition) return;
+    if (raimentCatalog.order.length < 2) {
+      notify("当前只有一套可用灵衣");
+      return;
+    }
     setThemeTransition(true);
     window.setTimeout(() => {
       const currentIndex = raimentCatalog.order.indexOf(activeRaimentId);
@@ -441,7 +438,7 @@ export function BlogApp() {
   if (pathname.startsWith("/admin")) return <RaimentContext.Provider value={activeCatalog}><AdminRouter pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />{themeTransition && <ThemeBlade />}{toast && <Toast {...toast} />}</RaimentContext.Provider>;
 
   let page: React.ReactNode;
-  if (pathname === "/") page = <HomePage key={activeRaimentId} toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
+  if (pathname === "/") page = <HomePage toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
   else if (pathname.startsWith("/posts/")) {
     const slug = pathname.split("/").filter(Boolean)[1];
     page = <ArticlePage slug={slug} theme={theme} notify={notify} />;
@@ -458,7 +455,8 @@ export function BlogApp() {
       {pathname !== "/" && <TopNav {...common} />}
       {page}
       {pathname !== "/" && <Footer />}
-      <FloatingTools toggleTheme={toggleTheme} playerOpen={playerOpen} setPlayerOpen={setPlayerOpen} notify={notify} />
+      <BackgroundMusic schedule={raimentCatalog.schedule} />
+      <FloatingTools toggleTheme={toggleTheme} />
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
       {themeTransition && <ThemeBlade />}
       {toast && <Toast {...toast} />}
@@ -471,6 +469,412 @@ function ThemeBlade() { return <div className="theme-blade" aria-hidden="true"><
 
 function Toast({ message, tone }: { message: string; tone: "normal" | "success" | "danger" }) {
   return <div className={cx("toast", `toast-${tone}`)} role="status"><span>{tone === "success" ? "✓" : tone === "danger" ? "!" : "◆"}</span>{message}</div>;
+}
+
+function formatAudioTime(seconds: number) {
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  return `${Math.floor(safeSeconds / 60)}:${String(safeSeconds % 60).padStart(2, "0")}`;
+}
+
+type MusicPlayerPosition = { x: number; y: number };
+type MusicPlayerDock = "left" | "right";
+
+const MUSIC_PLAYER_LAYOUT_KEY = "helt-bgm-player-layout";
+
+function fitMusicPlayerPosition(position: MusicPlayerPosition, width: number, height: number, edge = 8) {
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight;
+  return {
+    x: Math.min(Math.max(edge, position.x), Math.max(edge, viewportWidth - width - edge)),
+    y: Math.min(Math.max(edge, position.y), Math.max(edge, viewportHeight - height - edge)),
+  };
+}
+
+function BackgroundMusic({ schedule }: { schedule: RaimentSchedule }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playerRef = useRef<HTMLElement | null>(null);
+  const wantsPlayback = useRef(true);
+  const lastAudibleVolume = useRef(.45);
+  const dragState = useRef<{ pointerId: number; offsetX: number; offsetY: number } | null>(null);
+  const dragCleanup = useRef<(() => void) | null>(null);
+  const positionRef = useRef<MusicPlayerPosition | null>(null);
+  const expandedPosition = useRef<MusicPlayerPosition | null>(null);
+  const dockRef = useRef<MusicPlayerDock>("left");
+  const [playlistId, setPlaylistId] = useState<number | null>(null);
+  const [playlist, setPlaylist] = useState<AdminPlaylist | null>(null);
+  const [trackIndex, setTrackIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(.45);
+  const [playerPosition, setPlayerPosition] = useState<MusicPlayerPosition | null>(null);
+  const [minimized, setMinimized] = useState(true);
+  const [dockedSide, setDockedSide] = useState<MusicPlayerDock>("left");
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    const sync = () => setPlaylistId(scheduledPeriod(schedule)?.playlist_id ?? null);
+    sync();
+    const timer = window.setInterval(sync, 30_000);
+    return () => window.clearInterval(timer);
+  }, [schedule]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const raw = localStorage.getItem("helt-bgm-volume");
+        const stored = raw === null ? Number.NaN : Number(raw);
+        if (Number.isFinite(stored) && stored >= 0 && stored <= 1) {
+          setVolume(stored);
+          if (stored > 0) lastAudibleVolume.current = stored;
+        }
+      } catch {
+        // Background music remains usable when storage is unavailable.
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const raw = localStorage.getItem(MUSIC_PLAYER_LAYOUT_KEY);
+        if (!raw) return;
+        const stored = JSON.parse(raw) as {
+          position?: MusicPlayerPosition;
+          expandedPosition?: MusicPlayerPosition;
+          minimized?: boolean;
+          dockedSide?: MusicPlayerDock;
+        };
+        const validPosition = (value: MusicPlayerPosition | undefined) => value
+          && Number.isFinite(value.x)
+          && Number.isFinite(value.y);
+        if (validPosition(stored.position)) {
+          positionRef.current = stored.position!;
+          setPlayerPosition(stored.position!);
+        }
+        if (validPosition(stored.expandedPosition)) expandedPosition.current = stored.expandedPosition!;
+        if (stored.dockedSide === "left" || stored.dockedSide === "right") {
+          dockRef.current = stored.dockedSide;
+          setDockedSide(stored.dockedSide);
+        }
+        setMinimized(true);
+      } catch {
+        // Ignore stale or malformed layout preferences.
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    if (playlistId === null) return () => controller.abort();
+    void fetch("/api/v1/playlists", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("歌单加载失败");
+        return response.json() as Promise<PlaylistPayload>;
+      })
+      .then((payload) => {
+        setTrackIndex(0);
+        setPlaying(false);
+        setCurrentTime(0);
+        setDuration(0);
+        setPlaylist(payload.items.find((item) => item.id === playlistId) || null);
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          console.warn("Scheduled background playlist is unavailable", error);
+        }
+      });
+    return () => controller.abort();
+  }, [playlistId]);
+
+  const activePlaylist = playlist?.id === playlistId ? playlist : null;
+  const tracks = activePlaylist?.tracks || [];
+  const track = tracks[trackIndex] || null;
+  const hasPlayerPosition = playerPosition !== null;
+
+  useEffect(() => {
+    const keepPlayerInView = () => {
+      const player = playerRef.current;
+      if (!player || (!positionRef.current && !minimized)) return;
+      const rect = player.getBoundingClientRect();
+      const current = positionRef.current || { x: rect.left, y: rect.top };
+      const next = minimized
+        ? {
+            x: dockedSide === "left" ? 0 : Math.max(0, document.documentElement.clientWidth - rect.width),
+            y: Math.min(Math.max(8, current.y), Math.max(8, window.innerHeight - rect.height - 8)),
+          }
+        : fitMusicPlayerPosition(current, rect.width, rect.height);
+      positionRef.current = next;
+      setPlayerPosition((previous) => previous && previous.x === next.x && previous.y === next.y ? previous : next);
+    };
+    keepPlayerInView();
+    window.addEventListener("resize", keepPlayerInView);
+    return () => window.removeEventListener("resize", keepPlayerInView);
+  }, [dockedSide, hasPlayerPosition, minimized, track]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !track) return;
+    audio.load();
+    setCurrentTime(0);
+    setDuration(track.duration_s);
+    if (wantsPlayback.current) {
+      void audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+    }
+  }, [track]);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume;
+  }, [volume, track]);
+
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    dragCleanup.current?.();
+  }, []);
+
+  const advance = (delta: number) => {
+    if (!tracks.length) return;
+    const next = (trackIndex + delta + tracks.length) % tracks.length;
+    if (next === trackIndex) {
+      const audio = audioRef.current;
+      if (!audio) return;
+      audio.currentTime = 0;
+      if (wantsPlayback.current) {
+        void audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+      }
+      return;
+    }
+    setTrackIndex(next);
+  };
+
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      wantsPlayback.current = false;
+      audio.pause();
+      setPlaying(false);
+      return;
+    }
+    wantsPlayback.current = true;
+    void audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+  };
+
+  const changeVolume = (next: number) => {
+    setVolume(next);
+    if (next > 0) lastAudibleVolume.current = next;
+    if (audioRef.current) audioRef.current.volume = next;
+    try {
+      localStorage.setItem("helt-bgm-volume", String(next));
+    } catch {
+      // Keep the in-memory value when storage is unavailable.
+    }
+  };
+
+  const toggleMute = () => changeVolume(volume > 0 ? 0 : lastAudibleVolume.current);
+
+  const placePlayer = (next: MusicPlayerPosition) => {
+    positionRef.current = next;
+    setPlayerPosition(next);
+  };
+
+  const persistPlayerLayout = (
+    nextPosition: MusicPlayerPosition | null,
+    nextMinimized: boolean,
+    nextDock: MusicPlayerDock,
+  ) => {
+    try {
+      localStorage.setItem(MUSIC_PLAYER_LAYOUT_KEY, JSON.stringify({
+        position: nextPosition,
+        expandedPosition: expandedPosition.current,
+        minimized: nextMinimized,
+        dockedSide: nextDock,
+      }));
+    } catch {
+      // Keep the layout in memory when storage is unavailable.
+    }
+  };
+
+  const beginPlayerDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as Element).closest("button, input, label, a")) return;
+    const player = playerRef.current;
+    if (!player) return;
+    const rect = player.getBoundingClientRect();
+    dragState.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    };
+    event.preventDefault();
+    setDragging(true);
+    dragCleanup.current?.();
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      dragCleanup.current = null;
+    };
+    const move = (pointerEvent: PointerEvent) => {
+      const drag = dragState.current;
+      const activePlayer = playerRef.current;
+      if (!drag || drag.pointerId !== pointerEvent.pointerId || !activePlayer) return;
+      pointerEvent.preventDefault();
+      const activeRect = activePlayer.getBoundingClientRect();
+      if (minimized) {
+        const nextDock: MusicPlayerDock = pointerEvent.clientX <= document.documentElement.clientWidth / 2 ? "left" : "right";
+        const next = {
+          x: nextDock === "left" ? 0 : Math.max(0, document.documentElement.clientWidth - activeRect.width),
+          y: Math.min(Math.max(8, pointerEvent.clientY - drag.offsetY), Math.max(8, window.innerHeight - activeRect.height - 8)),
+        };
+        if (dockRef.current !== nextDock) {
+          dockRef.current = nextDock;
+          setDockedSide(nextDock);
+        }
+        placePlayer(next);
+        return;
+      }
+      placePlayer(fitMusicPlayerPosition({
+        x: pointerEvent.clientX - drag.offsetX,
+        y: pointerEvent.clientY - drag.offsetY,
+      }, activeRect.width, activeRect.height));
+    };
+    const finish = (pointerEvent: PointerEvent) => {
+      const drag = dragState.current;
+      if (!drag || drag.pointerId !== pointerEvent.pointerId) return;
+      cleanup();
+      dragState.current = null;
+      setDragging(false);
+      if (!minimized && positionRef.current) expandedPosition.current = positionRef.current;
+      persistPlayerLayout(positionRef.current, minimized, dockRef.current);
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    dragCleanup.current = cleanup;
+  };
+
+  const togglePlayerMinimized = () => {
+    const player = playerRef.current;
+    if (!player) return;
+    const rect = player.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth;
+    if (!minimized) {
+      const nextDock: MusicPlayerDock = rect.left + rect.width / 2 <= viewportWidth / 2 ? "left" : "right";
+      const currentExpanded = { x: rect.left, y: rect.top };
+      const next = {
+        x: nextDock === "left" ? 0 : Math.max(0, viewportWidth - 64),
+        y: Math.min(Math.max(8, rect.top), Math.max(8, window.innerHeight - 72)),
+      };
+      expandedPosition.current = currentExpanded;
+      dockRef.current = nextDock;
+      setDockedSide(nextDock);
+      placePlayer(next);
+      setMinimized(true);
+      persistPlayerLayout(next, true, nextDock);
+      return;
+    }
+    const compactReserve = viewportWidth <= 430 ? 64 : viewportWidth <= 768 ? 72 : 116;
+    const expectedWidth = Math.min(560, Math.max(240, viewportWidth - compactReserve));
+    const expectedHeight = viewportWidth <= 768 ? 82 : 92;
+    const fallback = {
+      x: dockedSide === "left" ? 10 : viewportWidth - expectedWidth - 10,
+      y: Math.min(Math.max(8, rect.top), Math.max(8, window.innerHeight - expectedHeight - 8)),
+    };
+    const next = fitMusicPlayerPosition(expandedPosition.current || fallback, expectedWidth, expectedHeight);
+    placePlayer(next);
+    setMinimized(false);
+    persistPlayerLayout(next, false, dockedSide);
+  };
+
+  if (!activePlaylist || !track) return null;
+  const effectiveDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const progressMax = effectiveDuration || Math.max(1, currentTime);
+  const progressPercent = Math.min(100, Math.max(0, (currentTime / progressMax) * 100));
+  const progressStyle = { "--range-fill": `${progressPercent}%` } as CSSProperties;
+  const volumeStyle = { "--range-fill": `${volume * 100}%` } as CSSProperties;
+  const playerStyle = playerPosition ? {
+    left: playerPosition.x,
+    top: playerPosition.y,
+    right: "auto",
+    bottom: "auto",
+  } as CSSProperties : undefined;
+
+  return <aside
+    ref={playerRef}
+    className={cx(
+      "background-music-player",
+      playing && "is-playing",
+      dragging && "is-dragging",
+      minimized && "is-minimized",
+      playerPosition && "has-custom-position",
+      minimized && `dock-${dockedSide}`,
+    )}
+    style={playerStyle}
+    aria-label={`背景音乐：${activePlaylist.name}`}
+    onPointerDown={beginPlayerDrag}
+  >
+    <audio
+      ref={audioRef}
+      src={track.url}
+      preload="metadata"
+      onPlay={() => setPlaying(true)}
+      onPause={() => setPlaying(false)}
+      onEnded={() => advance(1)}
+      onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+      onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : track.duration_s)}
+      onError={() => setPlaying(false)}
+    />
+    <span className="background-music-drag-cue" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
+    <button type="button" className="background-music-collapse" onClick={togglePlayerMinimized} aria-label={minimized ? "展开音乐播放器" : "收起音乐播放器到边缘"} aria-expanded={!minimized} title={minimized ? "展开播放器" : "收起到边缘"}>
+      {minimized
+        ? <svg viewBox="0 0 24 24"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5" /></svg>
+        : <svg viewBox="0 0 24 24"><path d="M6 7h12v10H6zM9 12h6" /></svg>
+      }
+    </button>
+    <div className="background-music-art" aria-hidden="true">
+      <span className="background-music-disc">
+        <svg viewBox="0 0 24 24"><path d="M9.5 17.5V7.2l8-1.7v9.2M9.5 17.5c0 1.4-1.3 2.5-3 2.5s-3-1.1-3-2.5 1.3-2.5 3-2.5 3 1.1 3 2.5Zm8-2.8c0 1.4-1.3 2.5-3 2.5s-3-1.1-3-2.5 1.3-2.5 3-2.5 3 1.1 3 2.5Z" /></svg>
+      </span>
+      <span className="background-music-equalizer"><i /><i /><i /><i /></span>
+    </div>
+    <div className="background-music-copy" aria-live="polite">
+      <small><i />{activePlaylist.name}<em>{String(trackIndex + 1).padStart(2, "0")} / {String(tracks.length).padStart(2, "0")}</em></small>
+      <b title={track.title}>{track.title}</b>
+      <span>{track.artist || "未知艺人"}</span>
+    </div>
+    <div className="background-music-controls">
+      <button type="button" onClick={() => advance(-1)} aria-label="上一首" title="上一首"><svg viewBox="0 0 24 24"><path d="M6 5v14M18 6l-8 6 8 6V6Z" /></svg></button>
+      <button type="button" className="background-music-toggle" onClick={togglePlayback} aria-label={playing ? "暂停背景音乐" : "播放背景音乐"} aria-pressed={playing}>{playing
+        ? <svg viewBox="0 0 24 24"><path d="M8 6v12M16 6v12" /></svg>
+        : <svg viewBox="0 0 24 24"><path className="play-shape" d="m9 6 9 6-9 6V6Z" /></svg>
+      }</button>
+      <button type="button" onClick={() => advance(1)} aria-label="下一首" title="下一首"><svg viewBox="0 0 24 24"><path d="m6 6 8 6-8 6V6Zm12-1v14" /></svg></button>
+    </div>
+    <div className="background-music-timeline">
+      <span>{formatAudioTime(currentTime)}</span>
+      <label className="background-music-progress">
+        <span className="sr-only">播放进度</span>
+        <input style={progressStyle} type="range" min={0} max={progressMax} step={.1} value={Math.min(currentTime, progressMax)} onChange={(event) => {
+          const next = Number(event.target.value);
+          if (audioRef.current) audioRef.current.currentTime = next;
+          setCurrentTime(next);
+        }} />
+      </label>
+      <span>{formatAudioTime(effectiveDuration)}</span>
+    </div>
+    <div className="background-music-volume">
+      <button type="button" onClick={toggleMute} aria-label={volume === 0 ? "恢复背景音乐音量" : "静音背景音乐"} aria-pressed={volume === 0} title={volume === 0 ? "恢复音量" : "静音"}>
+        <svg viewBox="0 0 24 24"><path d="M5 10v4h3l4 3V7l-4 3H5Z" /><path className="volume-wave" d={volume === 0 ? "m16 10 4 4m0-4-4 4" : "M16 9.5c1.4 1.4 1.4 3.6 0 5M18.5 7c2.8 2.8 2.8 7.2 0 10"} /></svg>
+      </button>
+      <label>
+        <span className="sr-only">背景音乐音量</span>
+        <input style={volumeStyle} type="range" min={0} max={1} step={.05} value={volume} onChange={(event) => changeVolume(Number(event.target.value))} />
+      </label>
+    </div>
+  </aside>;
 }
 
 function EasterEgg({ onClose }: { onClose: () => void }) {
@@ -524,6 +928,7 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
   const [menuOpen, setMenuOpen] = useState(false);
   const [navElevated, setNavElevated] = useState(false);
   const [voicePlaying, setVoicePlaying] = useState(false);
+  const [voiceSource, setVoiceSource] = useState("");
   const [voiceSeconds, setVoiceSeconds] = useState(0);
   const [voiceDuration, setVoiceDuration] = useState(0);
   const voiceRef = useRef<HTMLAudioElement | null>(null);
@@ -562,18 +967,26 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
     voiceRef.current?.pause();
     voiceRef.current = null;
   }, [raiment.coverVoiceUrl]);
+  const voiceActive = voicePlaying && voiceSource === raiment.coverVoiceUrl;
   const toggleCoverVoice = () => {
     if (!raiment.coverVoiceUrl) {
       notify("当前灵衣还没有配置封面语音", "danger");
       return;
     }
+    const sourceHref = new URL(raiment.coverVoiceUrl, window.location.href).href;
     let audio = voiceRef.current;
-    if (!audio || audio.src !== new URL(raiment.coverVoiceUrl, window.location.href).href) {
+    const shouldPause = voiceActive && audio?.src === sourceHref;
+    if (!audio || audio.src !== sourceHref) {
       audio?.pause();
       audio = new Audio(raiment.coverVoiceUrl);
       audio.preload = "metadata";
+      setVoiceSource(raiment.coverVoiceUrl);
+      setVoicePlaying(false);
+      setVoiceSeconds(0);
+      setVoiceDuration(0);
       audio.ontimeupdate = () => setVoiceSeconds(Math.floor(audio?.currentTime || 0));
       audio.onloadedmetadata = () => setVoiceDuration(Math.floor(audio?.duration || 0));
+      audio.onpause = () => setVoicePlaying(false);
       audio.onended = () => {
         setVoicePlaying(false);
         setVoiceSeconds(0);
@@ -581,12 +994,13 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
       };
       voiceRef.current = audio;
     }
-    if (voicePlaying) {
+    if (shouldPause) {
       audio.pause();
       setVoicePlaying(false);
       notify("语音已暂停");
     } else {
       void audio.play().then(() => {
+        if (voiceRef.current !== audio) return;
         setVoicePlaying(true);
         notify("开始播放开屏语音");
       }).catch(() => notify("语音加载或播放失败，请稍后再试", "danger"));
@@ -614,7 +1028,7 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
           <h1>{raiment.coverTitle}</h1>
           <p>{raiment.coverSubtitle}</p>
           <div className="hero-actions">
-            {raiment.coverVoiceUrl && <button className={cx("voice-button", voicePlaying && "is-playing")} aria-pressed={voicePlaying} onClick={toggleCoverVoice}><b>{voicePlaying ? "Ⅱ" : "▶"}</b><span className="wave"><i /><i /><i /><i /><i /><i /></span><span>{voicePlaying ? `播放中 ${Math.floor(voiceSeconds / 60)}:${String(voiceSeconds % 60).padStart(2, "0")} / ${Math.floor(voiceDuration / 60)}:${String(voiceDuration % 60).padStart(2, "0")}` : raiment.coverVoiceLabel}</span></button>}
+            {raiment.coverVoiceUrl && <button className={cx("voice-button", voiceActive && "is-playing")} aria-pressed={voiceActive} onClick={toggleCoverVoice}><b>{voiceActive ? "Ⅱ" : "▶"}</b><span className="wave"><i /><i /><i /><i /><i /><i /></span><span>{voiceActive ? `播放中 ${Math.floor(voiceSeconds / 60)}:${String(voiceSeconds % 60).padStart(2, "0")} / ${Math.floor(voiceDuration / 60)}:${String(voiceDuration % 60).padStart(2, "0")}` : raiment.coverVoiceLabel}</span></button>}
             <button className="primary-button" onClick={enter}>ENTER · 进入博客 ▾</button>
           </div>
         </div>
@@ -906,19 +1320,15 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   return <div className="search-overlay" role="dialog" aria-modal="true" aria-label="搜索文章" onClick={onClose}><div className="search-panel" onClick={(e) => e.stopPropagation()}><div><span aria-hidden="true">⌕</span><input aria-label="搜索关键词" autoFocus value={query} onChange={(e) => { setQuery(e.target.value); if (!e.target.value.trim()) setResult([]); }} placeholder="搜索标题、分类或关键词…" /><button onClick={onClose} aria-label="关闭搜索">×</button></div>{query ? <section aria-live="polite">{result.length ? result.map((p) => <Link key={p.id} href={`/posts/${p.slug}`}><span className="tag">{categoryName(p)}</span><b>{p.title}</b><small>{articleDate(p)}</small></Link>) : <p>没有找到相关内容，换个关键词试试。</p>}</section> : <div className="search-suggestions"><small>热门关键词</small><div>{["React", "Fate", "Live2D", "博客重构"].map((item) => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div></div>}<small>ESC 关闭 · 输入关键词实时检索文章库</small></div></div>;
 }
 
-function FloatingTools({ toggleTheme, playerOpen, setPlayerOpen, notify }: { toggleTheme: () => void; playerOpen: boolean; setPlayerOpen: (v: boolean) => void; notify: Notify }) {
+function FloatingTools({ toggleTheme }: { toggleTheme: () => void }) {
   const raiment = useRaiment();
-  const tracks = [{ title: "THIS ILLUSION", artist: "LiSA · Fate OST" }, { title: "to the beginning", artist: "Kalafina" }, { title: "花の唄", artist: "Aimer" }];
-  const [track, setTrack] = useState(0);
-  const [playing, setPlaying] = useState(false);
   const [showTop, setShowTop] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatText, setChatText] = useState("");
   const [chatReply, setChatReply] = useState<{ raimentId: string; text: string } | null>(null);
   useEffect(() => { const watch = () => setShowTop(window.scrollY > 500); watch(); window.addEventListener("scroll", watch, { passive: true }); return () => window.removeEventListener("scroll", watch); }, []);
-  const moveTrack = (delta: number) => { const next = (track + delta + tracks.length) % tracks.length; setTrack(next); setPlaying(true); notify(`正在播放：${tracks[next].title}`); };
   const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply({ raimentId: raiment.id, text: "我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。" }); setChatText(""); };
-  return <><div className={cx("music-player", !playerOpen && "collapsed", playing && "is-playing")}><button className="disc" onClick={() => playerOpen ? setPlaying(!playing) : setPlayerOpen(true)} aria-label={playerOpen ? (playing ? "暂停音乐" : "播放音乐") : "展开播放器"}><i /></button>{playerOpen && <><div><b>{tracks[track].title}</b><span>{tracks[track].artist}</span><i className="progress"><i /></i></div><button onClick={() => moveTrack(-1)} aria-label="上一首">⏮</button><button onClick={() => { setPlaying(!playing); notify(playing ? "音乐已暂停" : `正在播放：${tracks[track].title}`); }} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button><button onClick={() => moveTrack(1)} aria-label="下一首">⏭</button><button className="collapse-player" onClick={() => setPlayerOpen(false)} aria-label="收起播放器">−</button></>}</div>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.raimentId === raiment.id ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
+  return <>{chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.raimentId === raiment.id ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}<button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button><button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
 }
 
 function Footer() { return <footer><Link href="/" className="brand">helt<span>.</span></Link><p>写代码、追番、折腾博客的个人小站。</p><span>© 2020—2026 helt. · POWERED BY REACT</span></footer>; }
@@ -972,7 +1382,7 @@ function AdminSessionGate({ children }: { children: (admin: AdminIdentity) => Re
   return children(admin);
 }
 
-const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/comments", "◫", "评论审核"], ["/admin/assets", "▧", "素材库"], ["/admin/raiments", "♙", "灵衣"], ["/admin/llm", "✦", "LLM"], ["/admin/media", "♫", "音乐与语音"], ["/admin/settings", "⚙", "站点设置"]];
+const adminNav = [["/admin", "▦", "仪表盘"], ["/admin/articles", "▤", "文章管理"], ["/admin/comments", "◫", "评论审核"], ["/admin/assets", "▧", "素材库"], ["/admin/raiments", "♙", "灵衣"], ["/admin/llm", "✦", "LLM"], ["/admin/playlists", "♫", "歌单"], ["/admin/settings", "⚙", "站点设置"]];
 
 function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify; admin: AdminIdentity }) {
   const [commandOpen, setCommandOpen] = useState(false);
@@ -987,7 +1397,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   else if (pathname === "/admin/assets") content = <AssetManager notify={notify} />;
   else if (pathname === "/admin/raiments" || pathname === "/admin/appearance") content = <RaimentSettings notify={notify} />;
   else if (pathname === "/admin/llm" || pathname === "/admin/kanban") content = <LlmSettings notify={notify} />;
-  else if (pathname === "/admin/media") content = <MediaSettings notify={notify} />;
+  else if (pathname === "/admin/playlists" || pathname === "/admin/media") content = <PlaylistSettings notify={notify} />;
   else content = <SiteSettings notify={notify} />;
   useEffect(() => {
     const successVoice = sessionStorage.getItem("helt-login-success-voice");
@@ -1837,17 +2247,4 @@ function CommentManager() {
       </div>
     </section>
   </>;
-}
-
-function MediaSettings({ notify }: { notify: Notify }) {
-  const [tracks, setTracks] = useState(["THIS ILLUSION", "to the beginning", "oath sign", "花の唄"]);
-  const [preview, setPreview] = useState("");
-  const move = (index: number, delta: number) => { const next = index + delta; if (next < 0 || next >= tracks.length) return; setTracks((items) => { const copy = [...items]; [copy[index], copy[next]] = [copy[next], copy[index]]; return copy; }); };
-  const voices = [
-    { id: "day-intro", kind: "day", name: "日间 Saber · 登录前", file: "blue-saber.mp3 · 固定资源" },
-    { id: "day-success", kind: "day", name: "日间 Saber · 契约成立", file: "blue-saber-success.mp3 · 固定资源" },
-    { id: "night-intro", kind: "night", name: "夜间 Alter · 登录前", file: "alter-saber.mp3 · 固定资源" },
-    { id: "night-success", kind: "night", name: "夜间 Alter · 契约成立", file: "alter-saber-success.mp3 · 固定资源" },
-  ];
-  return <><AdminTitle title="音乐与语音" sub={`AUDIO LIBRARY · ${tracks.length} BGM · 4 LOCKED VOICES`} action={<button className="admin-primary" onClick={() => notify("BGM 上传入口已打开（Mock）")}>＋ 上传 BGM</button>} /><div className="settings-grid media-settings"><section className="admin-panel"><h2>BGM 播放列表</h2>{tracks.map((t, i) => <div className="track" key={t}><span>0{i + 1}</span><div><b>{t}</b><small>Fate Series · Audio Track</small></div><button onClick={() => move(i, -1)} disabled={i === 0}>↑</button><button onClick={() => move(i, 1)} disabled={i === tracks.length - 1}>↓</button><button onClick={() => { setTracks((items) => items.filter((item) => item !== t)); notify(`已移除 ${t}`, "danger"); }}>×</button></div>)}</section><section className="admin-panel voice-cards"><h2>登录语音 <small>FIXED · MINIO</small></h2>{voices.map(({ id, kind, name, file }) => <div key={id}><i className={kind} /><b>{name}</b><span>{file}</span><button className={preview === id ? "active" : ""} onClick={() => { setPreview(preview === id ? "" : id); notify(preview === id ? "试听已暂停" : `正在试听 ${name}`); }}>{preview === id ? "Ⅱ 暂停" : "▶ 试听"}</button></div>)}</section></div></>;
 }

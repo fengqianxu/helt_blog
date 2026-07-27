@@ -25,6 +25,7 @@ pub struct Config {
     pub artalk_admin_name: String,
     pub artalk_admin_email: String,
     pub artalk_admin_password: String,
+    pub meting_api_url: Option<String>,
     pub llm_encryption_key_version: i32,
     pub llm_encryption_secret: String,
     pub llm_encryption_previous_key_version: Option<i32>,
@@ -163,6 +164,7 @@ impl Config {
             artalk_admin_email: env::var("ARTALK_ADMIN_EMAIL")
                 .unwrap_or_else(|_| "artalk-service@localhost.invalid".to_owned()),
             artalk_admin_password: required("ARTALK_ADMIN_PASSWORD")?,
+            meting_api_url: optional_http_url("METING_API_URL")?,
             llm_encryption_key_version,
             llm_encryption_secret,
             llm_encryption_previous_key_version,
@@ -175,6 +177,31 @@ impl Config {
             upstream_request_timeout_secs,
         })
     }
+}
+
+fn optional_http_url(name: &'static str) -> Result<Option<String>, ConfigError> {
+    optional(name)
+        .map(|value| {
+            let value = value.trim();
+            let url = Url::parse(value).map_err(|_| ConfigError::Invalid {
+                name,
+                value: value.to_owned(),
+            })?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(ConfigError::Invalid {
+                    name,
+                    value: value.to_owned(),
+                });
+            }
+            Ok(url.to_string())
+        })
+        .transpose()
 }
 
 fn normalize_origin(name: &'static str, value: &str) -> Result<String, ConfigError> {
