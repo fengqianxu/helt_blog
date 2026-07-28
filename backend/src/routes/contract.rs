@@ -876,6 +876,46 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "204 无响应体",
         "事务删除点赞和素材引用；素材本体保留；不存在返回 404"
     ),
+    // 后台评论：浏览器只使用博客管理员会话，后端代为调用 Artalk 管理 API。
+    endpoint!(
+        "ADMIN-COMMENT-01",
+        "后台评论",
+        Get,
+        "/api/v1/admin/comments",
+        "/api/v1/admin/comments?status=pending&page=1&per_page=20",
+        AdminJwt,
+        OK,
+        "分页读取 Artalk 评论审核队列",
+        "Query: page/per_page、status=all|pending|approved?、search?",
+        "200 JSON page/per_page/total/counts/items；不返回 Artalk 管理凭据",
+        "只读取当前 ARTALK_SITE_NAME；服务端使用内部管理账户，浏览器无需第二次登录"
+    ),
+    endpoint!(
+        "ADMIN-COMMENT-02",
+        "后台评论",
+        Patch,
+        "/api/v1/admin/comments/{id}",
+        "/api/v1/admin/comments/1",
+        AdminJwt,
+        OK,
+        "通过评论或移回待审核",
+        "路径 id；JSON: status=pending|approved",
+        "200 返回更新后的评论",
+        "先确认评论属于当前站点，再由服务端更新 Artalk is_pending 状态"
+    ),
+    endpoint!(
+        "ADMIN-COMMENT-03",
+        "后台评论",
+        Delete,
+        "/api/v1/admin/comments/{id}",
+        "/api/v1/admin/comments/1",
+        AdminJwt,
+        NO_CONTENT,
+        "删除垃圾评论",
+        "路径 id",
+        "204 无响应体",
+        "只允许删除当前站点评论；删除同时由 Artalk 处理关联数据"
+    ),
     // 后台友链：公开申请进入 pending，后台完成审核、编辑、排序和移除。
     endpoint!(
         "ADMIN-FRIEND-01",
@@ -1510,6 +1550,7 @@ pub fn router() -> Router<AppState> {
                 && !super::assets::implements(contract.method, contract.path)
                 && !super::articles::implements(contract.method, contract.path)
                 && !super::bangumi::implements(contract.method, contract.path)
+                && !super::comments::implements(contract.method, contract.path)
                 && !super::friends::implements(contract.method, contract.path)
                 && !super::games::implements(contract.method, contract.path)
                 && !super::llm::implements(contract.method, contract.path)
@@ -1644,8 +1685,8 @@ mod tests {
 
     /// TDD 契约层：固定端点总数、唯一性和每项说明的完整性。
     #[test]
-    fn catalog_contains_99_complete_unique_contracts() {
-        assert_eq!(ENDPOINT_CONTRACTS.len(), 99);
+    fn catalog_contains_complete_unique_contracts() {
+        assert_eq!(ENDPOINT_CONTRACTS.len(), 102);
 
         let mut ids = HashSet::new();
         let mut method_paths = HashSet::new();
@@ -1713,7 +1754,7 @@ mod tests {
             .iter()
             .filter(|contract| contract.path.starts_with("/api/v1/admin/"))
             .count();
-        assert_eq!(admin_count, 80);
+        assert_eq!(admin_count, 83);
         assert_eq!(ENDPOINT_CONTRACTS.len() - admin_count, 19);
 
         let large_body_endpoints = ENDPOINT_CONTRACTS
@@ -1760,7 +1801,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 8_960_414_761_448_318_737,
+            fingerprint, 14_935_570_710_247_163_006,
             "update only after reviewing the full catalog"
         );
     }
