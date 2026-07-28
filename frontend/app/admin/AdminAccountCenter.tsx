@@ -4,6 +4,7 @@ import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  AboutProfile,
   AdminAsset,
   AdminIdentity,
   cx,
@@ -102,9 +103,10 @@ export function AdminAccountCenter({
   const [revokeOtherSessions, setRevokeOtherSessions] = useState(true);
   const [passwordError, setPasswordError] = useState("");
   const [profileEmail, setProfileEmail] = useState(admin.email);
+  const [profileAbout, setProfileAbout] = useState<AboutProfile>(admin.about);
+  const [profileTab, setProfileTab] = useState<"public" | "sync">("public");
   const [profileBilibiliUid, setProfileBilibiliUid] = useState(admin.bilibili_uid);
   const [profileSteamWebApiKey, setProfileSteamWebApiKey] = useState("");
-  const [clearSteamWebApiKey, setClearSteamWebApiKey] = useState(false);
   const [profileSteamId64, setProfileSteamId64] = useState(admin.steam_id64 ?? "");
   const [profileError, setProfileError] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState<number | null>(admin.avatar_asset_id);
@@ -126,10 +128,9 @@ export function AdminAccountCenter({
   const passkeySupported = typeof window !== "undefined"
     && "PublicKeyCredential" in window
     && Boolean(navigator.credentials);
-  const steamWebApiKeyPresent = !clearSteamWebApiKey
-    && (admin.steam_web_api_key_configured || Boolean(profileSteamWebApiKey.trim()));
+  const steamWebApiKeyPresent = Boolean(profileSteamWebApiKey.trim());
   const steamId64Present = Boolean(profileSteamId64.trim());
-  const steamPairComplete = clearSteamWebApiKey || steamWebApiKeyPresent === steamId64Present;
+  const steamPairComplete = !steamWebApiKeyPresent || steamId64Present;
 
   const closeDialog = useCallback(() => {
     if (busy) return;
@@ -206,9 +207,10 @@ export function AdminAccountCenter({
       setAvatarAssetsLoading(true);
       profileOriginal.current = admin;
       setProfileEmail(admin.email);
+      setProfileAbout(admin.about);
+      setProfileTab("public");
       setProfileBilibiliUid(admin.bilibili_uid);
       setProfileSteamWebApiKey("");
-      setClearSteamWebApiKey(false);
       setProfileSteamId64(admin.steam_id64 ?? "");
       setAvatarAssetId(admin.avatar_asset_id);
       setAvatarCrop({
@@ -222,6 +224,18 @@ export function AdminAccountCenter({
     setDialog(next);
   };
 
+  const updateAbout = <Key extends keyof AboutProfile>(key: Key, value: AboutProfile[Key]) => {
+    setProfileAbout((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateSkill = (index: number, value: string) => {
+    updateAbout("skills", profileAbout.skills.map((skill, candidate) => candidate === index ? value : skill));
+  };
+
+  const updateSocial = (index: number, key: "label" | "url", value: string) => {
+    updateAbout("socials", profileAbout.socials.map((social, candidate) => candidate === index ? { ...social, [key]: value } : social));
+  };
+
   const saveProfile = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (profileBilibiliUid && !/^\d{1,20}$/.test(profileBilibiliUid.trim())) {
@@ -229,7 +243,7 @@ export function AdminAccountCenter({
       return;
     }
     const steamWebApiKey = profileSteamWebApiKey.trim();
-    const steamId64 = clearSteamWebApiKey ? "" : profileSteamId64.trim();
+    const steamId64 = profileSteamId64.trim();
     if (steamWebApiKey && !/^[a-f\d]{32}$/i.test(steamWebApiKey)) {
       setProfileError("Steam Web API Key 应为 32 位十六进制字符。");
       return;
@@ -238,12 +252,30 @@ export function AdminAccountCenter({
       setProfileError("请输入有效的 17 位 SteamID64。");
       return;
     }
-    if (!clearSteamWebApiKey && !steamPairComplete) {
-      setProfileError(admin.steam_web_api_key_configured
-        ? "保留 Steam Web API Key 时必须保留 SteamID64。"
-        : "首次配置 Steam 同步时必须同时填写 Key 与 SteamID64。");
+    if (profileTab === "sync" && !steamPairComplete) {
+      setProfileError("填写 Steam Web API Key 时必须同时填写 SteamID64。");
       return;
     }
+    const incompleteSocial = profileAbout.socials.find((social) => Boolean(social.label.trim()) !== Boolean(social.url.trim()));
+    if (incompleteSocial) {
+      setProfileTab("public");
+      setProfileError("每个社交链接都需要同时填写平台名称和完整地址。");
+      return;
+    }
+    const normalizedAbout: AboutProfile = {
+      ...profileAbout,
+      version: 1,
+      display_name: profileAbout.display_name.trim(),
+      bio: profileAbout.bio.trim(),
+      intro_md: profileAbout.intro_md.trim(),
+      location: profileAbout.location.trim(),
+      status: profileAbout.status.trim(),
+      site_note: profileAbout.site_note.trim(),
+      skills: profileAbout.skills.map((skill) => skill.trim()).filter(Boolean),
+      socials: profileAbout.socials
+        .map((social) => ({ label: social.label.trim(), url: social.url.trim() }))
+        .filter((social) => social.label && social.url),
+    };
     setBusy("profile");
     setProfileError("");
     try {
@@ -255,12 +287,13 @@ export function AdminAccountCenter({
           email: profileEmail,
           bilibili_uid: profileBilibiliUid,
           steam_web_api_key: steamWebApiKey,
-          clear_steam_web_api_key: clearSteamWebApiKey,
           steam_id64: steamId64,
+          update_sync: profileTab === "sync",
           avatar_asset_id: avatarAssetId,
           avatar_crop_x: avatarCrop.x,
           avatar_crop_y: avatarCrop.y,
           avatar_crop_zoom: avatarCrop.zoom,
+          about: normalizedAbout,
         }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, "个人资料保存失败，请稍后重试。"));
@@ -268,8 +301,8 @@ export function AdminAccountCenter({
       profileOriginal.current = updated;
       onAdminChange(updated);
       setProfileSteamWebApiKey("");
-      setClearSteamWebApiKey(false);
       setDialog(null);
+      window.dispatchEvent(new Event("helt:profile-updated"));
       notify("个人资料已更新", "success");
     } catch (error) {
       setProfileError(error instanceof Error ? error.message : "个人资料保存失败，请稍后重试。");
@@ -408,24 +441,54 @@ export function AdminAccountCenter({
         <div className="admin-account-dialog" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
           <form className="admin-profile-dialog" onSubmit={saveProfile} role="dialog" aria-modal="true" aria-labelledby="profile-title">
             <header><div><span>ACCOUNT / PROFILE</span><h2 id="profile-title">个人资料</h2></div><button type="button" aria-label="关闭个人资料" onClick={closeDialog}>×</button></header>
-            <div className="admin-avatar-editor">
-              <AdminProfileAvatar admin={admin} className="admin-avatar-preview" />
-              <div><b>个人头像</b><span><button type="button" onClick={() => setAvatarPickerOpen((value) => !value)}>更换头像</button></span></div>
-            </div>
-            {avatarPickerOpen && <div className="admin-avatar-library" aria-label="从素材库选择头像">
-              {avatarAssets.map((asset) => <button className={avatarAssetId === asset.id ? "selected" : ""} type="button" key={asset.id} title={asset.name} onClick={() => { setCropAsset(asset); setAvatarCrop({ x: 0, y: 0, zoom: 1 }); }}><Image src={asset.file.url} width={96} height={96} unoptimized alt={asset.name} /></button>)}
-              {avatarAssetsLoading && <p>正在读取图片素材…</p>}
-              {!avatarAssetsLoading && avatarAssets.length === 0 && <p>素材库暂无图片，请先到素材库新增图片。</p>}
-            </div>}
-            <div className="admin-profile-fields">
-              <label>邮箱地址<input type="email" autoComplete="email" maxLength={254} value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} placeholder="name@example.com" /></label>
-              <label>B 站 UID<input inputMode="numeric" pattern="[0-9]*" maxLength={20} value={profileBilibiliUid} onChange={(event) => setProfileBilibiliUid(event.target.value)} placeholder="例如：12345678" /></label>
-              <label>Steam Web API Key<input type="password" autoComplete="new-password" spellCheck={false} maxLength={32} disabled={clearSteamWebApiKey} required={steamId64Present && !admin.steam_web_api_key_configured} aria-invalid={steamId64Present && !steamWebApiKeyPresent} value={profileSteamWebApiKey} onChange={(event) => setProfileSteamWebApiKey(event.target.value)} placeholder={admin.steam_web_api_key_configured ? "留空保留已保存的 Key" : "32 位 Web API Key"} /><small>{admin.steam_web_api_key_configured ? `${admin.steam_web_api_key_masked} · 已加密保存` : "尚未配置"}</small></label>
-              <label>SteamID64<input inputMode="numeric" pattern="[0-9]*" maxLength={17} disabled={clearSteamWebApiKey} required={steamWebApiKeyPresent} aria-invalid={steamWebApiKeyPresent && !steamId64Present} value={profileSteamId64} onChange={(event) => setProfileSteamId64(event.target.value)} placeholder="例如：76561198000000000" /></label>
-              <label className="admin-secret-clear"><span><input type="checkbox" checked={clearSteamWebApiKey} onChange={(event) => { setClearSteamWebApiKey(event.target.checked); if (event.target.checked) setProfileSteamWebApiKey(""); }} /> 清除已保存的 Steam 凭据</span><small>只有勾选此项才会删除 Key；Key 输入框留空会保留原值。</small></label>
-            </div>
+            <nav className="admin-profile-tabs" aria-label="个人资料分区">
+              <button type="button" className={profileTab === "public" ? "active" : ""} aria-current={profileTab === "public" ? "page" : undefined} onClick={() => setProfileTab("public")}>公开资料</button>
+              <button type="button" className={profileTab === "sync" ? "active" : ""} aria-current={profileTab === "sync" ? "page" : undefined} onClick={() => setProfileTab("sync")}>内容同步</button>
+              <span>{profileTab === "public" ? "保存后立即联动关于页" : "仅管理员可见"}</span>
+            </nav>
+            {profileTab === "public" ? <>
+              <div className="admin-avatar-editor">
+                <AdminProfileAvatar admin={admin} className="admin-avatar-preview" />
+                <div><b>个人头像</b><small>关于页与后台共用同一头像和裁剪位置</small><span><button type="button" onClick={() => setAvatarPickerOpen((value) => !value)}>更换头像</button></span></div>
+              </div>
+              {avatarPickerOpen && <div className="admin-avatar-library" aria-label="从素材库选择头像">
+                {avatarAssets.map((asset) => <button className={avatarAssetId === asset.id ? "selected" : ""} type="button" key={asset.id} title={asset.name} onClick={() => { setCropAsset(asset); setAvatarCrop({ x: 0, y: 0, zoom: 1 }); }}><Image src={asset.file.url} width={96} height={96} unoptimized alt={asset.name} /></button>)}
+                {avatarAssetsLoading && <p>正在读取图片素材…</p>}
+                {!avatarAssetsLoading && avatarAssets.length === 0 && <p>素材库暂无图片，请先到素材库新增图片。</p>}
+              </div>}
+              <div className="admin-profile-fields admin-public-profile-fields">
+                <label>公开昵称<input maxLength={60} value={profileAbout.display_name} onChange={(event) => updateAbout("display_name", event.target.value)} placeholder={admin.username} /><small>留空时使用管理员用户名</small></label>
+                <label>联系邮箱<input type="email" autoComplete="email" maxLength={254} value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} placeholder="name@example.com" /><small>留空时关于页不显示邮件入口</small></label>
+                <label className="admin-profile-span">一句话简介<textarea rows={2} maxLength={160} value={profileAbout.bio} onChange={(event) => updateAbout("bio", event.target.value)} placeholder="你是谁，以及你关心什么" /><small>{profileAbout.bio.length}/160</small></label>
+                <label>所在地<input maxLength={80} value={profileAbout.location} onChange={(event) => updateAbout("location", event.target.value)} placeholder="例如：Shanghai · China" /></label>
+                <label>当前状态<input maxLength={80} value={profileAbout.status} onChange={(event) => updateAbout("status", event.target.value)} placeholder="例如：持续写作中" /></label>
+                <label className="admin-profile-span">个人介绍（支持 Markdown）<textarea rows={6} maxLength={5000} value={profileAbout.intro_md} onChange={(event) => updateAbout("intro_md", event.target.value)} placeholder="写一段真正属于你的自我介绍…" /><small>{profileAbout.intro_md.length}/5000</small></label>
+              </div>
+              <section className="admin-profile-collection">
+                <header><div><b>技能与兴趣</b><small>ABOUT / TAGS · 最多 12 项</small></div><button type="button" disabled={profileAbout.skills.length >= 12} onClick={() => updateAbout("skills", [...profileAbout.skills, ""])}>＋ 添加</button></header>
+                <div className="admin-profile-skill-list">
+                  {profileAbout.skills.map((skill, index) => <label key={index}><input aria-label={`技能与兴趣 ${index + 1}`} maxLength={40} value={skill} onChange={(event) => updateSkill(index, event.target.value)} placeholder="例如：Rust" /><button type="button" aria-label={`移除技能 ${skill || index + 1}`} onClick={() => updateAbout("skills", profileAbout.skills.filter((_, candidate) => candidate !== index))}>×</button></label>)}
+                  {!profileAbout.skills.length && <p>还没有添加技能或兴趣，关于页会自动隐藏这一栏。</p>}
+                </div>
+              </section>
+              <section className="admin-profile-collection">
+                <header><div><b>社交链接</b><small>SOCIAL LINKS · 最多 8 个</small></div><button type="button" disabled={profileAbout.socials.length >= 8} onClick={() => updateAbout("socials", [...profileAbout.socials, { label: "", url: "" }])}>＋ 添加</button></header>
+                <div className="admin-profile-social-list">
+                  {profileAbout.socials.map((social, index) => <div key={index}><input aria-label={`社交平台 ${index + 1}`} maxLength={30} value={social.label} onChange={(event) => updateSocial(index, "label", event.target.value)} placeholder="GitHub" /><input aria-label={`社交链接 ${index + 1}`} type="url" maxLength={2048} value={social.url} onChange={(event) => updateSocial(index, "url", event.target.value)} placeholder="https://github.com/…" /><button type="button" aria-label={`移除社交链接 ${social.label || index + 1}`} onClick={() => updateAbout("socials", profileAbout.socials.filter((_, candidate) => candidate !== index))}>×</button></div>)}
+                  {!profileAbout.socials.length && <p>添加后会以可访问的外部链接显示在资料卡上。</p>}
+                </div>
+              </section>
+              <label className="admin-profile-site-note">关于本站<textarea rows={4} maxLength={2000} value={profileAbout.site_note} onChange={(event) => updateAbout("site_note", event.target.value)} placeholder="说说这个站点的来历、设计或正在发生的变化…" /><small>{profileAbout.site_note.length}/2000</small></label>
+            </> : <section className="admin-profile-sync-panel">
+              <div><span>PRIVATE CONNECTIONS</span><h3>内容同步账号</h3><p>这些凭据只用于拉取你的追番和游戏数据，不会出现在关于页或公开接口中。</p></div>
+              <div className="admin-profile-fields">
+                <label>B 站 UID<input inputMode="numeric" pattern="[0-9]*" maxLength={20} value={profileBilibiliUid} onChange={(event) => setProfileBilibiliUid(event.target.value)} placeholder="例如：12345678" /></label>
+                <label>SteamID64<input inputMode="numeric" pattern="[0-9]*" maxLength={17} required={steamWebApiKeyPresent} aria-invalid={steamWebApiKeyPresent && !steamId64Present} value={profileSteamId64} onChange={(event) => setProfileSteamId64(event.target.value)} placeholder="例如：76561198000000000" /></label>
+                <label className="admin-profile-span">Steam Web API Key<input type="password" autoComplete="new-password" spellCheck={false} maxLength={32} aria-invalid={steamWebApiKeyPresent && !steamId64Present} value={profileSteamWebApiKey} onChange={(event) => setProfileSteamWebApiKey(event.target.value)} placeholder={admin.steam_web_api_key_configured ? "留空并保存即可移除" : "32 位 Web API Key"} /><small>{admin.steam_web_api_key_configured ? `${admin.steam_web_api_key_masked} · 已加密保存；留空会移除` : "尚未配置；Key 与 SteamID64 需一起填写"}</small></label>
+              </div>
+            </section>}
             {profileError && <div className="admin-account-error" role="alert">! {profileError}</div>}
-            <footer><button type="button" onClick={closeDialog}>取消</button><button className="admin-primary" disabled={busy === "profile" || !steamPairComplete}>{busy === "profile" ? "正在保存…" : "保存资料"}</button></footer>
+            <footer><button type="button" onClick={closeDialog}>取消</button><button className="admin-primary" disabled={busy === "profile" || (profileTab === "sync" && !steamPairComplete)}>{busy === "profile" ? "正在保存…" : "保存资料"}</button></footer>
           </form>
         </div>
       )}

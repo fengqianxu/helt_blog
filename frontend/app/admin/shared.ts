@@ -61,6 +61,23 @@ export function scheduledRaimentId(payload: PublicRaimentPayload, date = new Dat
 
 export const DEFAULT_PROFILE_AVATAR_URL = "/storage/avatars/default/admin-avatar.webp";
 
+export type SocialLink = {
+  label: string;
+  url: string;
+};
+
+export type AboutProfile = {
+  version: number;
+  display_name: string;
+  bio: string;
+  intro_md: string;
+  location: string;
+  status: string;
+  skills: string[];
+  socials: SocialLink[];
+  site_note: string;
+};
+
 export type AdminIdentity = {
   username: string;
   email: string;
@@ -73,9 +90,22 @@ export type AdminIdentity = {
   steam_web_api_key_configured: boolean;
   steam_web_api_key_masked: string;
   steam_id64: string;
+  about: AboutProfile;
 };
 
-export type PublicProfile = Pick<AdminIdentity, "username" | "email" | "avatar_url">;
+export type PublicProfile = {
+  username: string;
+  email: string;
+  avatar_url: string | null;
+  avatar_crop_x: number;
+  avatar_crop_y: number;
+  avatar_crop_zoom: number;
+  about: AboutProfile;
+  stats: {
+    article_count: number;
+    uptime_days: number;
+  };
+};
 
 export type SitePayload = {
   basic: {

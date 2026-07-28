@@ -1585,27 +1585,48 @@ function MomentsPage() {
 }
 
 function AboutPage({ notify }: { notify: Notify }) {
-  const [profile, setProfile] = useState<PublicProfile>({
-    username: "helt",
-    email: "",
-    avatar_url: null,
-  });
+  const site = useSite();
+  const [profile, setProfile] = useState<PublicProfile | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch("/api/v1/profile", {
-      headers: { accept: "application/json" },
-      signal: controller.signal,
-    })
-      .then((response) => response.ok ? response.json() as Promise<PublicProfile> : null)
-      .then((payload) => payload && setProfile(payload))
-      .catch((error) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
-          notify("暂时无法读取站点资料");
-        }
-      });
-    return () => controller.abort();
-  }, [notify]);
+    const load = () => {
+      setLoadError("");
+      void fetch("/api/v1/profile", {
+        headers: { accept: "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("个人资料读取失败");
+          return response.json() as Promise<PublicProfile>;
+        })
+        .then(setProfile)
+        .catch((error) => {
+          if (!(error instanceof DOMException && error.name === "AbortError")) {
+            setLoadError("暂时无法读取个人资料，请稍后重试。");
+            notify("暂时无法读取个人资料");
+          }
+        });
+    };
+    load();
+    window.addEventListener("helt:profile-updated", load);
+    return () => {
+      controller.abort();
+      window.removeEventListener("helt:profile-updated", load);
+    };
+  }, [notify, reloadKey]);
+
+  if (!profile) {
+    return <main className="page-wrap about-loading page-enter">
+      <PageHeading title="关于我" subtitle="ABOUT · MASTER PROFILE" />
+      {loadError
+        ? <div className="about-load-state error" role="alert"><b>资料暂时失联</b><p>{loadError}</p><button type="button" onClick={() => setReloadKey((value) => value + 1)}>重新读取</button></div>
+        : <div className="about-load-state" role="status"><i aria-hidden="true">◆</i><b>正在读取真实资料</b><p>头像、介绍与站点数据正在同步。</p></div>}
+    </main>;
+  }
 
   const copyEmail = async () => {
     if (!profile.email) {
@@ -1620,9 +1641,44 @@ function AboutPage({ notify }: { notify: Notify }) {
       notify(`邮箱：${profile.email}`, "normal");
     }
   };
-  const displayName = profile.username || "helt";
+  const displayName = profile.about.display_name || profile.username;
   const avatarUrl = profile.avatar_url || DEFAULT_PROFILE_AVATAR_URL;
-  return <main className="page-wrap about-layout page-enter"><aside className="profile-card"><div className="avatar"><Image src={avatarUrl} width={216} height={216} sizes="108px" unoptimized alt={`${displayName} 的头像`} /></div><h1>{displayName}.</h1><p>写代码 / 追番 / 折腾博客<br />骑士王的头号 Master</p><div className="profile-stats"><span><b>128</b>文章</span><span><b>2,048</b>天</span></div><div className="socials"><button aria-label="GitHub" onClick={() => notify("GitHub 主页为演示链接")}>GH</button><button aria-label="哔哩哔哩" onClick={() => notify("哔哩哔哩主页为演示链接")}>BL</button><button aria-label="复制联系邮箱" onClick={copyEmail} disabled={!profile.email}>✉</button></div></aside><div className="about-content"><PageHeading title="关于我" subtitle="ABOUT · MASTER PROFILE" /><div className="dialog-box"><b>{displayName}</b><p>你好，欢迎来到我的小站。白天是普通的程序员，晚上是熬夜追番的 Master。这个博客从 2020 年写到现在，记录技术、生活，和那些让我热血的作品。</p></div><SectionTitle index="01" title="技能与兴趣" /><div className="skill-grid">{["React / TypeScript", "Node.js", "UI Engineering", "Fate Series", "摄影与键盘", "动画与游戏"].map((s) => <span key={s}>{s}</span>)}</div><SectionTitle index="02" title="关于本站" /><p>本站从设计到代码都在持续重构中。按下 Konami 秘技（↑↑↓↓←→←→BA）会触发隐藏彩蛋；日夜切换时，Saber 与 Alter 的视觉也会一起切换。</p></div></main>;
+  const socialMark = (label: string) => label.trim().slice(0, 2).toUpperCase();
+  return <main className="page-wrap about-layout page-enter">
+    <aside className="profile-card">
+      <div className="profile-card-signal" aria-hidden="true"><span>PROFILE</span><i /></div>
+      <div className="avatar"><Image src={avatarUrl} width={256} height={256} sizes="128px" unoptimized alt={`${displayName} 的头像`} style={{ objectPosition: `${50 + profile.avatar_crop_x * 50}% ${50 + profile.avatar_crop_y * 50}%`, transform: `scale(${profile.avatar_crop_zoom || 1})` }} /></div>
+      <h1>{displayName}</h1>
+      {profile.about.bio && <p>{profile.about.bio}</p>}
+      {(profile.about.status || profile.about.location) && <div className="profile-presence">
+        {profile.about.status && <span><i aria-hidden="true" />{profile.about.status}</span>}
+        {profile.about.location && <small>⌖ {profile.about.location}</small>}
+      </div>}
+      <div className="profile-stats">
+        <span><b>{profile.stats.article_count.toLocaleString()}</b>篇文章</span>
+        <span><b>{profile.stats.uptime_days.toLocaleString()}</b>天相伴</span>
+      </div>
+      {(profile.about.socials.length > 0 || profile.email) && <div className="profile-links">
+        {profile.about.socials.map((social) => <a key={`${social.label}-${social.url}`} href={social.url} target="_blank" rel="me noreferrer" title={social.label}><i aria-hidden="true">{socialMark(social.label)}</i><span>{social.label}</span><b aria-hidden="true">↗</b></a>)}
+        {profile.email && <button type="button" onClick={copyEmail}><i aria-hidden="true">✉</i><span>复制联系邮箱</span><b aria-hidden="true">＋</b></button>}
+      </div>}
+    </aside>
+    <div className="about-content">
+      <PageHeading title="关于我" subtitle="ABOUT · MASTER PROFILE" />
+      {profile.about.intro_md && <section className="about-intro-card">
+        <div className="about-intro-label"><span>HELLO / 你好</span><b>{displayName}</b></div>
+        <div className="about-markdown markdown-renderer"><ReactMarkdown remarkPlugins={[remarkGfm]}>{profile.about.intro_md}</ReactMarkdown></div>
+      </section>}
+      {profile.about.skills.length > 0 && <section className="about-section">
+        <SectionTitle index="01" title="技能与兴趣" />
+        <div className="skill-grid">{profile.about.skills.map((skill, index) => <span key={skill}><i>{String(index + 1).padStart(2, "0")}</i>{skill}</span>)}</div>
+      </section>}
+      {(profile.about.site_note || site.basic.tagline) && <section className="about-section about-site-note">
+        <SectionTitle index={profile.about.skills.length ? "02" : "01"} title="关于本站" />
+        <div><span aria-hidden="true">◆</span><p>{profile.about.site_note || site.basic.tagline}</p><small>{site.basic.name} · {profile.stats.article_count.toLocaleString()} ARTICLES · {profile.stats.uptime_days.toLocaleString()} DAYS</small></div>
+      </section>}
+    </div>
+  </main>;
 }
 
 type PublicFriend = {

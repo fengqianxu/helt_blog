@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::{
@@ -12,15 +15,16 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::{
     RngCore,
     distr::{Alphanumeric, SampleString},
 };
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
@@ -40,6 +44,11 @@ const ACCESS_TTL_SECONDS: i64 = 2 * 60 * 60;
 const REFRESH_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const JWT_ISSUER: &str = "helt-blog";
 const MAX_AVATAR_BYTES: usize = 512 * 1024;
+const DEFAULT_ABOUT_BIO: &str = "写代码，也记录生活与热爱";
+const DEFAULT_ABOUT_INTRO: &str = "你好，欢迎来到我的小站。这里记录技术实践、日常片段，以及那些让我保持好奇的作品。比起一份静态简历，我更希望它是一张持续更新的个人切片。";
+const DEFAULT_ABOUT_STATUS: &str = "持续更新中";
+const DEFAULT_ABOUT_SITE_NOTE: &str =
+    "本站从设计到代码都在持续重构。日夜主题、内容与互动功能会随着想法一起生长。";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -118,6 +127,8 @@ struct UpdateProfileRequest {
     clear_steam_web_api_key: bool,
     #[serde(default)]
     steam_id64: String,
+    #[serde(default = "default_update_sync")]
+    update_sync: bool,
     avatar_asset_id: Option<i64>,
     #[serde(default)]
     avatar_crop_x: f32,
@@ -125,6 +136,8 @@ struct UpdateProfileRequest {
     avatar_crop_y: f32,
     #[serde(default = "default_avatar_zoom")]
     avatar_crop_zoom: f32,
+    #[serde(default)]
+    about: Option<AboutProfile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,13 +168,89 @@ struct AdminIdentity {
     steam_web_api_key_configured: bool,
     steam_web_api_key_masked: String,
     steam_id64: String,
+    about: AboutProfile,
 }
 
-#[derive(Debug, FromRow, Serialize)]
+#[derive(Debug, Serialize)]
 struct PublicProfile {
     username: String,
     email: String,
     avatar_url: Option<String>,
+    avatar_crop_x: f32,
+    avatar_crop_y: f32,
+    avatar_crop_zoom: f32,
+    about: AboutProfile,
+    stats: PublicProfileStats,
+}
+
+#[derive(Debug, FromRow)]
+struct PublicProfileRow {
+    username: String,
+    email: String,
+    avatar_url: Option<String>,
+    avatar_crop_x: f32,
+    avatar_crop_y: f32,
+    avatar_crop_zoom: f32,
+    about: Value,
+    article_count: i64,
+    founded_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct AboutProfile {
+    #[serde(default)]
+    version: u8,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    bio: String,
+    #[serde(default)]
+    intro_md: String,
+    #[serde(default)]
+    location: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    skills: Vec<String>,
+    #[serde(default)]
+    socials: Vec<SocialLink>,
+    #[serde(default)]
+    site_note: String,
+}
+
+impl Default for AboutProfile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            display_name: String::new(),
+            bio: DEFAULT_ABOUT_BIO.to_owned(),
+            intro_md: DEFAULT_ABOUT_INTRO.to_owned(),
+            location: String::new(),
+            status: DEFAULT_ABOUT_STATUS.to_owned(),
+            skills: vec![
+                "React / TypeScript".to_owned(),
+                "Rust".to_owned(),
+                "UI Engineering".to_owned(),
+                "动画与游戏".to_owned(),
+            ],
+            socials: Vec::new(),
+            site_note: DEFAULT_ABOUT_SITE_NOTE.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SocialLink {
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicProfileStats {
+    article_count: i64,
+    uptime_days: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -176,6 +265,7 @@ struct AdminProfileRow {
     bilibili_uid: String,
     steam_web_api_key_configured: bool,
     steam_id64: String,
+    about: Value,
 }
 
 #[derive(Debug, Default, FromRow)]
@@ -215,10 +305,21 @@ struct PasskeyListResponse {
 }
 
 async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProfile>, ApiError> {
-    let profile = sqlx::query_as::<_, PublicProfile>(
-        "SELECT username, email, avatar_url
-         FROM admin_users
-         ORDER BY id
+    let profile = sqlx::query_as::<_, PublicProfileRow>(
+        "SELECT
+             au.username,
+             au.email,
+             au.avatar_url,
+             au.avatar_crop_x,
+             au.avatar_crop_y,
+             au.avatar_crop_zoom,
+             COALESCE(ss.settings -> 'about', '{}'::jsonb) AS about,
+             (SELECT COUNT(*) FROM articles WHERE status = 'published')::bigint
+                 AS article_count,
+             COALESCE(ss.settings #>> '{basic,founded_at}', '') AS founded_at
+         FROM admin_users au
+         LEFT JOIN site_settings ss ON ss.id = 1
+         ORDER BY au.id
          LIMIT 1",
     )
     .fetch_optional(state.pool())
@@ -229,7 +330,21 @@ async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProf
     })?
     .ok_or(ApiError::Internal)?;
 
-    Ok(Json(profile))
+    let username = profile.username;
+    let about = about_profile_from_value(profile.about);
+    Ok(Json(PublicProfile {
+        username,
+        email: profile.email,
+        avatar_url: profile.avatar_url,
+        avatar_crop_x: profile.avatar_crop_x,
+        avatar_crop_y: profile.avatar_crop_y,
+        avatar_crop_zoom: profile.avatar_crop_zoom,
+        about,
+        stats: PublicProfileStats {
+            article_count: profile.article_count,
+            uptime_days: profile_uptime_days(&profile.founded_at),
+        },
+    }))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -500,6 +615,7 @@ async fn update_profile(
     let claims = authenticate(&state, &headers)?;
     let email = normalized_email(&request.email)?;
     let bilibili_uid = normalized_bilibili_uid(&request.bilibili_uid)?;
+    let about = request.about.map(normalized_about_profile).transpose()?;
     if !(-1.0..=1.0).contains(&request.avatar_crop_x)
         || !(-1.0..=1.0).contains(&request.avatar_crop_y)
         || !(1.0..=3.0).contains(&request.avatar_crop_zoom)
@@ -539,12 +655,20 @@ async fn update_profile(
             error!(error = %err, "stored Steam Web API key could not be decrypted");
             ApiError::Internal
         })?;
-    let (supplied_steam_web_api_key, steam_id64, steam_key_configured) = normalized_steam_update(
-        &request.steam_web_api_key,
-        &request.steam_id64,
-        request.clear_steam_web_api_key,
-        previous_steam_web_api_key.is_some(),
-    )?;
+    let update_sync = request.update_sync || request.clear_steam_web_api_key;
+    let (supplied_steam_web_api_key, steam_id64, steam_key_configured) = if update_sync {
+        normalized_steam_update(
+            &request.steam_web_api_key,
+            &request.steam_id64,
+            request.clear_steam_web_api_key,
+        )?
+    } else {
+        (
+            None,
+            previous.steam_id64.clone(),
+            previous_steam_web_api_key.is_some(),
+        )
+    };
     let encrypted_steam_web_api_key = supplied_steam_web_api_key
         .as_deref()
         .map(|api_key| state.llm_keyring().encrypt(api_key))
@@ -553,7 +677,7 @@ async fn update_profile(
             error!(error = %err, "Steam Web API key could not be encrypted");
             ApiError::Internal
         })?;
-    let steam_key_mutated = supplied_steam_web_api_key.is_some() || request.clear_steam_web_api_key;
+    let steam_key_mutated = update_sync;
 
     let avatar_url = if let Some(asset_id) = request.avatar_asset_id {
         Some(
@@ -632,6 +756,31 @@ async fn update_profile(
         .await
         .map_err(|err| {
             error!(error = %err, "profile avatar reference could not be created");
+            ApiError::Internal
+        })?;
+    }
+
+    if let Some(about) = about {
+        let about = serde_json::to_value(about).map_err(|err| {
+            error!(error = %err, "public profile could not be serialized");
+            ApiError::Internal
+        })?;
+        sqlx::query(
+            "UPDATE site_settings
+             SET settings = jsonb_set(
+                     settings,
+                     '{about}',
+                     COALESCE(settings -> 'about', '{}'::jsonb) || $1::jsonb,
+                     true
+                 ),
+                 updated_at = now()
+             WHERE id = 1",
+        )
+        .bind(about)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "public profile details could not be stored");
             ApiError::Internal
         })?;
     }
@@ -1381,7 +1530,8 @@ async fn load_admin_identity(
                  AND ss.steam_encryption_key_version IS NOT NULL,
                  false
              ) AS steam_web_api_key_configured,
-             COALESCE(ss.settings #>> '{steam_sync,steam_id64}', '') AS steam_id64
+             COALESCE(ss.settings #>> '{steam_sync,steam_id64}', '') AS steam_id64,
+             COALESCE(ss.settings -> 'about', '{}'::jsonb) AS about
          FROM admin_users au
          LEFT JOIN site_settings ss ON ss.id = 1
          WHERE au.id = $1 AND au.username = $2",
@@ -1412,11 +1562,148 @@ async fn load_admin_identity(
             String::new()
         },
         steam_id64: profile.steam_id64,
+        about: about_profile_from_value(profile.about),
     })
 }
 
 fn default_avatar_zoom() -> f32 {
     1.0
+}
+
+fn default_update_sync() -> bool {
+    true
+}
+
+fn about_profile_from_value(value: Value) -> AboutProfile {
+    let mut about = serde_json::from_value::<AboutProfile>(value).unwrap_or_default();
+    if about.version == 0 {
+        let defaults = AboutProfile::default();
+        if about.bio.trim().is_empty() {
+            about.bio = defaults.bio;
+        }
+        if about.intro_md.trim().is_empty() {
+            about.intro_md = defaults.intro_md;
+        }
+        if about.status.trim().is_empty() {
+            about.status = defaults.status;
+        }
+        if about.skills.is_empty() {
+            about.skills = defaults.skills;
+        }
+        if about.site_note.trim().is_empty() {
+            about.site_note = defaults.site_note;
+        }
+    }
+    about.version = 1;
+    about
+}
+
+fn normalized_about_profile(mut about: AboutProfile) -> Result<AboutProfile, ApiError> {
+    about.version = 1;
+    about.display_name =
+        normalized_profile_text(&about.display_name, 60, true, "公开昵称不能超过 60 个字符")?;
+    about.bio = normalized_profile_text(&about.bio, 160, true, "一句话简介不能超过 160 个字符")?;
+    about.intro_md =
+        normalized_profile_text(&about.intro_md, 5_000, true, "个人介绍不能超过 5000 个字符")?;
+    about.location =
+        normalized_profile_text(&about.location, 80, true, "所在地不能超过 80 个字符")?;
+    about.status = normalized_profile_text(&about.status, 80, true, "当前状态不能超过 80 个字符")?;
+    about.site_note = normalized_profile_text(
+        &about.site_note,
+        2_000,
+        true,
+        "关于本站不能超过 2000 个字符",
+    )?;
+
+    if about.skills.len() > 12 {
+        return Err(ApiError::Validation("技能与兴趣最多添加 12 项"));
+    }
+    let mut seen_skills = HashSet::new();
+    about.skills = about
+        .skills
+        .into_iter()
+        .filter_map(|skill| {
+            let skill = skill.trim();
+            (!skill.is_empty()).then(|| skill.to_owned())
+        })
+        .map(|skill| {
+            let skill = normalized_profile_text(
+                &skill,
+                40,
+                false,
+                "技能与兴趣不能为空且不能超过 40 个字符",
+            )?;
+            if !seen_skills.insert(skill.to_lowercase()) {
+                return Err(ApiError::Validation("技能与兴趣不能重复"));
+            }
+            Ok(skill)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if about.socials.len() > 8 {
+        return Err(ApiError::Validation("社交链接最多添加 8 个"));
+    }
+    let mut seen_socials = HashSet::new();
+    about.socials = about
+        .socials
+        .into_iter()
+        .filter(|social| !social.label.trim().is_empty() || !social.url.trim().is_empty())
+        .map(|social| {
+            let label = normalized_profile_text(
+                &social.label,
+                30,
+                false,
+                "社交平台名称不能为空且不能超过 30 个字符",
+            )?;
+            let raw_url = normalized_profile_text(
+                &social.url,
+                2_048,
+                false,
+                "社交链接不能为空且不能超过 2048 个字符",
+            )?;
+            let url = Url::parse(&raw_url)
+                .map_err(|_| ApiError::Validation("社交链接必须是有效的 HTTP(S) 地址"))?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                return Err(ApiError::Validation("社交链接必须是有效的 HTTP(S) 地址"));
+            }
+            if !seen_socials.insert(label.to_lowercase()) {
+                return Err(ApiError::Validation("社交平台名称不能重复"));
+            }
+            Ok(SocialLink {
+                label,
+                url: raw_url,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(about)
+}
+
+fn normalized_profile_text(
+    value: &str,
+    max_chars: usize,
+    optional: bool,
+    invalid_message: &'static str,
+) -> Result<String, ApiError> {
+    let value = value.trim();
+    if (!optional && value.is_empty()) || value.chars().count() > max_chars {
+        return Err(ApiError::Validation(invalid_message));
+    }
+    Ok(value.to_owned())
+}
+
+fn profile_uptime_days(founded_at: &str) -> i64 {
+    NaiveDate::parse_from_str(founded_at, "%Y-%m-%d")
+        .map(|date| {
+            (Utc::now().date_naive() - date)
+                .num_days()
+                .saturating_add(1)
+        })
+        .unwrap_or(1)
+        .max(1)
 }
 
 fn normalized_email(value: &str) -> Result<String, ApiError> {
@@ -1482,7 +1769,6 @@ fn normalized_steam_update(
     web_api_key: &str,
     steam_id64: &str,
     clear_web_api_key: bool,
-    previously_configured: bool,
 ) -> Result<(Option<String>, String, bool), ApiError> {
     let web_api_key = normalized_steam_web_api_key(web_api_key)?;
     let steam_id64 = normalized_steam_id64(steam_id64)?;
@@ -1494,24 +1780,15 @@ fn normalized_steam_update(
         }
         return Ok((None, String::new(), false));
     }
-    if !web_api_key.is_empty() && steam_id64.is_empty() {
+    if web_api_key.is_empty() {
+        return Ok((None, String::new(), false));
+    }
+    if steam_id64.is_empty() {
         return Err(ApiError::Validation(
             "提交 Steam Web API Key 时必须同时填写 SteamID64",
         ));
     }
-    if web_api_key.is_empty() && !steam_id64.is_empty() && !previously_configured {
-        return Err(ApiError::Validation(
-            "首次配置 Steam 同步时必须填写 Steam Web API Key",
-        ));
-    }
-    if web_api_key.is_empty() && steam_id64.is_empty() && previously_configured {
-        return Err(ApiError::Validation(
-            "如需删除 Steam 凭据，请显式选择清除 Steam Web API Key",
-        ));
-    }
-    let supplied_key = (!web_api_key.is_empty()).then_some(web_api_key);
-    let configured = (previously_configured || supplied_key.is_some()) && !steam_id64.is_empty();
-    Ok((supplied_key, steam_id64, configured))
+    Ok((Some(web_api_key), steam_id64, true))
 }
 
 fn validate_avatar_upload(headers: &HeaderMap, body: &[u8]) -> Result<AvatarMedia, ApiError> {
@@ -1791,10 +2068,10 @@ fn append_cookie(headers: &mut HeaderMap, cookie: String) -> Result<(), ApiError
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCESS_COOKIE, AccessClaims, ChangePasswordRequest, JWT_ISSUER, authenticate,
-        decode_access_token, decode_base32, hash_token, normalized_bilibili_uid, normalized_email,
-        normalized_steam_id64, normalized_steam_update, normalized_steam_web_api_key,
-        validate_avatar_upload,
+        ACCESS_COOKIE, AboutProfile, AccessClaims, ChangePasswordRequest, JWT_ISSUER, SocialLink,
+        about_profile_from_value, authenticate, decode_access_token, decode_base32, hash_token,
+        normalized_about_profile, normalized_bilibili_uid, normalized_email, normalized_steam_id64,
+        normalized_steam_update, normalized_steam_web_api_key, validate_avatar_upload,
     };
     use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -1946,27 +2223,62 @@ mod tests {
             "76561198000000000"
         );
         assert!(normalized_steam_id64("123456").is_err());
-        assert!(normalized_steam_update("", "", false, false).is_ok());
+        assert_eq!(
+            normalized_steam_update("", "", false).unwrap(),
+            (None, String::new(), false)
+        );
         assert!(
             normalized_steam_update(
                 "0123456789abcdef0123456789abcdef",
                 "76561198000000000",
-                false,
                 false
             )
             .is_ok()
         );
-        assert!(
-            normalized_steam_update("0123456789abcdef0123456789abcdef", "", false, false).is_err()
-        );
-        assert!(normalized_steam_update("", "76561198000000000", false, false).is_err());
-        let retained =
-            normalized_steam_update("", "76561198000000000", false, true).expect("retain key");
-        assert!(retained.0.is_none());
-        assert!(retained.2);
+        assert!(normalized_steam_update("0123456789abcdef0123456789abcdef", "", false).is_err());
+        let cleared_by_empty_key = normalized_steam_update("", "76561198000000000", false)
+            .expect("an empty key clears the saved Steam pair");
+        assert_eq!(cleared_by_empty_key, (None, String::new(), false));
         let cleared =
-            normalized_steam_update("", "76561198000000000", true, true).expect("explicit clear");
+            normalized_steam_update("", "76561198000000000", true).expect("legacy explicit clear");
         assert_eq!(cleared, (None, String::new(), false));
+    }
+
+    #[test]
+    fn public_about_profile_seeds_legacy_data_and_validates_links() {
+        let seeded = about_profile_from_value(serde_json::json!({
+            "bio": "",
+            "intro_md": "",
+            "skills": [],
+            "secret_note": "must remain private"
+        }));
+        assert_eq!(seeded.version, 1);
+        assert!(!seeded.bio.is_empty());
+        assert!(!seeded.intro_md.is_empty());
+        assert!(!seeded.skills.is_empty());
+
+        let valid = normalized_about_profile(AboutProfile {
+            display_name: " Helt ".to_owned(),
+            skills: vec![" Rust ".to_owned(), "".to_owned()],
+            socials: vec![SocialLink {
+                label: " GitHub ".to_owned(),
+                url: "https://github.com/example".to_owned(),
+            }],
+            ..AboutProfile::default()
+        })
+        .expect("valid public profile");
+        assert_eq!(valid.display_name, "Helt");
+        assert_eq!(valid.skills, vec!["Rust"]);
+        assert_eq!(valid.socials[0].label, "GitHub");
+
+        let invalid = AboutProfile {
+            socials: vec![SocialLink {
+                label: "Local".to_owned(),
+                url: "file:///etc/passwd".to_owned(),
+            }],
+            ..AboutProfile::default()
+        };
+        assert!(normalized_about_profile(invalid).is_err());
     }
 
     #[test]
