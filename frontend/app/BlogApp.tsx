@@ -267,7 +267,7 @@ const raimentFromSchedule = (catalog: RaimentCatalog): string => {
       : catalog.order[0];
 };
 
-type ArticleCategory = { id: number; name: string; slug: string; color: string };
+type ArticleCategory = { id: number; name: string; slug: string; color: string; article_count?: number | null };
 type ArticleTag = { id: number; name: string; article_count?: number | null };
 type Post = {
   id: number;
@@ -1495,12 +1495,13 @@ function Comments({ slug, title, theme }: { slug: string; title: string; theme: 
 }
 
 function ArchivesPage() {
-  const [view, setView] = useState("time");
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState<{ kind: "category" | "tag"; id: number } | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [categories, setCategories] = useState<ArticleCategory[]>([]);
   const [tags, setTags] = useState<ArticleTag[]>([]);
   const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
     const load = async () => {
@@ -1526,16 +1527,55 @@ function ArchivesPage() {
       setCategories(categoryPayload.items);
       setTags(tagPayload.items);
     };
-    void load().catch(() => undefined);
+    void load()
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) setLoadError("归档数据暂时无法加载，请稍后重试。");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
     return () => controller.abort();
   }, []);
-  const choices = view === "category"
-    ? categories.map((item) => `${item.name} ${posts.filter((post) => post.category?.id === item.id).length}`)
-    : tags.map((item) => item.name);
-  const matchedPosts = selected
-    ? posts.filter((post) => categoryName(post) === selected || post.tags.some((tag) => tag.name === selected) || `${post.title} ${post.summary}`.includes(selected))
-    : [];
-  return <main className="page-wrap page-enter"><PageHeading title="归档" subtitle={`ARCHIVE · ${total} 篇`} /><div className="view-tabs" role="tablist" aria-label="归档浏览方式"><button role="tab" aria-selected={view === "time"} className={view === "time" ? "active" : ""} onClick={() => { setView("time"); setSelected(""); }}>时间</button><button role="tab" aria-selected={view === "category"} className={view === "category" ? "active" : ""} onClick={() => { setView("category"); setSelected(""); }}>分类</button><button role="tab" aria-selected={view === "tag"} className={view === "tag" ? "active" : ""} onClick={() => { setView("tag"); setSelected(""); }}>标签</button></div>{view === "time" ? <div className="archive-grid"><div className="timeline-list"><h2>文章</h2>{posts.map((p) => <Link key={p.id} href={`/posts/${p.slug}`}><time>{articleDate(p).slice(5)}</time><b>{p.title}</b><span className="tag">{categoryName(p)}</span></Link>)}</div><aside className="archive-side"><b>分类</b>{categories.map((item) => <button key={item.id} onClick={() => { setView("category"); setSelected(item.name); }}><span>{item.name}</span><span>{posts.filter((post) => post.category?.id === item.id).length}</span></button>)}</aside></div> : <><div className="cloud-panel">{choices.map((item, i) => { const label = item.split(" ")[0]; return <button className={selected === label ? "active" : ""} key={item} style={{ fontSize: `${14 + (i % 4) * 4}px` }} onClick={() => setSelected(label)}>{item}</button>; })}</div>{selected && <div className="archive-selection"><span>正在浏览</span><b>{selected}</b><p>共找到 {matchedPosts.length} 篇相关内容</p><button onClick={() => setSelected("")}>清除筛选 ×</button></div>}{selected && <div className="archive-results">{matchedPosts.length ? matchedPosts.map((post) => <Link key={post.id} href={`/posts/${post.slug}`}><span className="tag">{categoryName(post)}</span><b>{post.title}</b><small>{articleDate(post)}</small></Link>) : <div className="empty-panel">没有匹配的已发布文章。</div>}</div>}</>}</main>;
+
+  const categoryChoices = categories.map((item) => ({ ...item, count: posts.filter((post) => post.category?.id === item.id).length }));
+  const tagChoices = tags.map((item) => ({ ...item, count: posts.filter((post) => post.tags.some((tag) => tag.id === item.id)).length }));
+  const selectedChoice = selected?.kind === "category"
+    ? categoryChoices.find((item) => item.id === selected.id) ?? null
+    : selected?.kind === "tag"
+      ? tagChoices.find((item) => item.id === selected.id) ?? null
+      : null;
+  const matchedPosts = selectedChoice
+    ? posts.filter((post) => selected?.kind === "category"
+      ? post.category?.id === selectedChoice.id
+      : post.tags.some((tag) => tag.id === selectedChoice.id))
+    : posts;
+
+  const toggleSelection = (kind: "category" | "tag", id: number) => {
+    setSelected((current) => current?.kind === kind && current.id === id ? null : { kind, id });
+  };
+
+  return <main className="page-wrap page-enter">
+    <PageHeading title="归档" subtitle={`ARCHIVE · ${total} 篇`} />
+    {loading ? <div className="archive-status" aria-live="polite"><b>LOADING</b><p>正在整理文章归档…</p></div>
+      : loadError ? <div className="archive-status error" role="alert"><b>OFFLINE</b><p>{loadError}</p></div>
+        : <div className="archive-grid">
+          <div className="timeline-list">
+            <div className="archive-timeline-heading"><h2>文章</h2><small>{matchedPosts.length} 篇</small></div>
+            {selectedChoice && <div className="archive-selection" role="status"><span>{selected?.kind === "category" ? "分类筛选" : "标签筛选"}</span><b>{selected?.kind === "tag" && <i aria-hidden="true">#</i>}{selectedChoice.name}</b><p>时间线中显示 {matchedPosts.length} 篇相关内容</p><button onClick={() => setSelected(null)} aria-label={`清除${selectedChoice.name}筛选`}>清除筛选 ×</button></div>}
+            {matchedPosts.length ? matchedPosts.map((post) => <Link key={post.id} href={`/posts/${post.slug}`}><time>{articleDate(post).slice(5)}</time><b>{post.title}</b><span className="tag">{categoryName(post)}</span></Link>) : <div className="archive-list-empty">{selectedChoice ? "没有匹配的已发布文章。" : "暂时还没有已发布文章。"}</div>}
+          </div>
+          <aside className="archive-side" aria-label="归档索引">
+            <section className="archive-side-section" aria-labelledby="archive-category-index-title">
+              <div className="archive-side-heading"><span><small>CATEGORIES</small><b id="archive-category-index-title">分类索引</b></span><strong>{categoryChoices.length}</strong></div>
+              {categoryChoices.length ? categoryChoices.map((item) => <button key={item.id} className={selected?.kind === "category" && selected.id === item.id ? "active" : ""} aria-pressed={selected?.kind === "category" && selected.id === item.id} style={{ "--taxonomy-color": item.color || "var(--accent)" } as CSSProperties} onClick={() => toggleSelection("category", item.id)}><i aria-hidden="true" /><span>{item.name}</span><strong>{item.count}</strong><em aria-hidden="true">↗</em></button>) : <div className="archive-side-empty"><span aria-hidden="true">◇</span><p>暂无分类</p></div>}
+            </section>
+            <section className="archive-side-section" aria-labelledby="archive-tag-index-title">
+              <div className="archive-side-heading"><span><small>TAGS</small><b id="archive-tag-index-title">标签索引</b></span><strong>{tagChoices.length}</strong></div>
+              {tagChoices.length ? tagChoices.map((item) => <button key={item.id} className={selected?.kind === "tag" && selected.id === item.id ? "active archive-side-tag" : "archive-side-tag"} aria-pressed={selected?.kind === "tag" && selected.id === item.id} onClick={() => toggleSelection("tag", item.id)}><i aria-hidden="true">#</i><span>{item.name}</span><strong>{item.count}</strong><em aria-hidden="true">↗</em></button>) : <div className="archive-side-empty"><span aria-hidden="true">#</span><p>暂无标签</p></div>}
+            </section>
+          </aside>
+        </div>}
+  </main>;
 }
 
 function MomentsPage() {
