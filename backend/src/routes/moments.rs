@@ -22,6 +22,7 @@ use crate::{
 
 const MAX_CONTENT_CHARS: usize = 5_000;
 const MAX_IMAGES: usize = 9;
+const MAX_TAGS: usize = 50;
 const MAX_VISITOR_ID_CHARS: usize = 200;
 const MAX_LIKE_TOGGLES_PER_MINUTE: i64 = 30;
 
@@ -137,6 +138,8 @@ struct SaveMomentRequest {
     content: String,
     #[serde(default)]
     asset_ids: Vec<i64>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
     created_at: Option<DateTime<Utc>>,
 }
 
@@ -158,6 +161,13 @@ struct MomentImageRow {
     alt_text: String,
 }
 
+#[derive(Debug, FromRow)]
+struct MomentTagRow {
+    moment_id: i64,
+    id: i64,
+    name: String,
+}
+
 #[derive(Debug, Serialize)]
 struct MomentImage {
     asset_id: i64,
@@ -166,10 +176,17 @@ struct MomentImage {
 }
 
 #[derive(Debug, Serialize)]
+struct MomentTag {
+    id: i64,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
 struct MomentItem {
     id: i64,
     content: String,
     images: Vec<MomentImage>,
+    tags: Vec<MomentTag>,
     like_count: i32,
     created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +280,29 @@ async fn validate_assets(pool: &sqlx::PgPool, asset_ids: &[i64]) -> Result<(), M
     Ok(())
 }
 
+async fn validate_tags(pool: &sqlx::PgPool, tag_ids: &[i64]) -> Result<(), MomentError> {
+    if tag_ids.len() > MAX_TAGS || tag_ids.iter().any(|id| *id <= 0) {
+        return Err(MomentError::validation(format!(
+            "每条说说最多选择 {MAX_TAGS} 个标签"
+        )));
+    }
+    let unique = tag_ids.iter().copied().collect::<HashSet<_>>();
+    if unique.len() != tag_ids.len() {
+        return Err(MomentError::validation("标签不能重复"));
+    }
+    if tag_ids.is_empty() {
+        return Ok(());
+    }
+    let found: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags WHERE id = ANY($1)")
+        .bind(tag_ids)
+        .fetch_one(pool)
+        .await?;
+    if found != tag_ids.len() as i64 {
+        return Err(MomentError::validation("存在不存在的标签"));
+    }
+    Ok(())
+}
+
 async fn sync_assets(
     transaction: &mut Transaction<'_, Postgres>,
     moment_id: i64,
@@ -282,6 +322,25 @@ async fn sync_assets(
         .bind(sort_order as i32)
         .execute(&mut **transaction)
         .await?;
+    }
+    Ok(())
+}
+
+async fn sync_tags(
+    transaction: &mut Transaction<'_, Postgres>,
+    moment_id: i64,
+    tag_ids: &[i64],
+) -> Result<(), MomentError> {
+    sqlx::query("DELETE FROM moment_tags WHERE moment_id = $1")
+        .bind(moment_id)
+        .execute(&mut **transaction)
+        .await?;
+    for tag_id in tag_ids {
+        sqlx::query("INSERT INTO moment_tags (moment_id, tag_id) VALUES ($1, $2)")
+            .bind(moment_id)
+            .bind(tag_id)
+            .execute(&mut **transaction)
+            .await?;
     }
     Ok(())
 }
@@ -316,6 +375,33 @@ async fn images_for_moments(
     Ok(images)
 }
 
+async fn tags_for_moments(
+    pool: &sqlx::PgPool,
+    moment_ids: &[i64],
+) -> Result<HashMap<i64, Vec<MomentTag>>, MomentError> {
+    if moment_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = sqlx::query_as::<_, MomentTagRow>(
+        "SELECT mt.moment_id, t.id, t.name
+         FROM moment_tags mt
+         JOIN tags t ON t.id = mt.tag_id
+         WHERE mt.moment_id = ANY($1)
+         ORDER BY mt.moment_id, t.name, t.id",
+    )
+    .bind(moment_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut tags = HashMap::<i64, Vec<MomentTag>>::new();
+    for row in rows {
+        tags.entry(row.moment_id).or_default().push(MomentTag {
+            id: row.id,
+            name: row.name,
+        });
+    }
+    Ok(tags)
+}
+
 async fn moment_items(
     pool: &sqlx::PgPool,
     rows: Vec<MomentRow>,
@@ -323,12 +409,14 @@ async fn moment_items(
 ) -> Result<Vec<MomentItem>, MomentError> {
     let ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let mut images = images_for_moments(pool, &ids).await?;
+    let mut tags = tags_for_moments(pool, &ids).await?;
     Ok(rows
         .into_iter()
         .map(|row| MomentItem {
             id: row.id,
             content: row.content,
             images: images.remove(&row.id).unwrap_or_default(),
+            tags: tags.remove(&row.id).unwrap_or_default(),
             like_count: row.like_count,
             created_at: row.created_at,
             updated_at: include_updated_at.then_some(row.updated_at),
@@ -503,6 +591,7 @@ async fn admin_create(
 ) -> Result<(StatusCode, Json<MomentItem>), MomentError> {
     require_admin(&state, &headers)?;
     validate_assets(state.pool(), &request.asset_ids).await?;
+    validate_tags(state.pool(), &request.tag_ids).await?;
     let content = normalized_content(&request.content, &request.asset_ids)?;
     let mut transaction = state.pool().begin().await?;
     let id: i64 = sqlx::query_scalar(
@@ -515,6 +604,7 @@ async fn admin_create(
     .fetch_one(&mut *transaction)
     .await?;
     sync_assets(&mut transaction, id, &request.asset_ids).await?;
+    sync_tags(&mut transaction, id, &request.tag_ids).await?;
     transaction.commit().await?;
     let item = fetch_moment(state.pool(), id)
         .await?
@@ -533,6 +623,7 @@ async fn admin_update(
         return Err(MomentError::validation("说说 id 必须为正整数"));
     }
     validate_assets(state.pool(), &request.asset_ids).await?;
+    validate_tags(state.pool(), &request.tag_ids).await?;
     let content = normalized_content(&request.content, &request.asset_ids)?;
     let mut transaction = state.pool().begin().await?;
     let result = sqlx::query(
@@ -549,6 +640,7 @@ async fn admin_update(
         return Err(MomentError::NotFound("说说不存在".to_owned()));
     }
     sync_assets(&mut transaction, id, &request.asset_ids).await?;
+    sync_tags(&mut transaction, id, &request.tag_ids).await?;
     transaction.commit().await?;
     let item = fetch_moment(state.pool(), id)
         .await?

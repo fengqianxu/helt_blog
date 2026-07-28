@@ -458,7 +458,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "分页读取时间轴说说",
         "Query: page/per_page、可选 visitor_id",
-        "200 分页 items[{id,content,images,like_count,created_at,liked_by_me}]",
+        "200 分页 items[{id,content,images,tags,like_count,created_at,liked_by_me}]",
         "按 created_at 倒序；未传 visitor_id 时 liked_by_me 恒为 false"
     ),
     endpoint!(
@@ -834,7 +834,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "分页读取全部说说",
         "Query: page/per_page、search?",
-        "200 分页 items，包含 images、like_count、created_at、updated_at",
+        "200 分页 items，包含 images、tags、like_count、created_at、updated_at",
         "按 created_at 倒序"
     ),
     endpoint!(
@@ -846,9 +846,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         CREATED,
         "发布说说",
-        "JSON: content、asset_ids?、created_at?",
+        "JSON: content、asset_ids?、tag_ids?、created_at?",
         "201 返回完整说说",
-        "asset_ids 必须指向图片素材；按提交顺序建立引用；空内容且无图片返回 422"
+        "asset_ids 必须指向图片素材，tag_ids 复用博客标签；按提交顺序建立引用；空内容且无图片返回 422"
     ),
     endpoint!(
         "ADMIN-MOMENT-03",
@@ -859,9 +859,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "编辑说说",
-        "路径 id；JSON: content、asset_ids、created_at?",
+        "路径 id；JSON: content、asset_ids、tag_ids、created_at?",
         "200 返回更新后的完整说说",
-        "事务替换图片引用且不重置点赞；不存在返回 404"
+        "事务替换图片与标签引用且不重置点赞；不存在返回 404"
     ),
     endpoint!(
         "ADMIN-MOMENT-04",
@@ -874,7 +874,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         "删除说说",
         "路径 id",
         "204 无响应体",
-        "事务删除点赞和素材引用；素材本体保留；不存在返回 404"
+        "事务删除点赞、素材与标签引用；素材和标签本体保留；不存在返回 404"
     ),
     // 后台评论：浏览器只使用博客管理员会话，后端代为调用 Artalk 管理 API。
     endpoint!(

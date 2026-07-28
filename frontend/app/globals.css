@@ -251,6 +251,8 @@ a { color: inherit; text-decoration: none; }
 .moment-actions button:disabled { opacity: .48; cursor: wait; transform: none; }
 .moment-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .moment-card > p.moment-content { margin-top: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.moment-tags { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.moment-tags span { padding: 4px 8px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb,var(--accent) 22%,var(--line)); font: 750 9px ui-monospace,monospace; }
 .moment-gallery { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; overflow: hidden; margin-top: 20px; }
 .moment-gallery.count-1 { grid-template-columns: 1fr; }
 .moment-gallery.count-3 img:first-child { grid-row: span 2; height: 100%; min-height: 270px; }
@@ -809,34 +811,41 @@ footer { padding: 48px 24px 90px; text-align: center; border-top: 1px solid var(
 .moment-admin-thumbs img { width: 42px; height: 42px; object-fit: cover; margin-right: -7px; background: var(--surface-2); border: 2px solid var(--surface); }
 .moment-admin-thumbs i { z-index: 1; display: grid; place-items: center; width: 36px; height: 36px; margin-left: 2px; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--line); font-size: 9px; font-style: normal; }
 .moment-admin-thumbs small { margin-left: 2px; }
-.moment-editor-overlay { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(8,6,13,.78); backdrop-filter: blur(10px); }
-.moment-editor-overlay > section { width: min(900px,100%); max-height: min(820px,calc(100svh - 40px)); display: grid; grid-template-rows: auto minmax(0,1fr) auto; overflow: hidden; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--accent); box-shadow: 0 30px 90px rgba(0,0,0,.42); clip-path: polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px); }
-.moment-editor-overlay header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 24px 15px; border-bottom: 1px solid var(--line); }
+.moment-editor-overlay { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(8,6,13,.22); -webkit-backdrop-filter: blur(16px) saturate(1.12); backdrop-filter: blur(16px) saturate(1.12); }
+.moment-editor-overlay > section { width: min(900px,100%); max-height: min(820px,calc(100svh - 40px)); display: grid; grid-template-rows: auto minmax(0,1fr) auto; overflow: hidden; color: var(--text); background: linear-gradient(135deg,color-mix(in srgb,var(--surface) 76%,transparent),color-mix(in srgb,var(--surface) 58%,transparent)); border: 1px solid color-mix(in srgb,#fff 52%,var(--line)); border-top: 4px solid var(--accent); box-shadow: 0 30px 90px rgba(0,0,0,.32),inset 0 1px rgba(255,255,255,.72); -webkit-backdrop-filter: blur(32px) saturate(1.28); backdrop-filter: blur(32px) saturate(1.28); clip-path: polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px); }
+.moment-editor-overlay header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 24px 15px; background: color-mix(in srgb,var(--surface) 46%,transparent); border-bottom: 1px solid color-mix(in srgb,#fff 44%,var(--line)); }
 .moment-editor-overlay header span { color: var(--accent); font: 750 9px ui-monospace,monospace; letter-spacing: .14em; }
 .moment-editor-overlay h2 { margin: 4px 0 0; font-size: 20px; }
 .moment-editor-overlay header > button { border: 0; padding: 0 4px; color: var(--faint); background: transparent; font-size: 24px; }
-.moment-editor-body { display: grid; grid-template-columns: minmax(0,1fr) 230px; align-content: start; gap: 16px; overflow-y: auto; padding: 20px 24px; }
+.moment-editor-body { display: grid; grid-template-columns: minmax(0,1fr) 230px; align-content: start; gap: 16px; overflow-y: auto; padding: 20px 24px; background: color-mix(in srgb,var(--surface) 18%,transparent); }
 .moment-editor-body label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 11px; }
-.moment-editor-body label > span,.moment-editor-assets > div:first-child { display: flex; justify-content: space-between; gap: 12px; }
-.moment-editor-body label small,.moment-editor-assets small { color: var(--faint); font-size: 9px; font-weight: 400; }
-.moment-editor-content textarea { min-height: 150px; resize: vertical; padding: 13px 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); outline: 0; line-height: 1.8; }
+.moment-editor-body label > span,.moment-editor-assets > div:first-child,.moment-editor-tags > div:first-child { display: flex; justify-content: space-between; gap: 12px; }
+.moment-editor-body label small,.moment-editor-assets small,.moment-editor-tags small { color: var(--faint); font-size: 9px; font-weight: 400; }
+.moment-editor-content textarea { min-height: 150px; resize: vertical; padding: 13px 14px; color: var(--text); background: color-mix(in srgb,var(--bg) 68%,transparent); border: 1px solid color-mix(in srgb,#fff 38%,var(--line)); box-shadow: inset 0 1px rgba(255,255,255,.38); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); outline: 0; line-height: 1.8; }
 .moment-editor-content textarea:focus,.moment-editor-time input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb,var(--accent) 11%,transparent); }
-.moment-editor-time input { min-height: 44px; padding: 10px 12px; color: var(--text); color-scheme: light dark; background: var(--bg); border: 1px solid var(--line); outline: 0; }
+.moment-editor-time input { min-height: 44px; padding: 10px 12px; color: var(--text); color-scheme: light dark; background: color-mix(in srgb,var(--bg) 68%,transparent); border: 1px solid color-mix(in srgb,#fff 38%,var(--line)); box-shadow: inset 0 1px rgba(255,255,255,.38); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); outline: 0; }
+.moment-editor-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .moment-editor-assets { grid-column: 1 / -1; }
+.moment-editor-tags .editor-tag-picker { max-height: 58px; gap: 4px; overflow-y: auto; margin-top: 6px; }
+.moment-editor-tags .editor-tag-picker button { gap: 3px; padding: 3px 6px; font-size: 9px; }
+.moment-editor-tags .taxonomy-create-row { gap: 4px; margin-top: 6px; }
+.moment-editor-tags .taxonomy-create-row input { min-height: 30px; padding: 5px 7px; color: var(--text); background: color-mix(in srgb,var(--bg) 68%,transparent); border: 1px solid color-mix(in srgb,#fff 38%,var(--line)); outline: 0; font-size: 10px; }
+.moment-editor-tags .taxonomy-create-row button { min-height: 30px; padding-inline: 6px; font-size: 9px; }
+.moment-editor-tags-empty { margin-top: 6px; padding: 7px 8px; color: var(--faint); background: color-mix(in srgb,var(--bg) 64%,transparent); border: 1px dashed var(--line); font-size: 9px; }
 .moment-editor-asset-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 9px; margin-top: 10px; }
-.moment-editor-asset-grid > button { position: relative; min-width: 0; display: grid; grid-template-rows: 86px auto; gap: 0; overflow: hidden; padding: 0; color: var(--muted); text-align: left; background: var(--bg); border: 1px solid var(--line); }
+.moment-editor-asset-grid > button { position: relative; min-width: 0; display: grid; grid-template-rows: 86px auto; gap: 0; overflow: hidden; padding: 0; color: var(--muted); text-align: left; background: color-mix(in srgb,var(--bg) 64%,transparent); border: 1px solid color-mix(in srgb,#fff 34%,var(--line)); box-shadow: inset 0 1px rgba(255,255,255,.3); }
 .moment-editor-asset-grid > button:hover,.moment-editor-asset-grid > button.selected { color: var(--accent); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .moment-editor-asset-grid img { width: 100%; height: 86px; object-fit: cover; }
 .moment-editor-asset-grid span { position: absolute; top: 5px; right: 5px; width: 23px; height: 23px; display: grid; place-items: center; color: #fff; background: rgba(10,13,22,.78); border: 1px solid rgba(255,255,255,.4); font: 800 10px ui-monospace,monospace; }
 .moment-editor-asset-grid > button.selected span { background: var(--accent); }
 .moment-editor-asset-grid b { overflow: hidden; padding: 7px 8px; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
-.moment-editor-no-assets { margin-top: 10px; padding: 28px; text-align: center; color: var(--faint); background: var(--bg); border: 1px dashed var(--line); font-size: 10px; }
+.moment-editor-no-assets { margin-top: 10px; padding: 28px; text-align: center; color: var(--faint); background: color-mix(in srgb,var(--bg) 64%,transparent); border: 1px dashed var(--line); font-size: 10px; }
 .moment-editor-no-assets p { margin: 0 0 6px; }
 .moment-editor-no-assets a { color: var(--accent); }
-.moment-editor-overlay > section > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; border-top: 1px solid var(--line); }
+.moment-editor-overlay > section > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; background: color-mix(in srgb,var(--surface) 46%,transparent); border-top: 1px solid color-mix(in srgb,#fff 44%,var(--line)); }
 .moment-editor-overlay footer > small { color: var(--faint); font-size: 9px; }
 .moment-editor-overlay footer > div { display: flex; gap: 8px; }
-.moment-editor-overlay footer button { padding: 8px 13px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); font-size: 11px; }
+.moment-editor-overlay footer button { padding: 8px 13px; color: var(--muted); background: color-mix(in srgb,var(--bg) 66%,transparent); border: 1px solid color-mix(in srgb,#fff 34%,var(--line)); font-size: 11px; }
 .moment-editor-overlay footer button.admin-primary { color: #fff; background: var(--accent); border-color: var(--accent); }
 .moment-editor-overlay button:disabled { opacity: .5; cursor: not-allowed; }
 .admin-article-preview-overlay { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(8,6,13,.76); }.admin-article-preview-overlay > section { width: min(920px, 100%); height: min(900px, calc(100svh - 36px)); min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; color: var(--text); background: var(--bg); border: 1px solid var(--line); box-shadow: var(--shadow); }.admin-article-preview-overlay > section > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 20px; background: var(--surface); border-bottom: 1px solid var(--line); }.admin-article-preview-overlay header span { color: var(--accent); font: 800 9px ui-monospace,monospace; letter-spacing: .13em; }.admin-article-preview-overlay header h2 { margin: 4px 0 0; font-size: 19px; }.admin-article-preview-overlay header button { border: 0; color: var(--muted); background: transparent; font-size: 25px; }.admin-article-preview-scroll { min-height: 0; overflow: auto; padding: 28px; }.admin-article-preview-card { width: min(780px,100%); margin: 0 auto; }.admin-article-preview-card .article-content { min-height: 120px; }

@@ -881,6 +881,14 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
     let database = TestDatabase::create().await;
     let app = test_app(database.pool.clone());
     let created_at = Utc::now();
+    let tag_ids = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO tags(name)
+         VALUES ('moment-integration-a'), ('moment-integration-b')
+         RETURNING id",
+    )
+    .fetch_all(&database.pool)
+    .await
+    .expect("insert shared moment tags");
 
     let (status, created) = json_request(
         &app,
@@ -889,6 +897,7 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
         Some(json!({
             "content": "第一条数据库说说",
             "asset_ids": [],
+            "tag_ids": [tag_ids[0]],
             "created_at": created_at
         })),
     )
@@ -897,6 +906,8 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
     let moment_id = created["id"].as_i64().expect("moment id");
     assert_eq!(created["content"], "第一条数据库说说");
     assert_eq!(created["images"], json!([]));
+    assert_eq!(created["tags"][0]["id"], tag_ids[0]);
+    assert_eq!(created["tags"][0]["name"], "moment-integration-a");
 
     let (status, public_list) = json_request(
         &app,
@@ -909,6 +920,7 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
     assert_eq!(public_list["total"], 1);
     assert_eq!(public_list["items"][0]["id"], moment_id);
     assert_eq!(public_list["items"][0]["liked_by_me"], false);
+    assert_eq!(public_list["items"][0]["tags"][0]["id"], tag_ids[0]);
 
     let (status, liked) = json_request(
         &app,
@@ -928,6 +940,7 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
         Some(json!({
             "content": "编辑后的数据库说说",
             "asset_ids": [],
+            "tag_ids": [tag_ids[1]],
             "created_at": created_at
         })),
     )
@@ -935,6 +948,14 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["content"], "编辑后的数据库说说");
     assert_eq!(updated["like_count"], 1);
+    assert_eq!(updated["tags"][0]["id"], tag_ids[1]);
+    let stored_tags: Vec<i64> =
+        sqlx::query_scalar("SELECT tag_id FROM moment_tags WHERE moment_id=$1 ORDER BY tag_id")
+            .bind(moment_id)
+            .fetch_all(&database.pool)
+            .await
+            .expect("synchronized moment tags");
+    assert_eq!(stored_tags, tag_ids[1..]);
 
     let (status, admin_list) = json_request(
         &app,
@@ -945,6 +966,7 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(admin_list["total"], 1);
+    assert_eq!(admin_list["items"][0]["tags"][0]["id"], tag_ids[1]);
 
     let (status, _) = json_request(
         &app,
@@ -961,6 +983,13 @@ async fn moments_crud_public_timeline_and_likes_use_postgres() {
             .await
             .expect("check like attempt cascade");
     assert!(!attempts_remain);
+    let tags_remain: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM moment_tags WHERE moment_id=$1)")
+            .bind(moment_id)
+            .fetch_one(&database.pool)
+            .await
+            .expect("check moment tag cascade");
+    assert!(!tags_remain);
 
     database.cleanup().await;
 }

@@ -303,6 +303,7 @@ type Moment = {
   id: number;
   content: string;
   images: MomentImage[];
+  tags: ArticleTag[];
   like_count: number;
   created_at: string;
   updated_at?: string;
@@ -1695,7 +1696,6 @@ function MomentsPage({ notify }: { notify: Notify }) {
       <div className="moment-overview-copy">
         <span className="moment-signal"><i aria-hidden="true" /> RECENT SIGNAL</span>
         <h2>把日常收进时间的缝隙</h2>
-        <p>开发时的灵光、生活里的小事，以及值得记住的节点。</p>
       </div>
       <dl>
         <div><dt>{String(monthCount).padStart(2, "0")}</dt><dd>本月动态</dd></div>
@@ -1707,7 +1707,6 @@ function MomentsPage({ notify }: { notify: Notify }) {
 
     <div className="moment-stream-heading">
       <span><i aria-hidden="true" /> {streamCode}</span>
-      <small>按时间倒序排列</small>
     </div>
     {loading ? <div className="moment-status" aria-live="polite"><b>LOADING</b><p>正在接收时间轴信号…</p></div>
       : loadError ? <div className="moment-status error" role="alert"><b>OFFLINE</b><p>{loadError}</p></div>
@@ -1730,6 +1729,7 @@ function MomentsPage({ notify }: { notify: Notify }) {
                     <small>NO. {String(total - index).padStart(2, "0")}</small>
                   </header>
                   {moment.content && <p className="moment-content">{moment.content}</p>}
+                  {moment.tags.length > 0 && <div className="moment-tags" aria-label="说说标签">{moment.tags.map((tag) => <span key={tag.id}># {tag.name}</span>)}</div>}
                   {moment.images.length > 0 && <div className={cx("moment-gallery", `count-${Math.min(moment.images.length, 4)}`)}>
                     {moment.images.map((image, imageIndex) => <Image key={image.asset_id} src={image.url} width={960} height={720} sizes="(max-width: 700px) 90vw, 620px" alt={image.alt_text || `说说配图 ${imageIndex + 1}`} unoptimized />)}
                   </div>}
@@ -2558,6 +2558,7 @@ type MomentDraft = {
   id: number | null;
   content: string;
   asset_ids: number[];
+  tag_ids: number[];
   created_at: string;
 };
 
@@ -2568,7 +2569,7 @@ function localDateTimeValue(value: string | Date = new Date()) {
 }
 
 function newMomentDraft(): MomentDraft {
-  return { id: null, content: "", asset_ids: [], created_at: localDateTimeValue() };
+  return { id: null, content: "", asset_ids: [], tag_ids: [], created_at: localDateTimeValue() };
 }
 
 function MomentManager({ notify, openInitially }: { notify: Notify; openInitially: boolean }) {
@@ -2583,6 +2584,10 @@ function MomentManager({ notify, openInitially }: { notify: Notify; openInitiall
   const [deleteTarget, setDeleteTarget] = useState<Moment | null>(null);
   const [assets, setAssets] = useState<AdminAsset[]>([]);
   const [assetsLoading, setAssetsLoading] = useState(true);
+  const [tags, setTags] = useState<ArticleTag[]>([]);
+  const [tagsLoading, setTagsLoading] = useState(true);
+  const [newTag, setNewTag] = useState("");
+  const [creatingTag, setCreatingTag] = useState(false);
   const loadSequenceRef = useRef(0);
   const perPage = 20;
 
@@ -2630,6 +2635,23 @@ function MomentManager({ notify, openInitially }: { notify: Notify; openInitiall
   }, [notify]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/v1/admin/tags", { credentials: "include", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "标签加载失败"));
+        return response.json() as Promise<{ items: ArticleTag[] }>;
+      })
+      .then((payload) => setTags(payload.items))
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) notify(error instanceof Error ? error.message : "标签加载失败", "danger");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setTagsLoading(false);
+      });
+    return () => controller.abort();
+  }, [notify]);
+
+  useEffect(() => {
     if (!draft && !deleteTarget) return;
     const previousOverflow = document.body.style.overflow;
     const close = (event: KeyboardEvent) => {
@@ -2649,8 +2671,45 @@ function MomentManager({ notify, openInitially }: { notify: Notify; openInitiall
     id: moment.id,
     content: moment.content,
     asset_ids: moment.images.map((image) => image.asset_id),
+    tag_ids: moment.tags.map((tag) => tag.id),
     created_at: localDateTimeValue(moment.created_at),
   });
+
+  const toggleTag = (tagId: number) => {
+    if (!draft) return;
+    setDraft({
+      ...draft,
+      tag_ids: draft.tag_ids.includes(tagId)
+        ? draft.tag_ids.filter((id) => id !== tagId)
+        : [...draft.tag_ids, tagId],
+    });
+  };
+
+  const createTag = async () => {
+    const name = newTag.trim();
+    if (!draft || !name || creatingTag) return;
+    setCreatingTag(true);
+    try {
+      const response = await fetch("/api/v1/admin/tags", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "标签创建失败"));
+      const item = await response.json() as ArticleTag;
+      setTags((items) => [...items, item].sort((left, right) => left.name.localeCompare(right.name, "zh-CN")));
+      setDraft((current) => current
+        ? { ...current, tag_ids: current.tag_ids.includes(item.id) ? current.tag_ids : [...current.tag_ids, item.id] }
+        : current);
+      setNewTag("");
+      notify(`已新增共享标签「${item.name}」`, "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "标签创建失败", "danger");
+    } finally {
+      setCreatingTag(false);
+    }
+  };
 
   const toggleAsset = (assetId: number) => {
     if (!draft) return;
@@ -2680,6 +2739,7 @@ function MomentManager({ notify, openInitially }: { notify: Notify; openInitiall
         body: JSON.stringify({
           content: draft.content,
           asset_ids: draft.asset_ids,
+          tag_ids: draft.tag_ids,
           created_at: new Date(draft.created_at).toISOString(),
         }),
       });
@@ -2730,12 +2790,20 @@ function MomentManager({ notify, openInitially }: { notify: Notify; openInitiall
       {!loading && !rows.length && <div className="empty-panel">还没有符合条件的说说。</div>}
     </div>
     {pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台说说分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}
-    {draft && <div className="moment-editor-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !saving && setDraft(null)}>
+    {draft && typeof document !== "undefined" && createPortal(<div className="moment-editor-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !saving && setDraft(null)}>
       <section role="dialog" aria-modal="true" aria-labelledby="moment-editor-title">
         <header><div><span>MOMENTS / TIMELINE</span><h2 id="moment-editor-title">{draft.id ? "编辑说说" : "发布说说"}</h2></div><button type="button" aria-label="关闭说说编辑器" disabled={saving} onClick={() => setDraft(null)}>×</button></header>
         <div className="moment-editor-body">
           <label className="moment-editor-content"><span>碎碎念 <small>{draft.content.length}/5000</small></span><textarea autoFocus maxLength={5000} value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="记录此刻的想法，也可以只发图片…" /></label>
-          <label className="moment-editor-time"><span>时间轴时间</span><input type="datetime-local" value={draft.created_at} onChange={(event) => setDraft({ ...draft, created_at: event.target.value })} /></label>
+          <div className="moment-editor-side">
+            <label className="moment-editor-time"><span>时间轴时间</span><input type="datetime-local" value={draft.created_at} onChange={(event) => setDraft({ ...draft, created_at: event.target.value })} /></label>
+            <section className="moment-editor-tags">
+              <div><span>标签</span></div>
+              {tagsLoading ? <div className="moment-editor-tags-empty">正在加载标签…</div>
+                : <div className="editor-tag-picker">{tags.length ? tags.map((item) => <button type="button" key={item.id} className={draft.tag_ids.includes(item.id) ? "selected" : ""} onClick={() => toggleTag(item.id)}>{item.name}<i>{draft.tag_ids.includes(item.id) ? "✓" : "+"}</i></button>) : <em>暂无可用标签</em>}</div>}
+              <div className="taxonomy-create-row"><input value={newTag} onChange={(event) => setNewTag(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void createTag()} placeholder="新增标签" aria-label="新增标签名称" /><button type="button" onClick={() => void createTag()} disabled={!newTag.trim() || creatingTag}>＋ 添加</button></div>
+            </section>
+          </div>
           <section className="moment-editor-assets">
             <div><span>配图素材</span><small>已选 {draft.asset_ids.length} / 9 · 点击图片选择并排序</small></div>
             {assetsLoading ? <div className="empty-panel">正在加载图片素材…</div>
@@ -2748,8 +2816,8 @@ function MomentManager({ notify, openInitially }: { notify: Notify; openInitiall
         </div>
         <footer><small>保存后会立即同步到博客前台的“时间轴”。</small><div><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button><button type="button" className="admin-primary" disabled={saving || (!draft.content.trim() && !draft.asset_ids.length)} onClick={() => void save()}>{saving ? "正在保存…" : draft.id ? "保存并同步" : "发布到时间轴"}</button></div></footer>
       </section>
-    </div>}
-    {deleteTarget && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteTarget(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="moment-delete-title"><header><div><span>MOMENTS / DELETE</span><h2 id="moment-delete-title">确认删除说说</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteTarget(null)}>×</button></header><p>这条说说会同时从前台时间轴移除，已有点赞记录也会删除。此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteTarget(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}
+    </div>, document.body)}
+    {deleteTarget && typeof document !== "undefined" && createPortal(<div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteTarget(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="moment-delete-title"><header><div><span>MOMENTS / DELETE</span><h2 id="moment-delete-title">确认删除说说</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteTarget(null)}>×</button></header><p>这条说说会同时从前台时间轴移除，已有点赞记录也会删除。此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteTarget(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>, document.body)}
   </>;
 }
 
