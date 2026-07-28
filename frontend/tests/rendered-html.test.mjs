@@ -114,6 +114,15 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(styles, /\.archive-side\s*\{[^}]*flex-direction:\s*column[^}]*gap:\s*18px/);
   assert.match(styles, /\.archive-side-section\s*\{[^}]*background:\s*var\(--surface\)[^}]*border:\s*1px solid var\(--line\)/);
   assert.match(styles, /@media \(max-width:\s*768px\)[\s\S]*?\.archive-side\s*\{[^}]*position:\s*static[^}]*order:\s*-1/);
+  assert.match(shell, /className="moment-overview" aria-label="时间轴概览"/);
+  assert.match(shell, /className="moment-stream-heading"/);
+  assert.match(shell, /<time className="moment-date" dateTime=\{moment\.dateTime\}>/);
+  assert.match(shell, /aria-pressed=\{isLiked\}/);
+  assert.match(shell, /className="moment-memory" role="img"/);
+  assert.doesNotMatch(shell, /className="photo-placeholder"/);
+  assert.match(styles, /\.moment-overview\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\) auto/);
+  assert.match(styles, /\.moment-card:hover\s*\{[^}]*transform:\s*translateY\(-3px\)/);
+  assert.match(styles, /@media \(max-width:\s*768px\)[\s\S]*?\.moments article\s*\{[^}]*grid-template-columns:\s*22px minmax\(0,1fr\)/);
   assert.match(shell, /\/api\/v1\/raiments/);
   assert.match(layout, /process\.env\.PUBLIC_ORIGIN/);
   assert.doesNotMatch(layout, /x-forwarded-host|headers\(\)/);
@@ -346,6 +355,10 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(shell, /<Footer \/>/);
   assert.match(shell, /site\.basic\.footer_text/);
   assert.match(siteSettings, /updateBasic\("footer_text"/);
+  assert.match(shell, /site\.basic\.footer_copyright/);
+  assert.match(shell, /replaceAll\("\{year\}"/);
+  assert.match(shell, /replaceAll\("\{site_name\}"/);
+  assert.match(siteSettings, /updateBasic\("footer_copyright"/);
   assert.match(shell, /site\.basic\.hero_eyebrow/);
   assert.match(siteSettings, /updateBasic\("hero_eyebrow"/);
   assert.match(raiments, /封面左下角对白/);

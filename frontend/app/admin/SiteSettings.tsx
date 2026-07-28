@@ -165,6 +165,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
               name: site.basic.name,
               tagline: site.basic.tagline,
               footer_text: site.basic.footer_text,
+              footer_copyright: site.basic.footer_copyright,
               hero_eyebrow: site.basic.hero_eyebrow,
               icp: site.basic.icp,
               logo_asset_id: site.basic.logo_asset_id,
@@ -232,8 +233,9 @@ export function SiteSettings({ notify }: { notify: Notify }) {
             onClear={() => chooseAsset("favicon", null)}
           />
         </div>
-        <label>站点描述<textarea maxLength={300} value={site?.basic.tagline ?? ""} disabled={!site} onChange={(event) => updateBasic("tagline", event.target.value)} /></label>
-        <label>页脚文字<textarea maxLength={500} value={site?.basic.footer_text ?? ""} disabled={!site} placeholder="显示在页脚品牌图片下方；可留空" onChange={(event) => updateBasic("footer_text", event.target.value)} /></label>
+        <label><span>站点简介 <small>用于浏览器标题；关于页未填写站点寄语时作为回退</small></span><textarea maxLength={300} value={site?.basic.tagline ?? ""} disabled={!site} placeholder="一句话概括站点内容" onChange={(event) => updateBasic("tagline", event.target.value)} /></label>
+        <label><span>页脚介绍 <small>仅显示在页脚品牌下方，与站点简介相互独立</small></span><textarea maxLength={500} value={site?.basic.footer_text ?? ""} disabled={!site} placeholder="可留空；支持换行" onChange={(event) => updateBasic("footer_text", event.target.value)} /></label>
+        <label><span>页脚底部文字 <small>支持 {'{year}'}（当前年份）和 {'{site_name}'}（站点名称）</small></span><input maxLength={300} value={site?.basic.footer_copyright ?? ""} disabled={!site} placeholder="可留空；备案号会单独追加在其后" onChange={(event) => updateBasic("footer_copyright", event.target.value)} /></label>
         <label>封面标识文字<input maxLength={120} value={site?.basic.hero_eyebrow ?? ""} disabled={!site} placeholder="SINCE 2020 · HELT'S BLOG" onChange={(event) => updateBasic("hero_eyebrow", event.target.value)} /></label>
         <div className="site-basic-row">
           <label>站点地址<input value={site?.basic.domain ?? ""} readOnly aria-readonly="true" /></label>

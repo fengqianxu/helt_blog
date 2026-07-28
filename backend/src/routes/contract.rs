@@ -1467,7 +1467,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存站点基本信息",
-        "JSON: basic{name,tagline,footer_text,hero_eyebrow,icp,logo_asset_id?,favicon_asset_id?}、features 与 updated_at?；domain 为只读",
+        "JSON: basic{name,tagline,footer_text,footer_copyright,hero_eyebrow,icp,logo_asset_id?,favicon_asset_id?}、features 与 updated_at?；domain 为只读",
         "200 JSON 返回完整站点设置；Logo/favicon 必须引用有效图片素材",
         "全量更新可编辑字段并同步素材引用；updated_at 冲突返回 409"
     ),

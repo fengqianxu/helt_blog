@@ -138,6 +138,7 @@ const DEFAULT_SITE: SitePayload = {
     name: "helt.",
     tagline: "记录技术、生活与热爱",
     footer_text: "记录技术、生活与热爱",
+    footer_copyright: "© 2020—{year} {site_name} · POWERED BY REACT",
     hero_eyebrow: "SINCE 2020 · HELT'S BLOG",
     domain: "",
     icp: "",
@@ -1580,8 +1581,67 @@ function ArchivesPage() {
 
 function MomentsPage() {
   const [liked, setLiked] = useState<number[]>([]);
-  const moments = [{ date: "07.21", text: "新博客的开屏动画调了一晚上，语音淡入的时机终于对了。就是这个感觉。", mood: "开发日志" }, { date: "07.14", text: "周末去了漫展，战利品合影。", mood: "日常" }, { date: "07.02", text: "博客运行满 2000 天了。谢谢每一个来过的人。", mood: "纪念" }];
-  return <main className="page-wrap narrow page-enter"><PageHeading title="时间轴" subtitle="MOMENTS · 碎碎念" /><div className="moments">{moments.map((m, i) => <article key={m.date}><div className="moment-date"><b>{m.date}</b><span>2026</span></div><div className="moment-card"><span className="tag">{m.mood}</span><p>{m.text}</p>{i === 1 && <div className="photo-placeholder"><span>COMIC MARKET</span><b>MEMORY / 07.14</b></div>}<div className="moment-actions"><button className={liked.includes(i) ? "liked" : ""} onClick={() => setLiked((items) => items.includes(i) ? items.filter((x) => x !== i) : [...items, i])}>{liked.includes(i) ? "♥" : "♡"} {18 - i * 3 + (liked.includes(i) ? 1 : 0)}</button></div></div></article>)}</div></main>;
+  const moments = [
+    { id: 1, dateTime: "2026-07-21T23:48:00+08:00", day: "07.21", year: "2026", time: "23:48", title: "把开屏的最后一帧调对", text: "新博客的开屏动画调了一晚上，语音淡入的时机终于对了。就是这个感觉。", mood: "开发日志", mark: "⌘", likes: 18 },
+    { id: 2, dateTime: "2026-07-14T16:20:00+08:00", day: "07.14", year: "2026", time: "16:20", title: "周末，漫展与战利品", text: "周末去了漫展，战利品合影。", mood: "日常", mark: "✦", likes: 15, hasMemory: true },
+    { id: 3, dateTime: "2026-07-02T09:12:00+08:00", day: "07.02", year: "2026", time: "09:12", title: "第 2000 天", text: "博客运行满 2000 天了。谢谢每一个来过的人。", mood: "纪念", mark: "∞", likes: 12 },
+  ];
+  const toggleLike = (id: number) => setLiked((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
+
+  return <main className="page-wrap narrow page-enter moments-page">
+    <PageHeading title="时间轴" subtitle="MOMENTS · 碎碎念" />
+    <section className="moment-overview" aria-label="时间轴概览">
+      <div className="moment-overview-copy">
+        <span className="moment-signal"><i aria-hidden="true" /> RECENT SIGNAL</span>
+        <h2>把日常收进时间的缝隙</h2>
+        <p>开发时的灵光、生活里的小事，以及值得记住的节点。</p>
+      </div>
+      <dl>
+        <div><dt>{String(moments.length).padStart(2, "0")}</dt><dd>本月动态</dd></div>
+        <div><dt>01</dt><dd>影像记录</dd></div>
+        <div><dt>21</dt><dd>最近更新</dd></div>
+      </dl>
+      <span className="moment-overview-code" aria-hidden="true">JUL / 2026</span>
+    </section>
+
+    <div className="moment-stream-heading">
+      <span><i aria-hidden="true" /> JULY / 2026</span>
+      <small>按时间倒序排列</small>
+    </div>
+    <div className="moments">
+      {moments.map((moment, index) => {
+        const isLiked = liked.includes(moment.id);
+        return <article key={moment.id} style={{ "--moment-order": index } as CSSProperties}>
+          <time className="moment-date" dateTime={moment.dateTime}>
+            <span>{moment.year}</span>
+            <b>{moment.day}</b>
+            <small>{moment.time}</small>
+          </time>
+          <i className="moment-node" aria-hidden="true"><span /></i>
+          <div className="moment-card">
+            <header>
+              <span className="moment-mood"><i aria-hidden="true">{moment.mark}</i>{moment.mood}</span>
+              <small>NO. {String(moments.length - index).padStart(2, "0")}</small>
+            </header>
+            <h2>{moment.title}</h2>
+            <p>{moment.text}</p>
+            {moment.hasMemory && <div className="moment-memory" role="img" aria-label="漫展战利品纪念影像">
+              <div className="moment-memory-copy"><span>COMIC MARKET</span><b>MEMORY / 07.14</b><small>WEEKEND ARCHIVE · 2026</small></div>
+              <div className="moment-memory-mark" aria-hidden="true"><i /><b>CM</b><i /></div>
+            </div>}
+            <footer className="moment-actions">
+              <span><i aria-hidden="true" /> LIFE LOG</span>
+              <button className={isLiked ? "liked" : ""} aria-label={`${isLiked ? "取消赞" : "点赞"}：${moment.title}`} aria-pressed={isLiked} onClick={() => toggleLike(moment.id)}>
+                <i aria-hidden="true">{isLiked ? "♥" : "♡"}</i>
+                <span>{moment.likes + (isLiked ? 1 : 0)}</span>
+              </button>
+            </footer>
+          </div>
+        </article>;
+      })}
+      <div className="moment-tail" aria-hidden="true"><i /> TO BE CONTINUED</div>
+    </div>
+  </main>;
 }
 
 function AboutPage({ notify }: { notify: Notify }) {
@@ -1828,7 +1888,12 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
 function Footer() {
   const site = useSite();
   const year = new Date().getFullYear();
-  return <footer><SiteBrand />{site.basic.footer_text && <p className="site-footer-text">{site.basic.footer_text}</p>}<span>© 2020—{year} {site.basic.name} · POWERED BY REACT{site.basic.icp ? ` · ${site.basic.icp}` : ""}</span></footer>;
+  const copyright = (site.basic.footer_copyright ?? "© 2020—{year} {site_name} · POWERED BY REACT")
+    .replaceAll("{year}", String(year))
+    .replaceAll("{site_name}", site.basic.name)
+    .trim();
+  const footerMeta = [copyright, site.basic.icp.trim()].filter(Boolean).join(" · ");
+  return <footer><SiteBrand />{site.basic.footer_text && <p className="site-footer-text">{site.basic.footer_text}</p>}{footerMeta && <span>{footerMeta}</span>}</footer>;
 }
 
 function AdminRouter({ pathname, theme, toggleTheme, notify }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify }) {

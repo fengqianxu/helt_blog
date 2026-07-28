@@ -112,6 +112,7 @@ export type SitePayload = {
     name: string;
     tagline: string;
     footer_text: string;
+    footer_copyright: string;
     hero_eyebrow: string;
     domain: string;
     icp: string;
