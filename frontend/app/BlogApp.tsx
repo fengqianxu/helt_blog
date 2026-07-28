@@ -136,6 +136,7 @@ const DEFAULT_SITE: SitePayload = {
   basic: {
     name: "helt.",
     tagline: "记录技术、生活与热爱",
+    hero_eyebrow: "SINCE 2020 · HELT'S BLOG",
     domain: "",
     icp: "",
     founded_at: "2026-07-23",
@@ -334,6 +335,7 @@ const MDEditor = dynamic(() => import("@uiw/react-md-editor/nohighlight"), { ssr
 export function BlogApp() {
   const pathname = usePathname() || "/";
   const [site, setSite] = useState<SitePayload>(DEFAULT_SITE);
+  const [siteFeaturesReady, setSiteFeaturesReady] = useState(false);
   const [raimentCatalog, setRaimentCatalog] = useState<RaimentCatalog>(DEFAULT_RAIMENT_CATALOG);
   const [activeRaimentId, setActiveRaimentId] = useState("saber");
   const theme = raimentCatalog.items[activeRaimentId]?.mode || "day";
@@ -341,7 +343,7 @@ export function BlogApp() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [themeTransition, setThemeTransition] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: "normal" | "success" | "danger" } | null>(null);
-  const [easterEgg, setEasterEgg] = useState(false);
+  const [easterEggPath, setEasterEggPath] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const storedRaimentPreference = useRef(false);
   const storedRaimentId = useRef<string | null>(null);
@@ -356,10 +358,15 @@ export function BlogApp() {
           if (!response.ok) throw new Error("站点资料加载失败");
           return response.json() as Promise<SitePayload>;
         })
-        .then(setSite)
+        .then((payload) => {
+          setSite(payload);
+          if (!payload.features.easter_egg) setEasterEggPath(null);
+          setSiteFeaturesReady(true);
+        })
         .catch((error) => {
           if (!(error instanceof DOMException && error.name === "AbortError")) {
             console.warn("Falling back to bundled site configuration", error);
+            setSiteFeaturesReady(true);
           }
         });
     };
@@ -385,7 +392,7 @@ export function BlogApp() {
   }, [site.basic.favicon_url, site.basic.name, site.basic.tagline]);
 
   useEffect(() => {
-    if (pathname.startsWith("/admin") || !site.features.stats) return;
+    if (!siteFeaturesReady || pathname.startsWith("/admin") || !site.features.stats) return;
     const id = visitorId();
     if (!id) return;
     const visitKey = `helt-visited:${pathname}`;
@@ -401,7 +408,7 @@ export function BlogApp() {
       body: JSON.stringify({ visitor_id: id, path: pathname }),
       keepalive: true,
     }).catch(() => undefined);
-  }, [pathname, site.features.stats]);
+  }, [pathname, site.features.stats, siteFeaturesReady]);
 
   useEffect(() => {
     const { raimentId: saved, legacyTheme, colorScheme } = readStoredRaiment();
@@ -494,16 +501,17 @@ export function BlogApp() {
   }, [pathname]);
 
   useEffect(() => {
-    if (!site.features.easter_egg) return;
+    if (!siteFeaturesReady || pathname.startsWith("/admin") || !site.features.easter_egg) return;
     const sequence = ["ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowLeft", "ArrowRight", "b", "a"];
     let cursor = 0;
     const onKey = (event: KeyboardEvent) => {
+      if ((event.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable='true']")) return;
       cursor = event.key.toLowerCase() === sequence[cursor].toLowerCase() ? cursor + 1 : 0;
-      if (cursor === sequence.length) { setEasterEgg(true); cursor = 0; }
+      if (cursor === sequence.length) { setEasterEggPath(pathname); cursor = 0; }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [site.features.easter_egg]);
+  }, [pathname, site.features.easter_egg, siteFeaturesReady]);
 
   const notify = useCallback<Notify>((message, tone = "normal") => {
     setToast({ message, tone });
@@ -539,10 +547,10 @@ export function BlogApp() {
   if (pathname.startsWith("/admin")) return <SiteContext.Provider value={site}><RaimentContext.Provider value={activeCatalog}><AdminRouter pathname={pathname} theme={theme} toggleTheme={toggleTheme} notify={notify} />{themeTransition && <ThemeBlade />}{toast && <Toast {...toast} />}</RaimentContext.Provider></SiteContext.Provider>;
 
   let page: React.ReactNode;
-  if (pathname === "/") page = <HomePage toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} />;
+  if (pathname === "/") page = <HomePage toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} siteFeaturesReady={siteFeaturesReady} />;
   else if (pathname.startsWith("/posts/")) {
     const slug = pathname.split("/").filter(Boolean)[1];
-    page = <ArticlePage slug={slug} theme={theme} notify={notify} />;
+    page = <ArticlePage slug={slug} theme={theme} notify={notify} siteFeaturesReady={siteFeaturesReady} />;
   }
   else if (pathname === "/archives") page = <ArchivesPage />;
   else if (pathname === "/moments") page = <MomentsPage />;
@@ -555,13 +563,12 @@ export function BlogApp() {
     <SiteContext.Provider value={site}><RaimentContext.Provider value={activeCatalog}><div className="site-shell">
       {pathname !== "/" && <TopNav {...common} />}
       {page}
-      {pathname !== "/" && <Footer />}
-      {site.features.music && <BackgroundMusic schedule={raimentCatalog.schedule} />}
-      <FloatingTools toggleTheme={toggleTheme} showKanban={site.features.kanban} />
+      <Footer />
+      {siteFeaturesReady && site.features.music && <BackgroundMusic schedule={raimentCatalog.schedule} />}
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
       {themeTransition && <ThemeBlade />}
       {toast && <Toast {...toast} />}
-      {site.features.easter_egg && easterEgg && <EasterEgg onClose={() => setEasterEgg(false)} />}
+      {site.features.easter_egg && easterEggPath === pathname && <EasterEgg onClose={() => setEasterEggPath(null)} />}
     </div></RaimentContext.Provider></SiteContext.Provider>
   );
 }
@@ -1031,7 +1038,7 @@ function TopNav({ pathname, toggleTheme, menuOpen, setMenuOpen, setSearchOpen, f
   );
 }
 
-function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; notify: Notify; onSearch: () => void }) {
+function HomePage({ toggleTheme, notify, onSearch, siteFeaturesReady }: { toggleTheme: () => void; notify: Notify; onSearch: () => void; siteFeaturesReady: boolean }) {
   const raiment = useRaiment();
   const site = useSite();
   const [page, setPage] = useState(1);
@@ -1045,6 +1052,7 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
   const [voiceSource, setVoiceSource] = useState("");
   const [voiceSeconds, setVoiceSeconds] = useState(0);
   const [voiceDuration, setVoiceDuration] = useState(0);
+  const [dialoguePosition, setDialoguePosition] = useState({ raimentId: "", index: 0 });
   const voiceRef = useRef<HTMLAudioElement | null>(null);
   const pageCount = Math.max(1, Math.ceil(total / 4));
   useEffect(() => {
@@ -1069,7 +1077,7 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
   }, [page]);
   const visiblePosts = posts;
   const commentCountKey = visiblePosts.map((post) => post.slug).join("|");
-  useArtalkCommentCounts(site.features.comments && !loading && !error ? commentCountKey : "");
+  useArtalkCommentCounts(siteFeaturesReady && site.features.comments && !loading && !error ? commentCountKey : "");
   const enter = () => document.getElementById("articles")?.scrollIntoView({ behavior: "smooth" });
   useEffect(() => {
     const updateNav = () => setNavElevated(window.scrollY > 56);
@@ -1077,10 +1085,71 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
     window.addEventListener("scroll", updateNav, { passive: true });
     return () => window.removeEventListener("scroll", updateNav);
   }, []);
-  useEffect(() => () => {
+  const coverDialogues = raiment.coverDialogue
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const dialogueIndex = dialoguePosition.raimentId === raiment.id ? dialoguePosition.index : 0;
+  const activeDialogue = coverDialogues[dialogueIndex % Math.max(1, coverDialogues.length)] || raiment.coverSubtitle;
+  const nextDialogue = useCallback(() => {
+    setDialoguePosition((current) => {
+      const currentIndex = current.raimentId === raiment.id ? current.index : 0;
+      return {
+        raimentId: raiment.id,
+        index: coverDialogues.length > 1 ? (currentIndex + 1) % coverDialogues.length : 0,
+      };
+    });
+  }, [raiment.id, coverDialogues.length]);
+  useEffect(() => {
+    if (coverDialogues.length < 2) return;
+    const timer = window.setInterval(nextDialogue, 6000);
+    return () => window.clearInterval(timer);
+  }, [raiment.id, coverDialogues.length, nextDialogue]);
+  useEffect(() => {
+    const source = raiment.coverVoiceUrl;
+    if (!source) {
+      voiceRef.current?.pause();
+      voiceRef.current = null;
+      return;
+    }
+    const audio = new Audio(source);
+    audio.preload = "auto";
     voiceRef.current?.pause();
-    voiceRef.current = null;
-  }, [raiment.coverVoiceUrl]);
+    voiceRef.current = audio;
+    let active = true;
+    const retryAfterInteraction = () => {
+      if (active && audio.paused) void audio.play().catch(() => undefined);
+    };
+    const removeUnlockListeners = () => {
+      window.removeEventListener("pointerdown", retryAfterInteraction);
+      window.removeEventListener("click", retryAfterInteraction);
+      window.removeEventListener("keydown", retryAfterInteraction);
+    };
+    audio.ontimeupdate = () => setVoiceSeconds(Math.floor(audio.currentTime || 0));
+    audio.onloadedmetadata = () => setVoiceDuration(Math.floor(audio.duration || 0));
+    audio.onplay = () => {
+      removeUnlockListeners();
+      setVoiceSource(source);
+      setVoicePlaying(true);
+      setVoiceSeconds(Math.floor(audio.currentTime || 0));
+    };
+    audio.onpause = () => setVoicePlaying(false);
+    audio.onended = () => {
+      setVoicePlaying(false);
+      setVoiceSeconds(0);
+    };
+    window.addEventListener("pointerdown", retryAfterInteraction, { once: true });
+    window.addEventListener("click", retryAfterInteraction, { once: true });
+    window.addEventListener("keydown", retryAfterInteraction, { once: true });
+    void audio.play().catch(() => undefined);
+    return () => {
+      active = false;
+      removeUnlockListeners();
+      audio.pause();
+      audio.src = "";
+      if (voiceRef.current === audio) voiceRef.current = null;
+    };
+  }, [raiment.id, raiment.coverVoiceUrl]);
   const voiceActive = voicePlaying && voiceSource === raiment.coverVoiceUrl;
   const toggleCoverVoice = () => {
     if (!raiment.coverVoiceUrl) {
@@ -1126,11 +1195,6 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
     setPage(target);
     document.querySelector(".section-intro")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-  const latestLabel = posts[0]
-    ? `最近更新：《${posts[0].title}》 · ${articleDate(posts[0])}`
-    : loading
-      ? "正在读取最新文章…"
-      : "暂时还没有已发布文章。";
   return (
     <>
       <TopNav pathname="/" toggleTheme={toggleTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} searchOpen={false} setSearchOpen={() => onSearch()} floating={site.features.splash} elevated={navElevated} />
@@ -1138,7 +1202,7 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
         <div className="hero-stripe stripe-one" /><div className="hero-stripe stripe-two" />
         <Image className="hero-art" src={raiment.cover} width={5120} height={2160} sizes="(max-width: 768px) 100vw, 64vw" priority unoptimized alt={`${raiment.name} 灵衣封面`} />
         <div className="hero-copy">
-          <div className="eyebrow"><i /> SINCE 2020 · HELT&apos;S BLOG</div>
+          <div className="eyebrow"><i /> {site.basic.hero_eyebrow}</div>
           <h1>{raiment.coverTitle}</h1>
           <p>{raiment.coverSubtitle}</p>
           <div className="hero-actions">
@@ -1146,12 +1210,21 @@ function HomePage({ toggleTheme, notify, onSearch }: { toggleTheme: () => void; 
             <button className="primary-button" onClick={enter}>ENTER · 进入博客 ▾</button>
           </div>
         </div>
-        <div className="dialog-box hero-dialog"><b>{raiment.coverCharacterName}</b><p>{raiment.coverDialogue}{latestLabel}</p><span>▼</span></div>
+        <button
+          type="button"
+          className="dialog-box hero-dialog"
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+          onClick={(event) => { event.stopPropagation(); nextDialogue(); }}
+          aria-label={coverDialogues.length > 1 ? "显示下一条封面对话" : undefined}
+        >
+          <b>{raiment.coverCharacterName}</b><p key={`${raiment.id}-${dialogueIndex}`}>{activeDialogue}</p><span>{coverDialogues.length > 1 ? `▼ ${dialogueIndex % coverDialogues.length + 1}/${coverDialogues.length}` : "▼"}</span>
+        </button>
         <button className="scroll-cue" onClick={enter}>SCROLL ▼</button>
       </section>}
       <section id="articles" className={cx("home-content", !site.features.splash && "without-splash")}>
         {site.features.stats && <Stats />}
-        <div className="section-intro reveal"><div><span>RECENT WRITING</span><h2>最近写下的东西</h2></div><p>技术、生活与热爱的作品。每一页都尽量留下真实的温度。</p></div>
+        <div className="section-intro reveal"><div><span>RECENT WRITING</span><h2>最近写下的东西</h2></div></div>
         <div className="post-list">
           <div className="post-page" key={page}>
             {loading && <div className="empty-panel">正在读取文章…</div>}
@@ -1189,7 +1262,7 @@ function PostCard({ post }: { post: Post }) {
 
 function PageHeading({ title, subtitle }: { title: string; subtitle: string }) { return <div className="page-heading"><h1>{title}</h1><span>{subtitle}</span></div>; }
 
-function ArticlePage({ slug, theme, notify }: { slug: string; theme: Theme; notify: Notify }) {
+function ArticlePage({ slug, theme, notify, siteFeaturesReady }: { slug: string; theme: Theme; notify: Notify; siteFeaturesReady: boolean }) {
   const site = useSite();
   const [progress, setProgress] = useState(0);
   const [liked, setLiked] = useState(false);
@@ -1247,9 +1320,9 @@ function ArticlePage({ slug, theme, notify }: { slug: string; theme: Theme; noti
         <MarkdownBody source={post.content_md || "这篇文章还没有正文。"} />
         <div id="article-actions" className="article-actions"><button className={liked ? "liked" : ""} onClick={() => { setLiked(!liked); notify(liked ? "已取消喜欢" : "感谢你的喜欢", "success"); }}>{liked ? "♥ 已喜欢" : "♡ 喜欢"}</button><button onClick={shareArticle}>⌁ 分享文章</button></div>
         <div className="article-nav">{previousPost ? <Link href={`/posts/${previousPost.slug}`}>← 上一篇<br /><b>{previousPost.title}</b></Link> : <span />}{nextPost ? <Link href={`/posts/${nextPost.slug}`}>下一篇 →<br /><b>{nextPost.title}</b></Link> : <span />}</div>
-        {site.features.comments && payload.allow_comment
+        {siteFeaturesReady && (site.features.comments && payload.allow_comment
           ? <Comments slug={post.slug} title={post.title} theme={theme} />
-          : <section className="comments comments-disabled"><h2>评论</h2><p>{site.features.comments ? "这篇文章已关闭评论。" : "站点当前已关闭全站评论。"}</p></section>}
+          : <section className="comments comments-disabled"><h2>评论</h2><p>{site.features.comments ? "这篇文章已关闭评论。" : "站点当前已关闭全站评论。"}</p></section>)}
       </article>
       <aside className="article-aside"><div className="toc"><b>目录 CONTENTS <small>{Math.round(progress)}%</small></b><Link href="#article-content" className="active">正文</Link><Link href="#article-actions">互动</Link></div><div className="recommend"><b>相关文章</b>{related.length ? related.map((item) => <Link key={item.id} href={`/posts/${item.slug}`}>{item.title}</Link>) : <Link href="/archives">浏览全部文章</Link>}</div></aside>
     </main></>
@@ -1547,17 +1620,6 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   return <div className="search-overlay" role="dialog" aria-modal="true" aria-label="搜索文章" onClick={onClose}><div className="search-panel" onClick={(e) => e.stopPropagation()}><div><span aria-hidden="true">⌕</span><input aria-label="搜索关键词" autoFocus value={query} onChange={(e) => { setQuery(e.target.value); if (!e.target.value.trim()) setResult([]); }} placeholder="搜索标题、分类或关键词…" /><button onClick={onClose} aria-label="关闭搜索">×</button></div>{query ? <section aria-live="polite">{result.length ? result.map((p) => <Link key={p.id} href={`/posts/${p.slug}`}><span className="tag">{categoryName(p)}</span><b>{p.title}</b><small>{articleDate(p)}</small></Link>) : <p>没有找到相关内容，换个关键词试试。</p>}</section> : <div className="search-suggestions"><small>热门关键词</small><div>{["React", "Fate", "Live2D", "博客重构"].map((item) => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div></div>}<small>ESC 关闭 · 输入关键词实时检索文章库</small></div></div>;
 }
 
-function FloatingTools({ toggleTheme, showKanban }: { toggleTheme: () => void; showKanban: boolean }) {
-  const raiment = useRaiment();
-  const [showTop, setShowTop] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatText, setChatText] = useState("");
-  const [chatReply, setChatReply] = useState<{ raimentId: string; text: string } | null>(null);
-  useEffect(() => { const watch = () => setShowTop(window.scrollY > 500); watch(); window.addEventListener("scroll", watch, { passive: true }); return () => window.removeEventListener("scroll", watch); }, []);
-  const sendChat = (text = chatText) => { if (!text.trim()) return; setChatReply({ raimentId: raiment.id, text: "我明白了，Master。这个演示暂时由 Mock 数据回应，但交互链路已经完整。" }); setChatText(""); };
-  return <>{showKanban && chatOpen && <div className="kanban-chat" role="dialog" aria-label="看板娘对话"><button className="close-chat" aria-label="关闭看板娘对话" onClick={() => setChatOpen(false)}>×</button><div className="kanban-name">{raiment.shortName} · GUIDE</div><p>{chatReply?.raimentId === raiment.id ? chatReply.text : raiment.kanban.greeting}</p><div className="quick-replies"><button onClick={() => sendChat("推荐文章")}>推荐文章</button><button onClick={() => sendChat("怎么切换主题")}>主题说明</button></div><form onSubmit={(e) => { e.preventDefault(); sendChat(); }}><input aria-label="发送给看板娘的消息" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={`问问 ${raiment.kanban.displayName}…`} /><button>发送</button></form></div>}<div className="floating-tools">{showTop && <button className="back-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="返回顶部">▲</button>}{showKanban && <button className={chatOpen ? "active" : ""} onClick={() => setChatOpen(!chatOpen)} aria-label={chatOpen ? "关闭看板娘" : "打开看板娘"} aria-expanded={chatOpen}>♙</button>}<button className="floating-theme" onClick={toggleTheme} aria-label="切换灵衣">衣</button></div></>;
-}
-
 function Footer() {
   const site = useSite();
   const year = new Date().getFullYear();
@@ -1621,7 +1683,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   const [currentAdmin, setCurrentAdmin] = useState(admin);
   const current = adminNav.find(([href]) => pathname === href)?.[2] || (pathname.includes("articles") ? "文章编辑器" : "仪表盘");
   let content: React.ReactNode;
-  if (pathname === "/admin") content = <Dashboard />;
+  if (pathname === "/admin") content = <Dashboard notify={notify} />;
   else if (pathname === "/admin/articles") content = <ArticleManager notify={notify} />;
   else if (pathname.includes("/admin/articles/")) content = <ArticleEditor pathname={pathname} theme={theme} notify={notify} />;
   else if (pathname === "/admin/comments") content = <ReviewManager notify={notify} />;
@@ -1730,10 +1792,89 @@ type DashboardOverview = {
 
 type DashboardDailyStat = { date: string; pv: number; uv: number };
 
-function Dashboard() {
+type DashboardModeratedComment = {
+  id: number;
+  content: string;
+  date: string;
+  nick: string;
+  page_key: string;
+};
+
+type DashboardCommentQueue = {
+  counts: { all: number; pending: number; approved: number };
+  items: DashboardModeratedComment[];
+};
+
+type DashboardFriendApplication = {
+  id: number;
+  name: string;
+  url: string;
+  description: string;
+  created_at: string;
+};
+
+type DashboardFriendQueue = {
+  counts: { pending: number; approved: number; rejected: number };
+  items: DashboardFriendApplication[];
+};
+
+const dashboardReviewDate = (value: string) => new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+}).format(new Date(value));
+
+function Dashboard({ notify }: { notify: Notify }) {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [trend, setTrend] = useState<DashboardDailyStat[]>([]);
   const [error, setError] = useState("");
+  const [commentQueue, setCommentQueue] = useState<DashboardCommentQueue>({
+    counts: { all: 0, pending: 0, approved: 0 },
+    items: [],
+  });
+  const [friendQueue, setFriendQueue] = useState<DashboardFriendQueue>({
+    counts: { pending: 0, approved: 0, rejected: 0 },
+    items: [],
+  });
+  const [reviewLoading, setReviewLoading] = useState(true);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewBusyId, setReviewBusyId] = useState<number | null>(null);
+
+  const loadReviewQueue = useCallback(async (signal?: AbortSignal) => {
+    setReviewLoading(true);
+    setReviewError("");
+    try {
+      const [commentResponse, friendResponse] = await Promise.all([
+        fetch("/api/v1/admin/comments?status=pending&page=1&per_page=2", {
+          credentials: "include",
+          headers: { accept: "application/json" },
+          signal,
+        }),
+        fetch("/api/v1/admin/friends?status=pending&page=1&per_page=2", {
+          credentials: "include",
+          headers: { accept: "application/json" },
+          signal,
+        }),
+      ]);
+      if (!commentResponse.ok) throw new Error(await responseMessage(commentResponse, "待审评论队列加载失败"));
+      if (!friendResponse.ok) throw new Error(await responseMessage(friendResponse, "友链审核队列加载失败"));
+      const [comments, friends] = await Promise.all([
+        commentResponse.json() as Promise<DashboardCommentQueue>,
+        friendResponse.json() as Promise<DashboardFriendQueue>,
+      ]);
+      setCommentQueue(comments);
+      setFriendQueue(friends);
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+        setReviewError(reason instanceof Error ? reason.message : "审核队列加载失败");
+      }
+    } finally {
+      if (!signal?.aborted) setReviewLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     Promise.all([
@@ -1756,15 +1897,78 @@ function Dashboard() {
     });
     return () => controller.abort();
   }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => void loadReviewQueue(controller.signal), 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [loadReviewQueue]);
+
+  const approveDashboardComment = async (item: DashboardModeratedComment) => {
+    setReviewBusyId(item.id);
+    setReviewError("");
+    try {
+      const response = await fetch(`/api/v1/admin/comments/${item.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ status: "approved" }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "评论处理失败"));
+      notify(`“${item.nick || "匿名访客"}”的评论已通过`, "success");
+      await loadReviewQueue();
+    } catch (reason) {
+      setReviewError(reason instanceof Error ? reason.message : "评论处理失败");
+    } finally {
+      setReviewBusyId(null);
+    }
+  };
+
   const maxPv = Math.max(1, ...trend.map((item) => item.pv));
   const visitorDelta = overview ? overview.today_uv - overview.yesterday_uv : 0;
+  const pendingReviewCount = commentQueue.counts.pending + friendQueue.counts.pending;
   const cards = overview ? [
     [overview.article_count.toLocaleString(), "文章总数", `${overview.published_count} 已发布 · ${overview.draft_count} 草稿`],
     [overview.total_visits.toLocaleString(), "累计访问", `今日 ${overview.today_pv} PV / ${overview.today_uv} UV`],
     [overview.today_uv.toLocaleString(), "今日访客", `${visitorDelta >= 0 ? "+" : ""}${visitorDelta} 较昨日`],
     [overview.uptime_days.toLocaleString(), "运行天数", "自站点创建日期起"],
   ] : [["—", "文章总数", "正在读取"], ["—", "累计访问", "正在读取"], ["—", "今日访客", "正在读取"], ["—", "运行天数", "正在读取"]];
-  return <><AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · LIVE SITE DATA" action={<Link href="/admin/articles/new" className="admin-primary">＋ 撰写新文章</Link>} />{error && <div className="admin-dashboard-error" role="alert">{error}</div>}<div className="admin-stats">{cards.map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div><div className="dashboard-grid"><section className="admin-panel"><h2>访问趋势 <small>LAST 14 DAYS · PV</small></h2><div className="chart">{trend.length ? trend.map((item) => <i key={item.date} title={`${item.date} · ${item.pv} PV / ${item.uv} UV`} style={{ height: `${Math.max(4, Math.round(item.pv / maxPv * 100))}%` }} />) : Array.from({ length: 14 }, (_, index) => <i className="loading" key={index} style={{ height: "4%" }} />)}</div></section><section className="admin-panel recent-comments"><h2>评论系统 <Link href="/admin/comments">管理 →</Link></h2><div><span>A</span><p><b>Artalk 已接入</b>最新评论、审核队列与评论统计请在评论控制台查看。</p></div></section></div><section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/assets">▧<span>上传素材</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section></>;
+  return <>
+    <AdminTitle title="仪表盘" sub="WELCOME BACK, MASTER · LIVE SITE DATA" />
+    {error && <div className="admin-dashboard-error" role="alert">{error}</div>}
+    <div className="admin-stats">{cards.map(([n, l, d]) => <article key={l}><span>{l}</span><b>{n}</b><small>{d}</small></article>)}</div>
+    <div className="dashboard-grid">
+      <section className="admin-panel">
+        <h2>访问趋势 <small>LAST 14 DAYS · PV</small></h2>
+        <div className="chart">{trend.length ? trend.map((item) => <i key={item.date} title={`${item.date} · ${item.pv} PV / ${item.uv} UV`} style={{ height: `${Math.max(4, Math.round(item.pv / maxPv * 100))}%` }} />) : Array.from({ length: 14 }, (_, index) => <i className="loading" key={index} style={{ height: "4%" }} />)}</div>
+      </section>
+      <section className="admin-panel dashboard-review" aria-label="待审核内容">
+        <h2><span>审核系统 <small>LIVE MODERATION</small></span><Link href="/admin/comments">全部审核 →</Link></h2>
+        <div className="dashboard-review-counts">
+          <Link href="/admin/comments?section=comments"><b>{commentQueue.counts.pending}</b><span>待审评论</span></Link>
+          <Link href="/admin/comments?section=friends"><b>{friendQueue.counts.pending}</b><span>待审友链</span></Link>
+        </div>
+        {reviewLoading ? <div className="dashboard-review-state" role="status">正在读取审核队列…</div>
+          : reviewError ? <div className="dashboard-review-state error" role="alert">{reviewError}<button type="button" onClick={() => void loadReviewQueue()}>重试</button></div>
+            : pendingReviewCount === 0 ? <div className="dashboard-review-state"><b>审核队列已清空</b><span>当前没有待处理的评论或友链申请。</span></div>
+              : <div className="dashboard-review-list">
+                {commentQueue.items.map((item) => <article key={`comment-${item.id}`}>
+                  <span aria-hidden="true">评</span>
+                  <div><b>{item.nick || "匿名访客"}</b><p>{item.content}</p><small>{item.page_key || "未知页面"} · {dashboardReviewDate(item.date)}</small></div>
+                  <button type="button" disabled={reviewBusyId === item.id} onClick={() => void approveDashboardComment(item)}>{reviewBusyId === item.id ? "处理中…" : "通过"}</button>
+                </article>)}
+                {friendQueue.items.map((item) => <article key={`friend-${item.id}`}>
+                  <span className="friend" aria-hidden="true">链</span>
+                  <div><b>{item.name}</b><p>{item.description || item.url}</p><small>{dashboardReviewDate(item.created_at)} 提交</small></div>
+                  <Link href="/admin/comments?section=friends">审核</Link>
+                </article>)}
+              </div>}
+      </section>
+    </div>
+    <section className="admin-panel quick"><h2>快速操作</h2><div><Link href="/admin/articles/new">✎<span>新建文章</span></Link><Link href="/admin/assets">▧<span>上传素材</span></Link><Link href="/admin/raiments">♙<span>管理灵衣</span></Link><Link href="/admin/settings">⚙<span>站点设置</span></Link></div></section>
+  </>;
 }
 
 function ArticleManager({ notify }: { notify: Notify }) {
@@ -1775,6 +1979,10 @@ function ArticleManager({ notify }: { notify: Notify }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [deleteConfirmation, setDeleteConfirmation] = useState<{ ids: number[]; title?: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [previewTarget, setPreviewTarget] = useState<Post | null>(null);
+  const [previewArticle, setPreviewArticle] = useState<ArticleEditPayload | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const loadSequenceRef = useRef(0);
@@ -1864,8 +2072,87 @@ function ArticleManager({ notify }: { notify: Notify }) {
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [deleteConfirmation, deleting]);
+  useEffect(() => {
+    if (!previewTarget) return;
+    const controller = new AbortController();
+    void fetch(`/api/v1/admin/articles/${previewTarget.id}`, { credentials: "include", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "文章预览加载失败"));
+        return response.json() as Promise<ArticleEditPayload>;
+      })
+      .then(setPreviewArticle)
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setPreviewError(error instanceof Error ? error.message : "文章预览加载失败");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setPreviewLoading(false);
+      });
+    return () => controller.abort();
+  }, [previewTarget]);
+  const openPreview = (post: Post) => {
+    setPreviewArticle(null);
+    setPreviewError("");
+    setPreviewLoading(true);
+    setPreviewTarget(post);
+  };
+  const closePreview = useCallback(() => {
+    setPreviewTarget(null);
+    setPreviewArticle(null);
+    setPreviewError("");
+    setPreviewLoading(false);
+  }, []);
+  useEffect(() => {
+    if (!previewTarget) return;
+    const previousOverflow = document.body.style.overflow;
+    const close = (event: KeyboardEvent) => event.key === "Escape" && closePreview();
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("keydown", close);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [closePreview, previewTarget]);
   const pageCount = Math.max(1, Math.ceil(total / perPage));
-  return <><AdminTitle title="文章管理" sub={`ARTICLES · ${total} 条结果`} action={<Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>} /><div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => { setFilter(x); setPage(1); }}>{x}</button>)}</div><input aria-label="搜索文章标题" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="搜索标题…" /></div>{selected.length > 0 && <div className="admin-toolbar"><span>已选择 {selected.length} 篇</span><button onClick={() => void batch("publish")}>发布</button><button onClick={() => void batch("unpublish")}>撤回</button><button onClick={() => void batch("pin")}>置顶</button><button onClick={() => void batch("delete")}>删除</button></div>}<div className="admin-table"><div className="table-head"><span>选择</span><span>标题</span><span>分类</span><span>状态</span><span>数据</span><span>日期</span><span>操作</span></div>{loading && <div className="empty-panel">正在加载文章…</div>}{!loading && rows.map((p) => <div className="table-row" key={p.id}><span><input type="checkbox" aria-label={`选择 ${p.title}`} checked={selected.includes(p.id)} onChange={(event) => setSelected((items) => event.target.checked ? [...items, p.id] : items.filter((id) => id !== p.id))} /></span><b>{p.is_pinned && <em>置顶</em>}{p.title}</b><span className="tag">{categoryName(p)}</span><span className={p.status === "published" ? "published" : "draft"}>{p.status === "published" ? "● 已发布" : p.status === "hidden" ? "◌ 隐藏" : "◐ 草稿"}</span><small>{p.view_count} 阅 · <span className="artalk-comment-count" data-page-key={articleCommentKey(p.slug)}>0</span> 评</small><small>{articleDate(p).slice(5)}</small><span className="row-actions"><Link href={`/admin/articles/${p.id}/edit`}>编辑</Link>{p.status === "published" && <Link href={`/posts/${p.slug}`}>预览</Link>}<button onClick={() => remove(p.id, p.title)}>删除</button></span></div>)}{!loading && !rows.length && <div className="empty-panel">没有符合当前筛选的文章。</div>}</div>{pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台文章分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}{deleteConfirmation && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteConfirmation(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="article-delete-title"><header><div><span>ARTICLES / DELETE</span><h2 id="article-delete-title">确认删除文章</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>×</button></header><p>{deleteConfirmation.ids.length === 1 && deleteConfirmation.title ? `确定删除《${deleteConfirmation.title}》？` : `确定删除选中的 ${deleteConfirmation.ids.length} 篇文章？`}此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}</>;
+  return <>
+    <AdminTitle title="文章管理" sub={`ARTICLES · ${total} 条结果`} action={<Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>} />
+    <div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => { setFilter(x); setPage(1); }}>{x}</button>)}</div><input aria-label="搜索文章标题" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="搜索标题…" /></div>
+    {selected.length > 0 && <div className="admin-toolbar"><span>已选择 {selected.length} 篇</span><button onClick={() => void batch("publish")}>发布</button><button onClick={() => void batch("unpublish")}>撤回</button><button onClick={() => void batch("pin")}>置顶</button><button onClick={() => void batch("delete")}>删除</button></div>}
+    <div className="admin-table">
+      <div className="table-head"><span>选择</span><span>标题</span><span>分类</span><span>状态</span><span>数据</span><span>日期</span><span>操作</span></div>
+      {loading && <div className="empty-panel">正在加载文章…</div>}
+      {!loading && rows.map((p) => <div className="table-row" key={p.id}>
+        <span><input type="checkbox" aria-label={`选择 ${p.title}`} checked={selected.includes(p.id)} onChange={(event) => setSelected((items) => event.target.checked ? [...items, p.id] : items.filter((id) => id !== p.id))} /></span>
+        <b>{p.is_pinned && <em>置顶</em>}{p.title}</b>
+        <span className="tag">{categoryName(p)}</span>
+        <span className={p.status === "published" ? "published" : "draft"}>{p.status === "published" ? "● 已发布" : p.status === "hidden" ? "◌ 隐藏" : "◐ 草稿"}</span>
+        <small>{p.view_count} 阅 · <span className="artalk-comment-count" data-page-key={articleCommentKey(p.slug)}>0</span> 评</small>
+        <small>{articleDate(p).slice(5)}</small>
+        <span className="row-actions"><Link href={`/admin/articles/${p.id}/edit`}>编辑</Link><button type="button" onClick={() => openPreview(p)}>预览</button><button onClick={() => remove(p.id, p.title)}>删除</button></span>
+      </div>)}
+      {!loading && !rows.length && <div className="empty-panel">没有符合当前筛选的文章。</div>}
+    </div>
+    {pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台文章分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}
+    {deleteConfirmation && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteConfirmation(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="article-delete-title"><header><div><span>ARTICLES / DELETE</span><h2 id="article-delete-title">确认删除文章</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>×</button></header><p>{deleteConfirmation.ids.length === 1 && deleteConfirmation.title ? `确定删除《${deleteConfirmation.title}》？` : `确定删除选中的 ${deleteConfirmation.ids.length} 篇文章？`}此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}
+    {previewTarget && typeof document !== "undefined" && createPortal(<div className="admin-article-preview-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closePreview()}>
+      <section role="dialog" aria-modal="true" aria-labelledby="admin-article-preview-title">
+        <header><div><span>ARTICLE / LAYOUT PREVIEW</span><h2 id="admin-article-preview-title">排版预览</h2></div><button type="button" aria-label="关闭文章预览" onClick={closePreview}>×</button></header>
+        <div className="admin-article-preview-scroll">
+          {previewLoading && <div className="empty-panel">正在生成排版预览…</div>}
+          {!previewLoading && previewError && <div className="empty-panel">{previewError}</div>}
+          {!previewLoading && previewArticle && <article className="article-card admin-article-preview-card">
+            <div className="breadcrumbs">{categoryName(previewTarget)}</div>
+            <h1>{previewArticle.title || "未命名文章"}</h1>
+            <div className="article-meta">{articleDate(previewTarget)} · {articleWords(previewTarget)} · {articleTime(previewTarget)}</div>
+            {previewArticle.summary && <p>{previewArticle.summary}</p>}
+            {previewTarget.cover_url && <Image className="article-image" src={previewTarget.cover_url} width={1200} height={675} sizes="(max-width: 820px) 100vw, 760px" alt={`${previewArticle.title} 封面`} unoptimized />}
+            <MarkdownBody source={previewArticle.content_md || "这篇文章还没有正文。"} />
+          </article>}
+        </div>
+      </section>
+    </div>, document.body)}
+  </>;
 }
 
 type ArticleEditPayload = {
@@ -2394,7 +2681,7 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
   const polishHint = polishing
     ? `正在生成${polishTargetLabel}候选稿，请稍候…`
     : !polishSource.trim()
-      ? `先填写${polishTargetLabel}草稿`
+      ? ""
       : llmLoading
         ? "正在读取可用 Key…"
         : !aiConnectionId
@@ -2405,7 +2692,7 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
               ? "还差一步：请选择模型"
               : !aiPrompt.trim()
                 ? "还差一步：请填写润色提示词"
-                : "已就绪；生成后先查看 Diff，再决定是否替换。";
+                : "";
   const candidateMergeRows = polishCandidate?.rows ?? [];
   let mergedResultLine = 0;
   const mergedPreviewRows = candidateMergeRows.map((row) => {
@@ -2451,13 +2738,12 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
             <div className={cx("editor-area", preview && "split")}>
               <div className="plugin-editor" data-color-mode={theme === "night" ? "dark" : "light"}><MDEditor value={data.content_md} onChange={(value) => update("content_md", value || "")} preview={preview ? "preview" : "edit"} height={500} visibleDragbar={false} textareaProps={{ "aria-label": "文章正文", placeholder: "从这里开始写下你的想法…" }} /></div>
             </div>
-            <div className="editor-writing-footer"><span>Markdown 编辑器插件 · 支持表格、任务列表与代码块</span><span><b>{wordCount.toLocaleString()}</b> 字 · 约 {readingMinutes} 分钟阅读</span></div>
+            <div className="editor-writing-footer"><span><b>{wordCount.toLocaleString()}</b> 字 · 约 {readingMinutes} 分钟阅读</span></div>
           </section>
         </section>
         <aside className="editor-sidebar">
           <section className="editor-side-card editor-ai-card">
-            <header><div><span>AI POLISH</span><h2>AI 润色</h2></div><small>本次文章专用</small></header>
-            <p>生成后先查看 Diff，确认前不会替换原文。</p>
+            <header><div><span>AI POLISH</span><h2>AI 润色</h2></div></header>
             <div className="editor-ai-target" role="group" aria-label="润色目标"><button type="button" className={aiTarget === "summary" ? "active" : ""} aria-pressed={aiTarget === "summary"} disabled={polishing} onClick={() => { setAiTarget("summary"); setLlmError(""); }}>摘要</button><button type="button" className={aiTarget === "content_md" ? "active" : ""} aria-pressed={aiTarget === "content_md"} disabled={polishing} onClick={() => { setAiTarget("content_md"); setLlmError(""); }}>正文</button></div>
             <div className="editor-ai-fields">
               <label>使用 Key<select value={aiConnectionId ?? ""} disabled={llmLoading || polishing} onChange={(event) => selectAiConnection(event.target.value)}><option value="">{llmLoading ? "正在读取 Key…" : "请选择已保存的 Key"}</option>{llmConnections.map((connection) => <option value={connection.id} key={connection.id}>{connection.display_name}</option>)}</select></label>
@@ -2466,26 +2752,24 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
             </div>
             {(!llmLoading && !llmConnections.length) && <div className="editor-ai-empty">还没有可用 Key。<Link href="/admin/llm">先去 LLM 管理新增并验证 →</Link></div>}
             {llmError && <div className="editor-ai-error" role="alert">{llmError}</div>}
-            <footer><span role="status">{polishHint}</span><button className="admin-primary" type="button" aria-busy={polishing} onClick={() => void polishArticle()} disabled={polishing}>{polishing ? <><i className="editor-ai-wait-mark" aria-hidden="true">◆</i> 正在生成{polishTargetLabel}候选…</> : aiTarget === "summary" ? "✦ 生成摘要候选" : "✦ 生成正文候选"}</button></footer>
+            <footer>{polishHint && <span role="status">{polishHint}</span>}<button className="admin-primary" type="button" aria-busy={polishing} onClick={() => void polishArticle()} disabled={polishing}>{polishing ? <><i className="editor-ai-wait-mark" aria-hidden="true">◆</i> 正在生成{polishTargetLabel}候选…</> : aiTarget === "summary" ? "✦ 生成摘要候选" : "✦ 生成正文候选"}</button></footer>
           </section>
           <section className="editor-side-card editor-publishing-card">
             <div className="editor-side-heading"><h2>发布设置</h2><span className={cx("editor-status-dot", data.status)}>{statusLabel}</span></div>
-            <div className="editor-control"><span>分类 <small>选择已有或新增</small></span><div className="taxonomy-select-row"><select value={data.category_id ?? ""} onChange={(e) => update("category_id", e.target.value ? Number(e.target.value) : null)}><option value="">选择分类</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void createCategory()} placeholder="新增分类" aria-label="新增分类名称" /><button type="button" onClick={() => void createCategory()} disabled={!newCategory.trim() || creatingTaxonomy === "category"}>＋</button></div></div>
+            <div className="editor-control"><span>分类</span><div className="taxonomy-select-row"><select value={data.category_id ?? ""} onChange={(e) => update("category_id", e.target.value ? Number(e.target.value) : null)}><option value="">选择分类</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void createCategory()} placeholder="新增分类" aria-label="新增分类名称" /><button type="button" onClick={() => void createCategory()} disabled={!newCategory.trim() || creatingTaxonomy === "category"}>＋</button></div></div>
             <div className="editor-side-divider" />
-            <div className="editor-control"><span>标签 <small>可多选、可新增</small></span><div className="editor-tag-picker">{tags.length ? tags.map((item) => <button type="button" key={item.id} className={data.tag_ids.includes(item.id) ? "selected" : ""} onClick={() => toggleTag(item.id)}>{item.name}<i>{data.tag_ids.includes(item.id) ? "✓" : "+"}</i></button>) : <em>暂无可用标签</em>}</div><div className="taxonomy-create-row"><input value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void createTag()} placeholder="新增标签" aria-label="新增标签名称" /><button type="button" onClick={() => void createTag()} disabled={!newTag.trim() || creatingTaxonomy === "tag"}>＋ 添加标签</button></div></div>
+            <div className="editor-control"><span>标签</span><div className="editor-tag-picker">{tags.length ? tags.map((item) => <button type="button" key={item.id} className={data.tag_ids.includes(item.id) ? "selected" : ""} onClick={() => toggleTag(item.id)}>{item.name}<i>{data.tag_ids.includes(item.id) ? "✓" : "+"}</i></button>) : <em>暂无可用标签</em>}</div><div className="taxonomy-create-row"><input value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void createTag()} placeholder="新增标签" aria-label="新增标签名称" /><button type="button" onClick={() => void createTag()} disabled={!newTag.trim() || creatingTaxonomy === "tag"}>＋ 添加标签</button></div></div>
           </section>
           <section className="editor-side-card editor-article-options-card">
             <div className="editor-side-heading"><h2>文章选项</h2><span>OPTIONS</span></div>
-            <label className="editor-toggle"><input type="checkbox" checked={data.is_pinned} onChange={(e) => update("is_pinned", e.target.checked)} /><span><b>置顶文章</b><small>在首页优先展示</small></span><i /></label>
-            <label className="editor-toggle"><input type="checkbox" checked={data.allow_comment} onChange={(e) => update("allow_comment", e.target.checked)} /><span><b>允许评论</b><small>读者可以在文章下留言</small></span><i /></label>
-            <label className="editor-toggle"><input type="checkbox" checked={data.kanban_ref} onChange={(e) => update("kanban_ref", e.target.checked)} /><span><b>看板娘参与</b><small>在文章页显示相关对话</small></span><i /></label>
+            <label className="editor-toggle"><input type="checkbox" checked={data.is_pinned} onChange={(e) => update("is_pinned", e.target.checked)} /><span><b>置顶文章</b></span><i /></label>
+            <label className="editor-toggle"><input type="checkbox" checked={data.allow_comment} onChange={(e) => update("allow_comment", e.target.checked)} /><span><b>允许评论</b></span><i /></label>
+            <label className="editor-toggle"><input type="checkbox" checked={data.kanban_ref} onChange={(e) => update("kanban_ref", e.target.checked)} /><span><b>看板娘参与</b></span><i /></label>
           </section>
           <section className="editor-side-card editor-cover-card">
             <div className="editor-side-heading"><h2>封面素材</h2><span>OPTIONAL</span></div>
             <div className="editor-cover-picker-row">{cover ? <div className="editor-cover-preview"><Image src={cover.file.url} width={180} height={100} unoptimized alt={cover.name} /><button type="button" onClick={() => update("cover_asset_id", null)}>移除</button></div> : <div className="editor-cover-empty"><span>▧</span><p>还没有选择封面</p></div>}<button type="button" className="editor-cover-select" onClick={() => setCoverPickerOpen(true)}>从素材库选择</button></div>
-            <div className="editor-cover-note"><span>▧</span><p>封面会显示在首页文章卡片。支持在弹窗中预览并选择图片素材。</p></div>
           </section>
-          <div className="editor-tip"><span>✦</span><div><b>写作小贴士</b><p>先写标题和摘要，再放心地进入正文。草稿随时可以保存，发布前记得打开预览检查排版。</p></div></div>
         </aside>
       </div>
       {typeof document !== "undefined" && polishCandidate && createPortal(<div className="editor-diff-modal" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closePolishComparison()}>

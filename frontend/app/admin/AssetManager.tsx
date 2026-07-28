@@ -23,6 +23,17 @@ type UploadTask = {
   error: string;
 };
 
+type AssetSort = "created_desc" | "created_asc" | "name_asc" | "name_desc" | "size_desc" | "size_asc";
+
+const assetSortOptions: Array<[AssetSort, string]> = [
+  ["created_desc", "最近上传"],
+  ["created_asc", "最早上传"],
+  ["name_asc", "名称 A–Z"],
+  ["name_desc", "名称 Z–A"],
+  ["size_desc", "文件从大到小"],
+  ["size_asc", "文件从小到大"],
+];
+
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS = 3;
 
@@ -84,6 +95,7 @@ export function AssetManager({ notify }: { notify: Notify }) {
   const [assets, setAssets] = useState<AdminAsset[]>([]);
   const [filter, setFilter] = useState<AdminAsset["media_type"] | "all">("all");
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<AssetSort>("created_desc");
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [detail, setDetail] = useState<AssetDetailPayload | null>(null);
@@ -112,6 +124,9 @@ export function AssetManager({ notify }: { notify: Notify }) {
     const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
     if (filter !== "all") params.set("media_type", filter);
     if (query.trim()) params.set("search", query.trim());
+    const [sortField, sortOrder] = sort.split("_");
+    params.set("sort", sortField);
+    params.set("order", sortOrder);
     try {
       const response = await fetch(`/api/v1/admin/assets?${params}`, {
         credentials: "include",
@@ -129,7 +144,7 @@ export function AssetManager({ notify }: { notify: Notify }) {
     } finally {
       setLoading(false);
     }
-  }, [filter, notify, page, query]);
+  }, [filter, notify, page, query, sort]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -422,7 +437,7 @@ export function AssetManager({ notify }: { notify: Notify }) {
       </div>
       <div className="asset-tabs">
         {tabs.map(([value, label]) => <button key={value} className={filter === value ? "active" : ""} onClick={() => { setFilter(value); setPage(1); }}>{label}{filter === value ? ` ${total}` : ""}</button>)}
-        <span>排序：<b>最近上传</b></span>
+        <label className="asset-sort">排列<select aria-label="素材排列方式" value={sort} onChange={(event) => { setSort(event.target.value as AssetSort); setPage(1); }}>{assetSortOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       </div>
       <div
         className={cx("asset-dropzone", dragging && "dragging")}

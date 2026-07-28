@@ -32,13 +32,13 @@ type BrandingSlot = "logo" | "favicon";
 
 const BRANDING_ASSET_PAGE_SIZE = 12;
 
-const featureOptions: Array<[keyof SitePayload["features"], string, string]> = [
-  ["splash", "开屏页", "关闭后首页直接显示文章流"],
-  ["comments", "全站评论", "关闭后所有文章隐藏 Artalk 评论区"],
-  ["kanban", "看板娘", "控制右下角看板娘入口与对话"],
-  ["music", "背景音乐", "控制按时间段联动的站内播放器"],
-  ["stats", "访问统计", "控制首页统计条与匿名 PV/UV 上报"],
-  ["easter_egg", "Konami 彩蛋", "控制键盘隐藏彩蛋"],
+const featureOptions: Array<[keyof SitePayload["features"], string]> = [
+  ["splash", "开屏页"],
+  ["comments", "全站评论"],
+  ["kanban", "看板娘"],
+  ["music", "背景音乐"],
+  ["stats", "访问统计"],
+  ["easter_egg", "Konami 彩蛋（↑ ↑ ↓ ↓ ← → ← → B A）"],
 ];
 
 const newPeriodId = () => `period-${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`;
@@ -164,6 +164,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
             basic: {
               name: site.basic.name,
               tagline: site.basic.tagline,
+              hero_eyebrow: site.basic.hero_eyebrow,
               icp: site.basic.icp,
               logo_asset_id: site.basic.logo_asset_id,
               favicon_asset_id: site.basic.favicon_asset_id,
@@ -231,6 +232,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
           />
         </div>
         <label>站点描述<textarea maxLength={300} value={site?.basic.tagline ?? ""} disabled={!site} onChange={(event) => updateBasic("tagline", event.target.value)} /></label>
+        <label>封面标识文字<input maxLength={120} value={site?.basic.hero_eyebrow ?? ""} disabled={!site} placeholder="SINCE 2020 · HELT'S BLOG" onChange={(event) => updateBasic("hero_eyebrow", event.target.value)} /></label>
         <div className="site-basic-row">
           <label>站点地址<input value={site?.basic.domain ?? ""} readOnly aria-readonly="true" /></label>
           <label>ICP 备案号<input maxLength={100} value={site?.basic.icp ?? ""} disabled={!site} placeholder="可留空" onChange={(event) => updateBasic("icp", event.target.value)} /></label>
@@ -239,8 +241,8 @@ export function SiteSettings({ notify }: { notify: Notify }) {
       </section>
       <section className="admin-panel toggles">
         <h2>功能开关</h2>
-        {featureOptions.map(([key, label, description]) => <div key={key}>
-          <span><b>{label}</b><small>{description}</small></span>
+        {featureOptions.map(([key, label]) => <div key={key}>
+          <span><b>{label}</b></span>
           <label className="toggle"><input type="checkbox" checked={site?.features[key] ?? false} disabled={!site} onChange={(event) => updateFeature(key, event.target.checked)} /><i /></label>
         </div>)}
       </section>
@@ -248,12 +250,11 @@ export function SiteSettings({ notify }: { notify: Notify }) {
 
     <section className="admin-panel raiment-schedule-panel">
       <header>
-        <div><span>AUTOMATION</span><h2>灵衣与背景音乐时间段</h2><p>使用访客设备的本地时间，以 24 小时制匹配。每段可引用一份已启用歌单；跨午夜可直接填写，例如 19:00—07:00。</p></div>
+        <div><span>AUTOMATION</span><h2>灵衣与背景音乐时间段</h2></div>
         <button type="button" onClick={addPeriod} disabled={loading || !schedule}>＋ 新增时间段</button>
       </header>
       {loading && <div className="raiment-schedule-empty">正在读取时间段…</div>}
       {!loading && schedule?.periods.map((period, index) => {
-        const wraps = period.start_at >= period.end_at;
         return <div className="raiment-schedule-row" key={period.id}>
           <b>{String(index + 1).padStart(2, "0")}</b>
           <label>开始<input type="time" step={60} value={period.start_at} onChange={(event) => updatePeriod(period.id, { start_at: event.target.value })} /></label>
@@ -264,12 +265,11 @@ export function SiteSettings({ notify }: { notify: Notify }) {
             <option value="">不播放</option>
             {playlists.map((playlist) => <option value={playlist.id} key={playlist.id}>{playlist.name}{playlist.status === "unavailable" ? "（暂不可用）" : ""}</option>)}
           </select></label>
-          <small>{wraps ? "跨午夜" : "当日"}</small>
           <button type="button" aria-label={`删除第 ${index + 1} 个时间段`} onClick={() => removePeriod(period.id)}>×</button>
         </div>;
       })}
       {!loading && schedule && !schedule.periods.length && <div className="raiment-schedule-empty">尚未设置自动时间段；前台将使用默认灵衣，访客仍可手动切换。</div>}
-      <footer>时间段不可重叠；开始时间包含在内，结束时间不包含在内。未覆盖的时刻使用默认灵衣且不播放背景音乐。歌单可在“歌单”页面维护。</footer>
+      <footer>时间段不可重叠；开始时间包含在内，结束时间不包含在内。未覆盖的时刻使用默认灵衣且不播放背景音乐。</footer>
     </section>
     {assetPicker && <BrandingAssetPicker
       slot={assetPicker}

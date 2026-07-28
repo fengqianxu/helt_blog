@@ -390,7 +390,6 @@ export function LlmSettings({ notify }: { notify: Notify }) {
             <button type="button" onClick={startAddingKey} disabled={newKey !== null}>＋ 新增 Key</button>
           </div>
         </header>
-        <p className="llm-help">新增时只验证并保存连接凭据，不需要选择模型。模型由下方每个具体场景独立选择。</p>
         {newKey && <article className="llm-new-key-card">
           <div className="llm-connection-card-header"><div><code>NEW KEY</code><h3>测试通过后自动保存</h3></div></div>
           <div className="llm-form-grid">
@@ -423,7 +422,7 @@ export function LlmSettings({ notify }: { notify: Notify }) {
         </div>
       </section>
       <section className="llm-use-cases">
-        <header><div><h2>场景绑定</h2><p>USE CASE ROUTING</p></div><small>长期运行的场景在这里绑定；文章润色在撰写页按次选择</small></header>
+        <header><div><h2>场景绑定</h2><p>USE CASE ROUTING</p></div></header>
         <div>
           {USE_CASES.map((item) => {
             const useCase = settings.use_cases[item.id];

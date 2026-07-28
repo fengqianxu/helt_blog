@@ -11,6 +11,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src/lib.rs ./src/lib.rs
 RUN cargo fetch --locked
 
+COPY build.rs ./build.rs
 COPY migrations ./migrations
 COPY src ./src
 

@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import { AdminAsset, Notify, responseMessage } from "./shared";
@@ -96,7 +97,9 @@ function localDate(value: string) {
 }
 
 export function ReviewManager({ notify }: { notify: Notify }) {
-  const [section, setSection] = useState<ReviewSection>("comments");
+  const searchParams = useSearchParams();
+  const requestedSection = searchParams.get("section");
+  const [section, setSection] = useState<ReviewSection>(requestedSection === "friends" ? "friends" : "comments");
   const [commentFilter, setCommentFilter] = useState<CommentFilter>("pending");
   const [commentSearchDraft, setCommentSearchDraft] = useState("");
   const [commentSearch, setCommentSearch] = useState("");

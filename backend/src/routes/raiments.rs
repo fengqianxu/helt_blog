@@ -1306,7 +1306,7 @@ fn validate_fields(fields: RaimentFields<'_>) -> Result<ColorScheme, RaimentErro
         ("封面标题", fields.cover_title, 240),
         ("封面副标题", fields.cover_subtitle, 240),
         ("封面对话角色名", fields.cover_character_name, 80),
-        ("封面对话", fields.cover_dialogue, 500),
+        ("封面对话", fields.cover_dialogue, 5000),
         ("封面语音标签", fields.cover_voice_label, 120),
     ] {
         if value.chars().count() > max {
@@ -1314,6 +1314,18 @@ fn validate_fields(fields: RaimentFields<'_>) -> Result<ColorScheme, RaimentErro
                 "{label}不能超过 {max} 个字符"
             )));
         }
+    }
+    let dialogues = fields
+        .cover_dialogue
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if dialogues.len() > 20 {
+        return Err(RaimentError::validation("每套灵衣最多配置 20 条封面对话"));
+    }
+    if dialogues.iter().any(|value| value.chars().count() > 240) {
+        return Err(RaimentError::validation("每条封面对话不能超过 240 个字符"));
     }
     if fields.cover_title.trim().is_empty() {
         return Err(RaimentError::validation("封面标题不能为空"));
@@ -1399,7 +1411,7 @@ mod tests {
         assert!(parse_time("7:00").is_err());
         assert!(parse_time("24:00").is_err());
         let theme = theme();
-        let valid = |name, color_scheme| RaimentFields {
+        let valid = |name, color_scheme, cover_dialogue| RaimentFields {
             name,
             cover_asset_id: 1,
             theme: &theme,
@@ -1410,16 +1422,22 @@ mod tests {
             cover_title: "标题",
             cover_subtitle: "副标题",
             cover_character_name: "Saber",
-            cover_dialogue: "你好",
+            cover_dialogue,
             cover_voice_label: "播放",
             cover_voice_asset_id: None,
             login_success_voice_asset_id: None,
             kanban_asset_id: None,
         };
-        let validated = validate_fields(valid("日间模式", "day")).expect("valid raiment");
+        let validated =
+            validate_fields(valid("日间模式", "day", "你好\n欢迎回来")).expect("valid raiment");
         assert_eq!(validated, ColorScheme::Day);
-        assert!(validate_fields(valid("", "day")).is_err());
-        assert!(validate_fields(valid("灵衣", "sepia")).is_err());
+        assert!(validate_fields(valid("", "day", "你好")).is_err());
+        assert!(validate_fields(valid("灵衣", "sepia", "你好")).is_err());
+        let too_many_dialogues = (0..21)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(validate_fields(valid("灵衣", "day", &too_many_dialogues)).is_err());
     }
 
     #[test]

@@ -20,6 +20,11 @@ use crate::{
 
 const DEFAULT_SITE_NAME: &str = "helt.";
 const DEFAULT_TAGLINE: &str = "记录技术、生活与热爱";
+const DEFAULT_HERO_EYEBROW: &str = "SINCE 2020 · HELT'S BLOG";
+
+fn default_hero_eyebrow() -> String {
+    DEFAULT_HERO_EYEBROW.to_owned()
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -66,6 +71,7 @@ struct SitePayload {
 struct SiteBasic {
     name: String,
     tagline: String,
+    hero_eyebrow: String,
     domain: String,
     icp: String,
     founded_at: String,
@@ -144,6 +150,8 @@ struct UpdateSiteRequest {
 struct EditableBasic {
     name: String,
     tagline: String,
+    #[serde(default = "default_hero_eyebrow")]
+    hero_eyebrow: String,
     icp: String,
     logo_asset_id: Option<i64>,
     favicon_asset_id: Option<i64>,
@@ -306,6 +314,8 @@ async fn persist_settings(
 ) -> Result<(), SiteError> {
     request.basic.name = normalized_required(&request.basic.name, "站点文字名称", 100)?;
     request.basic.tagline = normalized_optional(&request.basic.tagline, "站点描述", 300)?;
+    request.basic.hero_eyebrow =
+        normalized_required(&request.basic.hero_eyebrow, "封面标识文字", 120)?;
     request.basic.icp = normalized_optional(&request.basic.icp, "备案号", 100)?;
     validate_asset_id(request.basic.logo_asset_id, "站点 Logo")?;
     validate_asset_id(request.basic.favicon_asset_id, "浏览器图标")?;
@@ -341,6 +351,12 @@ async fn persist_settings(
         "basic",
         "tagline",
         json!(request.basic.tagline),
+    )?;
+    set_setting(
+        &mut settings,
+        "basic",
+        "hero_eyebrow",
+        json!(request.basic.hero_eyebrow),
     )?;
     set_setting(&mut settings, "basic", "icp", json!(request.basic.icp))?;
     set_setting(
@@ -408,6 +424,12 @@ async fn load_payload(state: &AppState) -> Result<SitePayload, SiteError> {
         basic: SiteBasic {
             name: text_setting(&row.settings, "basic", "name", DEFAULT_SITE_NAME),
             tagline: text_setting(&row.settings, "basic", "tagline", DEFAULT_TAGLINE),
+            hero_eyebrow: text_setting(
+                &row.settings,
+                "basic",
+                "hero_eyebrow",
+                DEFAULT_HERO_EYEBROW,
+            ),
             domain: state.public_origin().to_owned(),
             icp: text_setting(&row.settings, "basic", "icp", ""),
             founded_at: text_setting(&row.settings, "basic", "founded_at", "2026-07-23"),
@@ -484,6 +506,7 @@ fn editable_request(settings: &Value) -> UpdateSiteRequest {
         basic: EditableBasic {
             name: text_setting(settings, "basic", "name", DEFAULT_SITE_NAME),
             tagline: text_setting(settings, "basic", "tagline", DEFAULT_TAGLINE),
+            hero_eyebrow: text_setting(settings, "basic", "hero_eyebrow", DEFAULT_HERO_EYEBROW),
             icp: text_setting(settings, "basic", "icp", ""),
             logo_asset_id: optional_i64(settings, "basic", "logo_asset_id"),
             favicon_asset_id: optional_i64(settings, "basic", "favicon_asset_id"),
@@ -497,6 +520,7 @@ fn apply_patch(request: &mut UpdateSiteRequest, path: &str, value: Value) -> Res
     match path {
         "basic.name" => request.basic.name = json_string(value, path)?,
         "basic.tagline" => request.basic.tagline = json_string(value, path)?,
+        "basic.hero_eyebrow" => request.basic.hero_eyebrow = json_string(value, path)?,
         "basic.icp" => request.basic.icp = json_string(value, path)?,
         "basic.logo_asset_id" => request.basic.logo_asset_id = json_optional_i64(value, path)?,
         "basic.favicon_asset_id" => {
@@ -792,10 +816,51 @@ mod tests {
     fn patch_only_accepts_known_typed_leaf_fields() {
         let mut request = editable_request(&json!({}));
         apply_patch(&mut request, "basic.logo_asset_id", json!(42)).unwrap();
+        apply_patch(&mut request, "basic.hero_eyebrow", json!("MY BLOG")).unwrap();
         apply_patch(&mut request, "features.music", json!(false)).unwrap();
         assert_eq!(request.basic.logo_asset_id, Some(42));
+        assert_eq!(request.basic.hero_eyebrow, "MY BLOG");
         assert!(!request.features.music);
         assert!(apply_patch(&mut request, "features.music", json!("no")).is_err());
         assert!(apply_patch(&mut request, "secrets.api_key", json!("x")).is_err());
+    }
+
+    #[test]
+    fn every_public_feature_can_be_disabled() {
+        let settings = json!({
+            "features": {
+                "splash": false,
+                "comments": false,
+                "kanban": false,
+                "music": false,
+                "stats": false,
+                "easter_egg": false
+            }
+        });
+        let features = features_from_document(&settings);
+        assert!(!features.splash);
+        assert!(!features.comments);
+        assert!(!features.kanban);
+        assert!(!features.music);
+        assert!(!features.stats);
+        assert!(!features.easter_egg);
+
+        let mut request = editable_request(&json!({}));
+        for path in [
+            "features.splash",
+            "features.comments",
+            "features.kanban",
+            "features.music",
+            "features.stats",
+            "features.easter_egg",
+        ] {
+            apply_patch(&mut request, path, json!(false)).unwrap();
+        }
+        assert!(!request.features.splash);
+        assert!(!request.features.comments);
+        assert!(!request.features.kanban);
+        assert!(!request.features.music);
+        assert!(!request.features.stats);
+        assert!(!request.features.easter_egg);
     }
 }

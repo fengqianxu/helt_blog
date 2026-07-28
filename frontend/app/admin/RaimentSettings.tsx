@@ -76,6 +76,11 @@ const clonePayload = (payload: AdminRaimentPayload): AdminRaimentPayload => ({
 const sortRaiments = (items: AdminRaiment[]) =>
   [...items].sort((left, right) => left.sort_order - right.sort_order || left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id));
 
+const dialogueItems = (value: string) => {
+  const items = value.split(/\r?\n/);
+  return items.length ? items : [""];
+};
+
 const fetchAllAssets = async (
   usableFor: "raiment_cover" | "raiment_voice",
   signal?: AbortSignal,
@@ -168,6 +173,29 @@ export function RaimentSettings({ notify }: { notify: Notify }) {
     setData({
       items: data.items.map((item) => item.id === selected.id ? { ...item, ...patch } : item),
     });
+  };
+
+  const updateDialogue = (index: number, value: string) => {
+    if (!selected) return;
+    const items = dialogueItems(selected.cover_dialogue);
+    items[index] = value.replace(/[\r\n]+/g, " ");
+    updateSelected({ cover_dialogue: items.join("\n") });
+  };
+
+  const addDialogue = () => {
+    if (!selected) return;
+    const items = dialogueItems(selected.cover_dialogue);
+    if (items.length >= 20) {
+      notify("每套灵衣最多添加 20 条封面对话", "danger");
+      return;
+    }
+    updateSelected({ cover_dialogue: [...items, ""].join("\n") });
+  };
+
+  const removeDialogue = (index: number) => {
+    if (!selected) return;
+    const items = dialogueItems(selected.cover_dialogue).filter((_, itemIndex) => itemIndex !== index);
+    updateSelected({ cover_dialogue: (items.length ? items : [""]).join("\n") });
   };
 
   const updateColor = (key: keyof ThemeTokens, value: string) => {
@@ -334,14 +362,14 @@ export function RaimentSettings({ notify }: { notify: Notify }) {
 
   if (loading && !data) {
     return <>
-      <div className="admin-title"><div><h1>灵衣</h1><p>统一管理每套灵衣的封面、配色、语音与看板娘</p></div></div>
+      <div className="admin-title"><div><h1>灵衣</h1></div></div>
       <section className="admin-panel raiment-loading" aria-live="polite">正在读取灵衣与素材库…</section>
     </>;
   }
 
   if (!data || !selected) {
     return <>
-      <div className="admin-title"><div><h1>灵衣</h1><p>统一管理每套灵衣的封面、配色、语音与看板娘</p></div></div>
+      <div className="admin-title"><div><h1>灵衣</h1></div></div>
       <section className="admin-panel raiment-loading">
         <p>没有可编辑的灵衣。</p>
         <button type="button" onClick={() => void load()}>重新加载</button>
@@ -351,7 +379,7 @@ export function RaimentSettings({ notify }: { notify: Notify }) {
 
   return <>
     <div className="admin-title raiment-page-title">
-      <div><h1>灵衣</h1><p>统一管理每套灵衣的封面、配色、语音与看板娘</p></div>
+      <div><h1>灵衣</h1></div>
       <button className="admin-primary" type="button" disabled={saving !== null} onClick={openCreate}>＋ 添加灵衣</button>
     </div>
 
@@ -417,7 +445,6 @@ export function RaimentSettings({ notify }: { notify: Notify }) {
               <label className="raiment-checkbox"><input type="checkbox" checked={selected.enabled} disabled={selected.is_default} onChange={(event) => updateSelected({ enabled: event.target.checked })} />公开启用</label>
               <label className="raiment-checkbox"><input type="radio" name="default-raiment" checked={selected.is_default} disabled={selected.is_default || !selected.enabled} onChange={() => updateSelected({ is_default: true })} />设为默认</label>
             </div>
-            <small>排序决定前台手动切换顺序；时间段空档使用默认灵衣。默认灵衣不能停用或删除。</small>
           </section>
 
           <section className="raiment-form-section raiment-asset-summary">
@@ -444,12 +471,19 @@ export function RaimentSettings({ notify }: { notify: Notify }) {
               <label>对话角色名<input value={selected.cover_character_name} maxLength={80} onChange={(event) => updateSelected({ cover_character_name: event.target.value })} /></label>
               <label>语音按钮文字<input value={selected.cover_voice_label} maxLength={120} onChange={(event) => updateSelected({ cover_voice_label: event.target.value })} /></label>
             </div>
-            <label>封面对话<textarea value={selected.cover_dialogue} maxLength={500} rows={3} onChange={(event) => updateSelected({ cover_dialogue: event.target.value })} /></label>
+            <div className="raiment-dialogue-editor">
+              <div><span>封面左下角对白</span><button type="button" onClick={addDialogue}>＋ 添加对白</button></div>
+              {dialogueItems(selected.cover_dialogue).map((dialogue, index) => <label key={index}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <input value={dialogue} maxLength={240} placeholder="输入一条封面对话" onChange={(event) => updateDialogue(index, event.target.value)} />
+                <button type="button" aria-label={`删除第 ${index + 1} 条封面对话`} onClick={() => removeDialogue(index)}>×</button>
+              </label>)}
+              <small>每套灵衣独立保存；首页点击对话框或等待 6 秒会显示下一条。</small>
+            </div>
           </section>
 
           <section className="raiment-form-section">
             <h3>页面配色</h3>
-            <p className="raiment-section-intro">每种颜色都可以独立修改；输入框、编辑器等组件会根据页面背景自动选择合适的明暗显示。</p>
             <div className="raiment-color-grid">
               {([
                 ["primary", "按钮、链接与高亮"],

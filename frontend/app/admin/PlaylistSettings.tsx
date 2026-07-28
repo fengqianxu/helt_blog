@@ -355,7 +355,7 @@ export function PlaylistSettings({ notify }: { notify: Notify }) {
 
   return <>
     <div className="admin-title">
-      <div><h1>歌单管理</h1><p>PLAYLISTS · 统一管理曲目来源与展示顺序</p></div>
+      <div><h1>歌单管理</h1><p>PLAYLISTS</p></div>
       <button className="admin-primary" aria-expanded={createOpen} onClick={() => setCreateOpen((value) => !value)}>{createOpen ? "收起" : "＋ 新建歌单"}</button>
     </div>
 
@@ -443,7 +443,6 @@ export function PlaylistSettings({ notify }: { notify: Notify }) {
           <section className="admin-panel playlist-tracks">
             <header>
               <div><span>TRACKS</span><h2>歌曲列表</h2></div>
-              <div className="playlist-track-summary"><b>{trackTotal ?? "—"} 首</b><small>每页 {TRACK_PAGE_SIZE} 首</small></div>
             </header>
             {!trackLoading && !!trackPayload?.items.length && <div className="playlist-track-head"><span>#</span><span>歌曲</span><span>来源</span><span>操作</span></div>}
             {trackLoading && <div className="playlist-track-loading" role="status"><i /><span>正在读取第 {trackPage} 页歌曲…</span></div>}
