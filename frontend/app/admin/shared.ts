@@ -81,6 +81,7 @@ export type SitePayload = {
   basic: {
     name: string;
     tagline: string;
+    footer_text: string;
     hero_eyebrow: string;
     domain: string;
     icp: string;

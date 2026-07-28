@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import dynamic from "next/dynamic";
-import { createContext, type CSSProperties, FormEvent, type PointerEvent as ReactPointerEvent, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, type CSSProperties, FormEvent, type PointerEvent as ReactPointerEvent, type RefObject, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -20,6 +20,7 @@ import { RaimentSettings } from "./admin/RaimentSettings";
 import { SiteSettings } from "./admin/SiteSettings";
 import { PlaylistSettings } from "./admin/PlaylistSettings";
 import { ReviewManager } from "./admin/ReviewManager";
+import { buildArticleToc, getActiveTocId } from "./article-toc.mjs";
 import {
   AdminIdentity,
   AdminAsset,
@@ -136,6 +137,7 @@ const DEFAULT_SITE: SitePayload = {
   basic: {
     name: "helt.",
     tagline: "记录技术、生活与热爱",
+    footer_text: "记录技术、生活与热爱",
     hero_eyebrow: "SINCE 2020 · HELT'S BLOG",
     domain: "",
     icp: "",
@@ -289,11 +291,13 @@ type Post = {
 };
 
 type ArticleListPayload = { page: number; per_page: number; total: number; items: Post[] };
+type RelatedPost = Pick<Post, "id" | "slug" | "title">;
+type TocItem = { id: string; text: string; level: number };
 type ArticleDetailPayload = {
   article: Post;
   previous: Post | null;
   next: Post | null;
-  related: Post[];
+  related: RelatedPost[];
   allow_comment: boolean;
 };
 
@@ -1268,6 +1272,10 @@ function ArticlePage({ slug, theme, notify, siteFeaturesReady }: { slug: string;
   const [liked, setLiked] = useState(false);
   const [payload, setPayload] = useState<ArticleDetailPayload | null>(null);
   const [error, setError] = useState("");
+  const [tocItems, setTocItems] = useState<TocItem[]>([]);
+  const [activeTocId, setActiveTocId] = useState("article-content");
+  const articleContentRef = useRef<HTMLDivElement | null>(null);
+  const tocListRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     fetch(`/api/v1/articles/${encodeURIComponent(slug)}`, { signal: controller.signal })
@@ -1294,6 +1302,48 @@ function ArticlePage({ slug, theme, notify, siteFeaturesReady }: { slug: string;
     update(); window.addEventListener("scroll", update, { passive: true });
     return () => window.removeEventListener("scroll", update);
   }, []);
+  useEffect(() => {
+    const content = articleContentRef.current;
+    if (!payload || !content) {
+      setTocItems([]);
+      setActiveTocId("article-content");
+      return;
+    }
+    const items = buildArticleToc(content.querySelectorAll<HTMLHeadingElement>("h2, h3, h4"));
+    setTocItems(items);
+    setActiveTocId(items[0]?.id || "article-content");
+  }, [payload]);
+  useEffect(() => {
+    if (!tocItems.length) return;
+    let frame = 0;
+    const updateActiveHeading = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const currentId = getActiveTocId(
+          tocItems,
+          (id) => document.getElementById(id)?.getBoundingClientRect().top,
+        );
+        setActiveTocId((current) => current === currentId ? current : currentId);
+      });
+    };
+    updateActiveHeading();
+    window.addEventListener("scroll", updateActiveHeading, { passive: true });
+    window.addEventListener("resize", updateActiveHeading);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", updateActiveHeading);
+      window.removeEventListener("resize", updateActiveHeading);
+    };
+  }, [tocItems]);
+  useEffect(() => {
+    const list = tocListRef.current;
+    if (!list) return;
+    const activeLink = Array.from(list.querySelectorAll<HTMLElement>("[data-toc-id]"))
+      .find((link) => link.dataset.tocId === activeTocId);
+    if (!activeLink) return;
+    const target = activeLink.offsetTop - (list.clientHeight - activeLink.offsetHeight) / 2;
+    list.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  }, [activeTocId]);
   const shareArticle = async () => {
     try {
       if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
@@ -1303,34 +1353,67 @@ function ArticlePage({ slug, theme, notify, siteFeaturesReady }: { slug: string;
       notify("暂时无法复制，请从地址栏复制链接", "danger");
     }
   };
+  const closeArticle = () => {
+    if (window.history.length > 1) window.history.back();
+    else window.location.assign("/");
+  };
   if (error) return <NotFound message={error} />;
   if (!payload) return <main className="empty-state"><b>◆</b><h1>正在读取文章</h1><p>请稍候，Master。</p></main>;
   const post = payload.article;
   const previousPost = payload.previous;
   const nextPost = payload.next;
   const related = payload.related;
+  const displayedTocItems = tocItems.length ? tocItems : [{ id: "article-content", text: "正文", level: 2 }];
   return (
-    <><div className="article-reading-bar"><i style={{ width: `${progress}%` }} /></div><main className="page-wrap article-layout page-enter">
+    <><div className="article-reading-bar"><i style={{ width: `${progress}%` }} /></div><main className="page-wrap article-layout page-enter" onClick={(event) => event.target === event.currentTarget && closeArticle()}>
       <article className="article-card">
-        <div className="breadcrumbs"><Link href="/">首页</Link> / <Link href="/archives">{categoryName(post)}</Link></div>
-        <h1>{post.title}</h1>
-        <div className="article-meta">{articleDate(post)} · {articleWords(post)} · {articleTime(post)} · 阅读 {post.view_count}</div>
-        <p>{post.summary}</p>
-        {post.cover_url && <Image className="article-image" src={post.cover_url} width={1200} height={675} sizes="(max-width: 768px) 100vw, 680px" alt={`${post.title} 封面`} unoptimized />}
-        <MarkdownBody source={post.content_md || "这篇文章还没有正文。"} />
+        <button type="button" className="article-close" aria-label="关闭文章详情" title="关闭文章" onClick={closeArticle}>×</button>
+        <header className="article-head">
+          <div className="breadcrumbs"><Link href="/">首页</Link><span aria-hidden="true">/</span><Link href="/archives">文章归档</Link></div>
+          <div className="article-kicker"><span>{categoryName(post)}</span><small>ARTICLE / READING</small></div>
+          <h1>{post.title}</h1>
+          <p className="article-summary">{post.summary}</p>
+          <dl className="article-meta" aria-label="文章信息">
+            <div><dt>发布于</dt><dd>{articleDate(post)}</dd></div>
+            <div><dt>阅读时长</dt><dd>{articleTime(post)}</dd></div>
+            <div><dt>文章字数</dt><dd>{articleWords(post)}</dd></div>
+            <div><dt>阅读次数</dt><dd>{post.view_count.toLocaleString()}</dd></div>
+          </dl>
+          {post.tags.length > 0 && <div className="article-tags" aria-label="文章标签">{post.tags.map((tag) => <span key={tag.id}># {tag.name}</span>)}</div>}
+        </header>
+        {post.cover_url && <figure className="article-cover">
+          <Image className="article-image" src={post.cover_url} width={1200} height={675} sizes="(max-width: 768px) 100vw, 780px" alt={`${post.title} 封面`} unoptimized />
+          <figcaption><span>FEATURED IMAGE</span><b>{categoryName(post)}</b></figcaption>
+        </figure>}
+        <div className="article-body-divider" aria-hidden="true"><span>正文</span><i /></div>
+        <MarkdownBody source={post.content_md || "这篇文章还没有正文。"} containerRef={articleContentRef} />
         <div id="article-actions" className="article-actions"><button className={liked ? "liked" : ""} onClick={() => { setLiked(!liked); notify(liked ? "已取消喜欢" : "感谢你的喜欢", "success"); }}>{liked ? "♥ 已喜欢" : "♡ 喜欢"}</button><button onClick={shareArticle}>⌁ 分享文章</button></div>
-        <div className="article-nav">{previousPost ? <Link href={`/posts/${previousPost.slug}`}>← 上一篇<br /><b>{previousPost.title}</b></Link> : <span />}{nextPost ? <Link href={`/posts/${nextPost.slug}`}>下一篇 →<br /><b>{nextPost.title}</b></Link> : <span />}</div>
+        <nav className="article-nav" aria-label="上一篇和下一篇">{previousPost ? <Link href={`/posts/${previousPost.slug}`}><small>← PREVIOUS · 上一篇</small><b>{previousPost.title}</b></Link> : <span />}{nextPost ? <Link href={`/posts/${nextPost.slug}`}><small>NEXT · 下一篇 →</small><b>{nextPost.title}</b></Link> : <span />}</nav>
         {siteFeaturesReady && (site.features.comments && payload.allow_comment
           ? <Comments slug={post.slug} title={post.title} theme={theme} />
           : <section className="comments comments-disabled"><h2>评论</h2><p>{site.features.comments ? "这篇文章已关闭评论。" : "站点当前已关闭全站评论。"}</p></section>)}
       </article>
-      <aside className="article-aside"><div className="toc"><b>目录 CONTENTS <small>{Math.round(progress)}%</small></b><Link href="#article-content" className="active">正文</Link><Link href="#article-actions">互动</Link></div><div className="recommend"><b>相关文章</b>{related.length ? related.map((item) => <Link key={item.id} href={`/posts/${item.slug}`}>{item.title}</Link>) : <Link href="/archives">浏览全部文章</Link>}</div></aside>
+      <aside className="article-aside">
+        <nav className="toc" aria-label="文章目录">
+          <b><span>目录 <small>CONTENTS</small></span><em>{Math.round(progress)}%</em></b>
+          <div className="toc-links" ref={tocListRef}>
+            {displayedTocItems.map((item) => <Link
+              key={item.id}
+              href={`#${item.id}`}
+              data-toc-id={item.id}
+              className={cx("toc-link", `toc-level-${item.level}`, activeTocId === item.id && "active")}
+              aria-current={activeTocId === item.id ? "location" : undefined}
+            >{item.text}</Link>)}
+          </div>
+        </nav>
+        <div className="recommend"><b><span>相关文章</span><small>RELATED</small></b>{related.length ? related.map((item, index) => <Link key={item.id} href={`/posts/${item.slug}`}><small>{String(index + 1).padStart(2, "0")}</small><span>{item.title}</span><i aria-hidden="true">↗</i></Link>) : <Link href="/archives"><small>ALL</small><span>浏览全部文章</span><i aria-hidden="true">↗</i></Link>}</div>
+      </aside>
     </main></>
   );
 }
 
-function MarkdownBody({ source }: { source: string }) {
-  return <div id="article-content" className="article-content markdown-renderer"><ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown></div>;
+function MarkdownBody({ source, containerRef }: { source: string; containerRef?: RefObject<HTMLDivElement | null> }) {
+  return <div ref={containerRef} id="article-content" className="article-content markdown-renderer"><ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown></div>;
 }
 
 function SectionTitle({ index, title, id }: { index: string; title: string; id?: string }) {
@@ -1346,6 +1429,27 @@ function Comments({ slug, title, theme }: { slug: string; title: string; theme: 
     const container = containerRef.current;
     if (!container) return;
     let cancelled = false;
+    const markFieldRequirements = () => {
+      const fields = [
+        { selector: 'input[name="name"]', placeholder: "昵称（必填）", required: true },
+        { selector: 'input[name="email"]', placeholder: "邮箱（必填）", required: true },
+        { selector: 'input[name="link"]', placeholder: "网站（选填）", required: false },
+      ];
+      for (const field of fields) {
+        const input = container.querySelector<HTMLInputElement>(field.selector);
+        if (!input) continue;
+        if (input.placeholder !== field.placeholder) input.placeholder = field.placeholder;
+        if (input.required !== field.required) input.required = field.required;
+        input.setAttribute("aria-required", String(field.required));
+      }
+    };
+    const fieldObserver = new MutationObserver(markFieldRequirements);
+    fieldObserver.observe(container, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["placeholder", "required"],
+    });
     setLoadError("");
     void import("artalk").then(({ default: Artalk }) => {
       if (cancelled) return;
@@ -1363,11 +1467,13 @@ function Comments({ slug, title, theme }: { slug: string; title: string; theme: 
         pageVote: false,
         pvAdd: false,
       });
+      markFieldRequirements();
     }).catch(() => {
       if (!cancelled) setLoadError("评论组件加载失败，请刷新页面后重试。");
     });
     return () => {
       cancelled = true;
+      fieldObserver.disconnect();
       artalkRef.current?.destroy();
       artalkRef.current = null;
     };
@@ -1378,10 +1484,13 @@ function Comments({ slug, title, theme }: { slug: string; title: string; theme: 
   }, [theme]);
 
   return <section className="comments" aria-labelledby="article-comments-title">
-    <h2 id="article-comments-title">评论 · <span className="artalk-comment-count" data-page-key={articleCommentKey(slug)}>0</span></h2>
-    {loadError && <p className="comment-load-error" role="alert">{loadError}</p>}
-    <div ref={containerRef} className="artalk-host" />
-    <small className="comment-privacy-note">评论由 Artalk 提供；提交时会处理昵称、邮箱、IP 地址与浏览器信息，用于身份识别和反垃圾。</small>
+    <header className="comment-section-header">
+      <h2 id="article-comments-title">评论 · <span className="artalk-comment-count" data-page-key={articleCommentKey(slug)}>0</span></h2>
+    </header>
+    <div id="article-comments-body">
+      {loadError && <p className="comment-load-error" role="alert">{loadError}</p>}
+      <div ref={containerRef} className="artalk-host" />
+    </div>
   </section>;
 }
 
@@ -1623,7 +1732,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
 function Footer() {
   const site = useSite();
   const year = new Date().getFullYear();
-  return <footer><SiteBrand /><p>{site.basic.tagline}</p><span>© 2020—{year} {site.basic.name} · POWERED BY REACT{site.basic.icp ? ` · ${site.basic.icp}` : ""}</span></footer>;
+  return <footer><SiteBrand />{site.basic.footer_text && <p className="site-footer-text">{site.basic.footer_text}</p>}<span>© 2020—{year} {site.basic.name} · POWERED BY REACT{site.basic.icp ? ` · ${site.basic.icp}` : ""}</span></footer>;
 }
 
 function AdminRouter({ pathname, theme, toggleTheme, notify }: { pathname: string; theme: Theme; toggleTheme: () => void; notify: Notify }) {
@@ -2135,7 +2244,7 @@ function ArticleManager({ notify }: { notify: Notify }) {
     </div>
     {pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台文章分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}
     {deleteConfirmation && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteConfirmation(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="article-delete-title"><header><div><span>ARTICLES / DELETE</span><h2 id="article-delete-title">确认删除文章</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>×</button></header><p>{deleteConfirmation.ids.length === 1 && deleteConfirmation.title ? `确定删除《${deleteConfirmation.title}》？` : `确定删除选中的 ${deleteConfirmation.ids.length} 篇文章？`}此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteConfirmation(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}
-    {previewTarget && typeof document !== "undefined" && createPortal(<div className="admin-article-preview-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closePreview()}>
+    {previewTarget && typeof document !== "undefined" && createPortal(<div className="admin-article-preview-overlay" role="presentation" onClick={(event) => event.target === event.currentTarget && closePreview()}>
       <section role="dialog" aria-modal="true" aria-labelledby="admin-article-preview-title">
         <header><div><span>ARTICLE / LAYOUT PREVIEW</span><h2 id="admin-article-preview-title">排版预览</h2></div><button type="button" aria-label="关闭文章预览" onClick={closePreview}>×</button></header>
         <div className="admin-article-preview-scroll">

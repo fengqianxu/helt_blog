@@ -164,6 +164,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
             basic: {
               name: site.basic.name,
               tagline: site.basic.tagline,
+              footer_text: site.basic.footer_text,
               hero_eyebrow: site.basic.hero_eyebrow,
               icp: site.basic.icp,
               logo_asset_id: site.basic.logo_asset_id,
@@ -232,6 +233,7 @@ export function SiteSettings({ notify }: { notify: Notify }) {
           />
         </div>
         <label>站点描述<textarea maxLength={300} value={site?.basic.tagline ?? ""} disabled={!site} onChange={(event) => updateBasic("tagline", event.target.value)} /></label>
+        <label>页脚文字<textarea maxLength={500} value={site?.basic.footer_text ?? ""} disabled={!site} placeholder="显示在页脚品牌图片下方；可留空" onChange={(event) => updateBasic("footer_text", event.target.value)} /></label>
         <label>封面标识文字<input maxLength={120} value={site?.basic.hero_eyebrow ?? ""} disabled={!site} placeholder="SINCE 2020 · HELT'S BLOG" onChange={(event) => updateBasic("hero_eyebrow", event.target.value)} /></label>
         <div className="site-basic-row">
           <label>站点地址<input value={site?.basic.domain ?? ""} readOnly aria-readonly="true" /></label>

@@ -20,10 +20,15 @@ use crate::{
 
 const DEFAULT_SITE_NAME: &str = "helt.";
 const DEFAULT_TAGLINE: &str = "记录技术、生活与热爱";
+const DEFAULT_FOOTER_TEXT: &str = "记录技术、生活与热爱";
 const DEFAULT_HERO_EYEBROW: &str = "SINCE 2020 · HELT'S BLOG";
 
 fn default_hero_eyebrow() -> String {
     DEFAULT_HERO_EYEBROW.to_owned()
+}
+
+fn default_footer_text() -> String {
+    DEFAULT_FOOTER_TEXT.to_owned()
 }
 
 pub fn router() -> Router<AppState> {
@@ -71,6 +76,7 @@ struct SitePayload {
 struct SiteBasic {
     name: String,
     tagline: String,
+    footer_text: String,
     hero_eyebrow: String,
     domain: String,
     icp: String,
@@ -150,6 +156,8 @@ struct UpdateSiteRequest {
 struct EditableBasic {
     name: String,
     tagline: String,
+    #[serde(default = "default_footer_text")]
+    footer_text: String,
     #[serde(default = "default_hero_eyebrow")]
     hero_eyebrow: String,
     icp: String,
@@ -314,6 +322,7 @@ async fn persist_settings(
 ) -> Result<(), SiteError> {
     request.basic.name = normalized_required(&request.basic.name, "站点文字名称", 100)?;
     request.basic.tagline = normalized_optional(&request.basic.tagline, "站点描述", 300)?;
+    request.basic.footer_text = normalized_optional(&request.basic.footer_text, "页脚文字", 500)?;
     request.basic.hero_eyebrow =
         normalized_required(&request.basic.hero_eyebrow, "封面标识文字", 120)?;
     request.basic.icp = normalized_optional(&request.basic.icp, "备案号", 100)?;
@@ -351,6 +360,12 @@ async fn persist_settings(
         "basic",
         "tagline",
         json!(request.basic.tagline),
+    )?;
+    set_setting(
+        &mut settings,
+        "basic",
+        "footer_text",
+        json!(request.basic.footer_text),
     )?;
     set_setting(
         &mut settings,
@@ -424,6 +439,7 @@ async fn load_payload(state: &AppState) -> Result<SitePayload, SiteError> {
         basic: SiteBasic {
             name: text_setting(&row.settings, "basic", "name", DEFAULT_SITE_NAME),
             tagline: text_setting(&row.settings, "basic", "tagline", DEFAULT_TAGLINE),
+            footer_text: text_setting(&row.settings, "basic", "footer_text", DEFAULT_FOOTER_TEXT),
             hero_eyebrow: text_setting(
                 &row.settings,
                 "basic",
@@ -506,6 +522,7 @@ fn editable_request(settings: &Value) -> UpdateSiteRequest {
         basic: EditableBasic {
             name: text_setting(settings, "basic", "name", DEFAULT_SITE_NAME),
             tagline: text_setting(settings, "basic", "tagline", DEFAULT_TAGLINE),
+            footer_text: text_setting(settings, "basic", "footer_text", DEFAULT_FOOTER_TEXT),
             hero_eyebrow: text_setting(settings, "basic", "hero_eyebrow", DEFAULT_HERO_EYEBROW),
             icp: text_setting(settings, "basic", "icp", ""),
             logo_asset_id: optional_i64(settings, "basic", "logo_asset_id"),
@@ -520,6 +537,7 @@ fn apply_patch(request: &mut UpdateSiteRequest, path: &str, value: Value) -> Res
     match path {
         "basic.name" => request.basic.name = json_string(value, path)?,
         "basic.tagline" => request.basic.tagline = json_string(value, path)?,
+        "basic.footer_text" => request.basic.footer_text = json_string(value, path)?,
         "basic.hero_eyebrow" => request.basic.hero_eyebrow = json_string(value, path)?,
         "basic.icp" => request.basic.icp = json_string(value, path)?,
         "basic.logo_asset_id" => request.basic.logo_asset_id = json_optional_i64(value, path)?,
@@ -817,9 +835,11 @@ mod tests {
         let mut request = editable_request(&json!({}));
         apply_patch(&mut request, "basic.logo_asset_id", json!(42)).unwrap();
         apply_patch(&mut request, "basic.hero_eyebrow", json!("MY BLOG")).unwrap();
+        apply_patch(&mut request, "basic.footer_text", json!("FOOTER COPY")).unwrap();
         apply_patch(&mut request, "features.music", json!(false)).unwrap();
         assert_eq!(request.basic.logo_asset_id, Some(42));
         assert_eq!(request.basic.hero_eyebrow, "MY BLOG");
+        assert_eq!(request.basic.footer_text, "FOOTER COPY");
         assert!(!request.features.music);
         assert!(apply_patch(&mut request, "features.music", json!("no")).is_err());
         assert!(apply_patch(&mut request, "secrets.api_key", json!("x")).is_err());

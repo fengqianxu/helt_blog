@@ -269,6 +269,13 @@ struct ArticleItem {
     tags: Vec<TagSummary>,
 }
 
+#[derive(Debug, Serialize, FromRow)]
+struct RelatedArticleItem {
+    id: i64,
+    slug: String,
+    title: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct CategoryRef {
     id: i64,
@@ -583,26 +590,26 @@ async fn public_detail(
     .fetch_optional(state.pool())
     .await?
     .map(|row| article_item(row, Vec::new(), false));
-    let related_rows = sqlx::query_as::<_, ArticleRow>(
-        "SELECT DISTINCT a.id, a.slug, a.title, a.summary, a.content_md, a.status, a.is_pinned,
-                a.allow_comment, a.kanban_ref, a.word_count, a.read_minutes, a.view_count,
-                a.published_at, a.created_at, a.updated_at, c.id AS category_id,
-                c.name AS category_name, c.slug AS category_slug, c.color AS category_color,
-                NULL::TEXT AS cover_url
-         FROM articles a LEFT JOIN categories c ON c.id = a.category_id
-         LEFT JOIN article_tags at ON at.article_id = a.id
+    let related_rows = sqlx::query_as::<_, RelatedArticleItem>(
+        "SELECT a.id, a.slug, a.title
+         FROM articles a
          WHERE a.status='published' AND a.id <> $1
-           AND (a.category_id = $2 OR at.tag_id IN (
-             SELECT article_tags.tag_id FROM article_tags WHERE article_tags.article_id = $1))
+           AND (a.category_id = $2 OR EXISTS (
+             SELECT 1
+             FROM article_tags related_tag
+             WHERE related_tag.article_id = a.id
+               AND related_tag.tag_id IN (
+                 SELECT article_tags.tag_id
+                 FROM article_tags
+                 WHERE article_tags.article_id = $1
+               )
+           ))
          ORDER BY a.published_at DESC NULLS LAST, a.id DESC LIMIT 4",
     )
     .bind(article.id)
     .bind(article.category_id)
     .fetch_all(state.pool())
-    .await?
-    .into_iter()
-    .map(|row| article_item(row, Vec::new(), false))
-    .collect::<Vec<_>>();
+    .await?;
     Ok(Json(serde_json::json!({
         "article": item,
         "previous": previous,

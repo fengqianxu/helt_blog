@@ -418,7 +418,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "读取已发布文章详情",
         "路径参数 slug 非空且符合站点 slug 规则",
-        "200 返回正文、标签、上下篇、相关文章和 allow_comment",
+        "200 返回正文、标签、上下篇、相关文章（仅 id、slug、title）和 allow_comment",
         "只读取 published；成功读取后浏览量加一；不存在或草稿返回 404，相关文章按同分类/标签计算"
     ),
     endpoint!(
@@ -1467,7 +1467,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "保存站点基本信息",
-        "JSON: basic{name,tagline,hero_eyebrow,icp,logo_asset_id?,favicon_asset_id?}、features 与 updated_at?；domain 为只读",
+        "JSON: basic{name,tagline,footer_text,hero_eyebrow,icp,logo_asset_id?,favicon_asset_id?}、features 与 updated_at?；domain 为只读",
         "200 JSON 返回完整站点设置；Logo/favicon 必须引用有效图片素材",
         "全量更新可编辑字段并同步素材引用；updated_at 冲突返回 409"
     ),

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import { buildArticleToc, getActiveTocId } from "../app/article-toc.mjs";
+import { expectedTocItems, multiHeadingArticle } from "./fixtures/multi-heading-article.mjs";
 
 const root = new URL("../", import.meta.url);
 
@@ -14,6 +16,45 @@ async function render(path = "/") {
     { waitUntil() {}, passThroughOnException() {} },
   );
 }
+
+function headingsFromMarkdown(markdown) {
+  return markdown
+    .split("\n")
+    .map((line) => line.match(/^(#{2,4})\s+(.+)$/))
+    .filter(Boolean)
+    .map((match) => {
+      const classes = new Set();
+      return {
+        tagName: `H${match[1].length}`,
+        textContent: match[2],
+        id: "",
+        classList: { add: (name) => classes.add(name), contains: (name) => classes.has(name) },
+      };
+    });
+}
+
+test("builds and scroll-tracks the table of contents for a multi-heading article", async () => {
+  const headings = headingsFromMarkdown(multiHeadingArticle.content);
+  const items = buildArticleToc(headings);
+
+  assert.deepEqual(items, expectedTocItems);
+  assert.deepEqual(headings.map((heading) => heading.id), expectedTocItems.map((item) => item.id));
+  assert.ok(headings.every((heading) => heading.classList.contains("article-heading")));
+
+  const beforeFirstHeading = new Map(items.map((item, index) => [item.id, 240 + index * 180]));
+  assert.equal(getActiveTocId(items, (id) => beforeFirstHeading.get(id)), items[0].id);
+
+  const readingNestedSection = new Map(items.map((item, index) => [item.id, (index - 2) * 180 + 120]));
+  assert.equal(getActiveTocId(items, (id) => readingNestedSection.get(id)), items[2].id);
+
+  const atArticleEnd = new Map(items.map((item, index) => [item.id, -900 + index * 120]));
+  assert.equal(getActiveTocId(items, (id) => atArticleEnd.get(id)), items.at(-1).id);
+
+  const styles = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(styles, /\.article-aside\s*\{[^}]*position:\s*sticky[^}]*top:\s*94px/);
+  assert.match(styles, /\.toc \.toc-link\.active\s*\{[^}]*border-left-color:\s*var\(--accent\)/);
+  assert.match(styles, /@media \(max-width:\s*768px\)[\s\S]*?\.article-aside\s*\{\s*display:\s*none/);
+});
 
 test("server-renders the finished blog", async () => {
   const response = await render();
@@ -108,6 +149,14 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.doesNotMatch(shell, /\.comment_count/);
   assert.match(shell, /pageKey: articleCommentKey\(slug\)/);
   assert.match(shell, /payload\.allow_comment/);
+  assert.match(shell, /网站（选填）/);
+  assert.doesNotMatch(shell, /aria-label="关闭评论"|>展开评论<|comments-collapsed|setExpanded/);
+  assert.match(shell, /aria-label="关闭文章详情"/);
+  assert.match(shell, /className="article-close"/);
+  assert.match(shell, /event\.target === event\.currentTarget && closeArticle\(\)/);
+  assert.doesNotMatch(shell, /评论由 Artalk 提供；提交时会处理昵称、邮箱、IP 地址与浏览器信息/);
+  assert.match(shell, /querySelectorAll<HTMLHeadingElement>\("h2, h3, h4"\)/);
+  assert.match(shell, /data-toc-id/);
   assert.match(review, /\/api\/v1\/admin\/comments\?\$\{params\}/);
   assert.match(review, /fetch\(`\/api\/v1\/admin\/comments\/\$\{item\.id\}`/);
   assert.match(review, /updateCommentStatus\(item, "approved"\)/);
@@ -200,6 +249,7 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.doesNotMatch(shell, /AdminTitle title="仪表盘"[^>]*撰写新文章/);
   assert.match(shell, /className="admin-article-preview-overlay"/);
   assert.match(shell, /aria-label="关闭文章预览"/);
+  assert.match(shell, /event\.target === event\.currentTarget && closePreview\(\)/);
   assert.match(shell, /fetch\(`\/api\/v1\/admin\/articles\/\$\{previewTarget\.id\}`/);
   assert.doesNotMatch(shell, /href=\{`\/posts\/\$\{p\.slug\}`\}>预览/);
   assert.match(shell, /data-color-mode=\{theme === "night" \? "dark" : "light"\}/);
@@ -280,6 +330,8 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(shell, /siteFeaturesReady && site\.features\.music && <BackgroundMusic/);
   assert.doesNotMatch(shell, /FloatingTools|floating-theme|打开看板娘/);
   assert.match(shell, /<Footer \/>/);
+  assert.match(shell, /site\.basic\.footer_text/);
+  assert.match(siteSettings, /updateBasic\("footer_text"/);
   assert.match(shell, /site\.basic\.hero_eyebrow/);
   assert.match(siteSettings, /updateBasic\("hero_eyebrow"/);
   assert.match(raiments, /封面左下角对白/);
