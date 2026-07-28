@@ -169,7 +169,10 @@ fn page_values(page: i64, per_page: i64) -> Result<(i64, i64, i64), ArticleError
             "page 必须 >= 1，per_page 必须为 1..50",
         ));
     }
-    Ok((page, per_page, (page - 1) * per_page))
+    let offset = (page - 1)
+        .checked_mul(per_page)
+        .ok_or_else(|| ArticleError::validation("page 数值过大"))?;
+    Ok((page, per_page, offset))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1439,7 +1442,13 @@ use chrono::Datelike;
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_summary, normalize_title, unique_ids};
+    use super::{normalize_summary, normalize_title, page_values, unique_ids};
+
+    #[test]
+    fn pagination_rejects_offsets_that_cannot_fit_in_i64() {
+        assert_eq!(page_values(2, 10).expect("valid page"), (2, 10, 10));
+        assert!(page_values(i64::MAX, 50).is_err());
+    }
 
     #[test]
     fn batch_ids_are_deduplicated_without_losing_request_order() {

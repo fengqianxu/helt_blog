@@ -155,6 +155,9 @@ async fn list_assets(
     require_admin(&state, &headers)?;
     let page = query.page.max(1);
     let per_page = query.per_page.clamp(1, 100);
+    let offset = (page - 1)
+        .checked_mul(per_page)
+        .ok_or_else(|| AssetError::validation("page 数值过大"))?;
     let media_type = normalized_filter(query.media_type.as_deref(), query.usable_for.as_deref())?;
     let search = query.search.unwrap_or_default().trim().to_owned();
     let order = if query.order.as_deref() == Some("asc") {
@@ -179,7 +182,7 @@ async fn list_assets(
         .bind(&media_type)
         .bind(&search)
         .bind(per_page)
-        .bind((page - 1) * per_page)
+        .bind(offset)
         .fetch_all(state.pool())
         .await?;
     let total: i64 = sqlx::query_scalar(

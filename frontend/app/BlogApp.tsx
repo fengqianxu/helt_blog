@@ -3005,6 +3005,8 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
           fetch("/api/v1/admin/tags", { credentials: "include", signal: controller.signal }),
           fetch("/api/v1/admin/assets?media_type=image&per_page=100", { credentials: "include", signal: controller.signal }),
         ]);
+        if (!categoryResponse.ok) throw new Error(await responseMessage(categoryResponse, "分类加载失败"));
+        if (!tagResponse.ok) throw new Error(await responseMessage(tagResponse, "标签加载失败"));
         let article = emptyArticle;
         if (initialArticleId) {
           const articleResponse = await fetch(`/api/v1/admin/articles/${initialArticleId}`, { credentials: "include", signal: controller.signal });

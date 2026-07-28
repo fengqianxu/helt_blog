@@ -180,7 +180,7 @@ macro_rules! asset_upload_endpoint {
     };
 }
 
-/// v1 的全部 99 个业务端点。
+/// v1 的全部 102 个业务端点。
 ///
 /// 健康检查和 API 索引属于运维入口，不计入产品端点总数。数组顺序按“认证 → 公开
 /// 业务 → 后台业务”排列，与 `技术文档/03-API接口总表.md` 保持一致。
@@ -351,9 +351,9 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         AdminJwt,
         OK,
         "更新当前管理员个人资料",
-        "JSON: email、bilibili_uid、steam_web_api_key?、clear_steam_web_api_key?、steam_id64；头像资源必须通过 AUTH-14 单独上传",
+        "JSON: email、bilibili_uid、steam_web_api_key?、clear_steam_web_api_key?、steam_id64、update_sync?、avatar_asset_id?、头像裁剪参数、about?",
         "200 JSON 管理员身份、Bilibili UID、SteamID64、steam_web_api_key_configured 与掩码",
-        "Key 加密保存且不回显；空 Key 保留原值，显式 clear_steam_web_api_key 才删除；凭据变化后清空旧镜像并异步同步"
+        "Key 加密保存且不回显；update_sync 缺省为 false 并保留现有 Steam 凭据，true 时应用提交的凭据；同步配置变化后清空旧镜像并异步同步"
     ),
     endpoint!(
         "AUTH-14",
@@ -980,7 +980,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "分页搜索素材库",
         "Query: page/per_page、media_type=image|audio|video|live2d|font|other?、search?、sort=uploaded_at|name|size?、order=asc|desc?、usable_for?",
-        "200 分页 items；meta 包含各类型计数、total_size_bytes、quota_bytes",
+        "200 JSON items、page、per_page、total",
         "只返回 active 素材；usable_for 按目标接受类型过滤；列表返回当前文件"
     ),
     asset_upload_endpoint!(
@@ -1058,7 +1058,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "批量删除可删除素材",
         "JSON: 非空 asset_ids，最多 100 个",
-        "200 JSON deleted_ids、blocked[{id,reference_count}]、missing_ids",
+        "200 JSON deleted、blocked、missing，三个字段均为素材 id 数组",
         "有引用项只进入 blocked，不影响其余可删项；每个素材删除规则与 ASSET-07 相同"
     ),
     endpoint!(
@@ -1071,8 +1071,8 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         OK,
         "打包下载素材",
         "JSON: 非空 asset_ids，最多 100 个",
-        "200 application/zip 流式响应，Content-Disposition 使用安全文件名",
-        "读取各素材文件并从 MinIO 流式打包；限制总展开大小；临时文件必须清理"
+        "200 application/zip，Content-Disposition 使用安全文件名",
+        "读取各素材文件并在内存中打包；总源文件大小限制为 512 MB"
     ),
     // 后台灵衣与媒体域。
     //

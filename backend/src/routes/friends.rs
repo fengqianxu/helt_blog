@@ -148,7 +148,10 @@ fn page_values(page: i64, per_page: i64) -> Result<(i64, i64), FriendError> {
             "page 必须 >= 1，per_page 必须为 1..50",
         ));
     }
-    Ok((page, (page - 1) * per_page))
+    let offset = (page - 1)
+        .checked_mul(per_page)
+        .ok_or_else(|| FriendError::validation("page 数值过大"))?;
+    Ok((page, offset))
 }
 
 #[derive(Debug, FromRow)]
@@ -805,7 +808,15 @@ fn request_fingerprint(headers: &HeaderMap) -> String {
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::{normalized_email, normalized_status, normalized_url, request_fingerprint};
+    use super::{
+        normalized_email, normalized_status, normalized_url, page_values, request_fingerprint,
+    };
+
+    #[test]
+    fn pagination_rejects_offsets_that_cannot_fit_in_i64() {
+        assert_eq!(page_values(2, 10).expect("valid page"), (2, 10));
+        assert!(page_values(i64::MAX, 50).is_err());
+    }
 
     #[test]
     fn friend_inputs_reject_unsafe_or_invalid_values() {

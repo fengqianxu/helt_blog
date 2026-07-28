@@ -194,6 +194,7 @@ struct PublicProfileRow {
     about: Value,
     article_count: i64,
     founded_at: String,
+    today: NaiveDate,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -309,16 +310,26 @@ async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProf
         "SELECT
              au.username,
              au.email,
-             au.avatar_url,
+             COALESCE(
+                 CASE
+                     WHEN avatar_asset.status = 'active'
+                         AND avatar_asset.media_type = 'image'
+                     THEN '/storage/' || avatar_upload.object_key
+                 END,
+                 au.avatar_url
+             ) AS avatar_url,
              au.avatar_crop_x,
              au.avatar_crop_y,
              au.avatar_crop_zoom,
              COALESCE(ss.settings -> 'about', '{}'::jsonb) AS about,
              (SELECT COUNT(*) FROM articles WHERE status = 'published')::bigint
                  AS article_count,
-             COALESCE(ss.settings #>> '{basic,founded_at}', '') AS founded_at
+             COALESCE(ss.settings #>> '{basic,founded_at}', '') AS founded_at,
+             CURRENT_DATE AS today
          FROM admin_users au
          LEFT JOIN site_settings ss ON ss.id = 1
+         LEFT JOIN assets avatar_asset ON avatar_asset.id = au.avatar_asset_id
+         LEFT JOIN uploads avatar_upload ON avatar_upload.id = avatar_asset.upload_id
          ORDER BY au.id
          LIMIT 1",
     )
@@ -342,7 +353,7 @@ async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProf
         about,
         stats: PublicProfileStats {
             article_count: profile.article_count,
-            uptime_days: profile_uptime_days(&profile.founded_at),
+            uptime_days: profile_uptime_days(&profile.founded_at, profile.today),
         },
     }))
 }
@@ -1518,7 +1529,14 @@ async fn load_admin_identity(
         "SELECT
              au.username,
              au.email,
-             au.avatar_url,
+             COALESCE(
+                 CASE
+                     WHEN avatar_asset.status = 'active'
+                         AND avatar_asset.media_type = 'image'
+                     THEN '/storage/' || avatar_upload.object_key
+                 END,
+                 au.avatar_url
+             ) AS avatar_url,
              au.avatar_asset_id,
              au.avatar_crop_x,
              au.avatar_crop_y,
@@ -1534,6 +1552,8 @@ async fn load_admin_identity(
              COALESCE(ss.settings -> 'about', '{}'::jsonb) AS about
          FROM admin_users au
          LEFT JOIN site_settings ss ON ss.id = 1
+         LEFT JOIN assets avatar_asset ON avatar_asset.id = au.avatar_asset_id
+         LEFT JOIN uploads avatar_upload ON avatar_upload.id = avatar_asset.upload_id
          WHERE au.id = $1 AND au.username = $2",
     )
     .bind(user_id)
@@ -1571,7 +1591,7 @@ fn default_avatar_zoom() -> f32 {
 }
 
 fn default_update_sync() -> bool {
-    true
+    false
 }
 
 fn about_profile_from_value(value: Value) -> AboutProfile {
@@ -1695,13 +1715,9 @@ fn normalized_profile_text(
     Ok(value.to_owned())
 }
 
-fn profile_uptime_days(founded_at: &str) -> i64 {
+fn profile_uptime_days(founded_at: &str, today: NaiveDate) -> i64 {
     NaiveDate::parse_from_str(founded_at, "%Y-%m-%d")
-        .map(|date| {
-            (Utc::now().date_naive() - date)
-                .num_days()
-                .saturating_add(1)
-        })
+        .map(|date| (today - date).num_days().saturating_add(1))
         .unwrap_or(1)
         .max(1)
 }
@@ -2069,11 +2085,13 @@ fn append_cookie(headers: &mut HeaderMap, cookie: String) -> Result<(), ApiError
 mod tests {
     use super::{
         ACCESS_COOKIE, AboutProfile, AccessClaims, ChangePasswordRequest, JWT_ISSUER, SocialLink,
-        about_profile_from_value, authenticate, decode_access_token, decode_base32, hash_token,
-        normalized_about_profile, normalized_bilibili_uid, normalized_email, normalized_steam_id64,
-        normalized_steam_update, normalized_steam_web_api_key, validate_avatar_upload,
+        about_profile_from_value, authenticate, decode_access_token, decode_base32,
+        default_update_sync, hash_token, normalized_about_profile, normalized_bilibili_uid,
+        normalized_email, normalized_steam_id64, normalized_steam_update,
+        normalized_steam_web_api_key, profile_uptime_days, validate_avatar_upload,
     };
     use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
+    use chrono::NaiveDate;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use sqlx::postgres::PgPoolOptions;
 
@@ -2309,5 +2327,17 @@ mod tests {
         }))
         .unwrap();
         assert!(revoke_request.revoke_other_sessions);
+    }
+
+    #[test]
+    fn profile_defaults_do_not_clear_saved_sync_credentials() {
+        assert!(!default_update_sync());
+    }
+
+    #[test]
+    fn profile_uptime_uses_the_database_calendar_date() {
+        let today = NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        assert_eq!(profile_uptime_days("2026-07-23", today), 6);
+        assert_eq!(profile_uptime_days("invalid", today), 1);
     }
 }

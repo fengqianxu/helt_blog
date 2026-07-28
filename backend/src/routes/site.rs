@@ -243,9 +243,12 @@ async fn admin_overview(
     .fetch_one(state.pool())
     .await?;
     let settings = load_site_row(&state).await?.settings;
+    let today: NaiveDate = sqlx::query_scalar("SELECT CURRENT_DATE")
+        .fetch_one(state.pool())
+        .await?;
     Ok(Json(AdminOverview {
         counts,
-        uptime_days: uptime_days(&settings),
+        uptime_days: uptime_days(&settings, today),
     }))
 }
 
@@ -298,8 +301,10 @@ async fn record_visit(
         return Ok(StatusCode::NO_CONTENT);
     }
 
-    let day = Utc::now().date_naive();
     let mut transaction = state.pool().begin().await?;
+    let day: NaiveDate = sqlx::query_scalar("SELECT CURRENT_DATE")
+        .fetch_one(&mut *transaction)
+        .await?;
     let is_new_visitor = sqlx::query(
         "INSERT INTO daily_visitors (day, visitor_id) VALUES ($1, $2)
          ON CONFLICT (day, visitor_id) DO NOTHING",
@@ -505,8 +510,8 @@ async fn asset_url(state: &AppState, asset_id: Option<i64>) -> Result<Option<Str
 }
 
 async fn load_stats(state: &AppState, settings: &Value) -> Result<SiteStats, SiteError> {
-    let (article_count, total_words): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*)::bigint, COALESCE(SUM(word_count), 0)::bigint
+    let (article_count, total_words, today): (i64, i64, NaiveDate) = sqlx::query_as(
+        "SELECT COUNT(*)::bigint, COALESCE(SUM(word_count), 0)::bigint, CURRENT_DATE
          FROM articles WHERE status = 'published'",
     )
     .fetch_one(state.pool())
@@ -519,18 +524,14 @@ async fn load_stats(state: &AppState, settings: &Value) -> Result<SiteStats, Sit
         article_count,
         total_words,
         total_visits,
-        uptime_days: uptime_days(settings),
+        uptime_days: uptime_days(settings, today),
     })
 }
 
-fn uptime_days(settings: &Value) -> i64 {
+fn uptime_days(settings: &Value, today: NaiveDate) -> i64 {
     let founded_at = text_setting(settings, "basic", "founded_at", "2026-07-23");
     NaiveDate::parse_from_str(&founded_at, "%Y-%m-%d")
-        .map(|date| {
-            (Utc::now().date_naive() - date)
-                .num_days()
-                .saturating_add(1)
-        })
+        .map(|date| (today - date).num_days().saturating_add(1))
         .unwrap_or(1)
         .max(1)
 }
@@ -842,9 +843,17 @@ impl IntoResponse for SiteError {
 
 #[cfg(test)]
 mod tests {
+    use chrono::NaiveDate;
     use serde_json::json;
 
-    use super::{apply_patch, editable_request, features_from_document};
+    use super::{apply_patch, editable_request, features_from_document, uptime_days};
+
+    #[test]
+    fn uptime_uses_the_database_calendar_day() {
+        let settings = json!({"basic": {"founded_at": "2026-07-23"}});
+        let today = NaiveDate::from_ymd_opt(2026, 7, 28).expect("valid date");
+        assert_eq!(uptime_days(&settings, today), 6);
+    }
 
     #[test]
     fn legacy_splash_setting_is_preserved() {

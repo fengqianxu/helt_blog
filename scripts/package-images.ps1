@@ -27,7 +27,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Docker image build failed." }
     }
 
-    & docker compose pull postgres minio artalk
+    & docker compose pull postgres minio meting artalk
     if ($LASTEXITCODE -ne 0) { throw "Dependency image pull failed." }
 
     New-Item -ItemType Directory -Path $bundleDirectory -Force | Out-Null
@@ -40,6 +40,7 @@ try {
         "${ImagePrefix}-storage-init:${Tag}",
         "postgres:16-alpine",
         "minio/minio:latest",
+        "ghcr.io/mikus-loli/meting-api:latest",
         "artalk/artalk-go:2.10.0"
     )
     & docker image save --output $archive @images
