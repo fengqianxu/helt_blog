@@ -1554,6 +1554,7 @@ pub fn router() -> Router<AppState> {
                 && !super::friends::implements(contract.method, contract.path)
                 && !super::games::implements(contract.method, contract.path)
                 && !super::llm::implements(contract.method, contract.path)
+                && !super::moments::implements(contract.method, contract.path)
                 && !super::playlists::implements(contract.method, contract.path)
                 && !super::raiments::implements(contract.method, contract.path)
                 && !super::site::implements(contract.method, contract.path)

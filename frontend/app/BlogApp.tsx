@@ -294,6 +294,21 @@ type Post = {
 type ArticleListPayload = { page: number; per_page: number; total: number; items: Post[] };
 type RelatedPost = Pick<Post, "id" | "slug" | "title">;
 type TocItem = { id: string; text: string; level: number };
+type MomentImage = {
+  asset_id: number;
+  url: string;
+  alt_text: string;
+};
+type Moment = {
+  id: number;
+  content: string;
+  images: MomentImage[];
+  like_count: number;
+  created_at: string;
+  updated_at?: string;
+  liked_by_me: boolean;
+};
+type MomentListPayload = { page: number; per_page: number; total: number; items: Moment[] };
 type ArticleDetailPayload = {
   article: Post;
   previous: Post | null;
@@ -558,7 +573,7 @@ export function BlogApp() {
     page = <ArticlePage slug={slug} theme={theme} notify={notify} siteFeaturesReady={siteFeaturesReady} />;
   }
   else if (pathname === "/archives") page = <ArchivesPage />;
-  else if (pathname === "/moments") page = <MomentsPage />;
+  else if (pathname === "/moments") page = <MomentsPage notify={notify} />;
   else if (pathname === "/anime") page = <MediaPage />;
   else if (pathname === "/about") page = <AboutPage notify={notify} />;
   else if (pathname === "/friends") page = <FriendsPage notify={notify} />;
@@ -1579,17 +1594,103 @@ function ArchivesPage() {
   </main>;
 }
 
-function MomentsPage() {
-  const [liked, setLiked] = useState<number[]>([]);
-  const moments = [
-    { id: 1, dateTime: "2026-07-21T23:48:00+08:00", day: "07.21", year: "2026", time: "23:48", title: "把开屏的最后一帧调对", text: "新博客的开屏动画调了一晚上，语音淡入的时机终于对了。就是这个感觉。", mood: "开发日志", mark: "⌘", likes: 18 },
-    { id: 2, dateTime: "2026-07-14T16:20:00+08:00", day: "07.14", year: "2026", time: "16:20", title: "周末，漫展与战利品", text: "周末去了漫展，战利品合影。", mood: "日常", mark: "✦", likes: 15, hasMemory: true },
-    { id: 3, dateTime: "2026-07-02T09:12:00+08:00", day: "07.02", year: "2026", time: "09:12", title: "第 2000 天", text: "博客运行满 2000 天了。谢谢每一个来过的人。", mood: "纪念", mark: "∞", likes: 12 },
-  ];
-  const toggleLike = (id: number) => setLiked((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
+function MomentsPage({ notify }: { notify: Notify }) {
+  const [moments, setMoments] = useState<Moment[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [visitor] = useState<string | null>(() => typeof window === "undefined" ? null : visitorId());
+  const [liking, setLiking] = useState<number[]>([]);
+  const perPage = 20;
+
+  const loadPage = useCallback(async (targetPage: number, visitorIdValue: string | null, append: boolean, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ page: String(targetPage), per_page: String(perPage) });
+    if (visitorIdValue) params.set("visitor_id", visitorIdValue);
+    const response = await fetch(`/api/v1/moments?${params}`, { signal, cache: "no-store" });
+    if (!response.ok) throw new Error(await responseMessage(response, "时间轴加载失败"));
+    const payload = await response.json() as MomentListPayload;
+    setMoments((items) => append ? [...items, ...payload.items] : payload.items);
+    setPage(payload.page);
+    setTotal(payload.total);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({ page: "1", per_page: String(perPage) });
+    if (visitor) params.set("visitor_id", visitor);
+    void fetch(`/api/v1/moments?${params}`, { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "时间轴加载失败"));
+        return response.json() as Promise<MomentListPayload>;
+      })
+      .then((payload) => {
+        setMoments(payload.items);
+        setPage(payload.page);
+        setTotal(payload.total);
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setLoadError(error instanceof Error ? error.message : "时间轴加载失败");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [visitor]);
+
+  const loadMore = async () => {
+    if (loadingMore || moments.length >= total) return;
+    setLoadingMore(true);
+    try {
+      await loadPage(page + 1, visitor, true);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "更多说说加载失败", "danger");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const toggleLike = async (moment: Moment) => {
+    if (!visitor || liking.includes(moment.id)) return;
+    setLiking((items) => [...items, moment.id]);
+    try {
+      const response = await fetch(`/api/v1/moments/${moment.id}/like`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ visitor_id: visitor }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "点赞失败"));
+      const payload = await response.json() as { like_count: number; liked: boolean };
+      setMoments((items) => items.map((item) => item.id === moment.id
+        ? { ...item, like_count: payload.like_count, liked_by_me: payload.liked }
+        : item));
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "点赞失败", "danger");
+    } finally {
+      setLiking((items) => items.filter((id) => id !== moment.id));
+    }
+  };
+
+  const now = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const monthCount = moments.filter((moment) => {
+    const date = new Date(moment.created_at);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}` === thisMonth;
+  }).length;
+  const imageCount = moments.reduce((count, moment) => count + moment.images.length, 0);
+  const latestDate = moments.length ? new Date(moments[0].created_at) : null;
+  const latestCode = latestDate
+    ? latestDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase()
+    : "NO SIGNAL";
+  const streamCode = latestDate
+    ? latestDate.toLocaleDateString("en-US", { month: "long", year: "numeric" }).replace(" ", " / ").toUpperCase()
+    : "MOMENTS";
 
   return <main className="page-wrap narrow page-enter moments-page">
-    <PageHeading title="时间轴" subtitle="MOMENTS · 碎碎念" />
+    <PageHeading title="时间轴" subtitle={`MOMENTS · ${total} 条碎碎念`} />
     <section className="moment-overview" aria-label="时间轴概览">
       <div className="moment-overview-copy">
         <span className="moment-signal"><i aria-hidden="true" /> RECENT SIGNAL</span>
@@ -1597,50 +1698,54 @@ function MomentsPage() {
         <p>开发时的灵光、生活里的小事，以及值得记住的节点。</p>
       </div>
       <dl>
-        <div><dt>{String(moments.length).padStart(2, "0")}</dt><dd>本月动态</dd></div>
-        <div><dt>01</dt><dd>影像记录</dd></div>
-        <div><dt>21</dt><dd>最近更新</dd></div>
+        <div><dt>{String(monthCount).padStart(2, "0")}</dt><dd>本月动态</dd></div>
+        <div><dt>{String(imageCount).padStart(2, "0")}</dt><dd>影像记录</dd></div>
+        <div><dt>{latestDate ? String(latestDate.getDate()).padStart(2, "0") : "--"}</dt><dd>最近更新</dd></div>
       </dl>
-      <span className="moment-overview-code" aria-hidden="true">JUL / 2026</span>
+      <span className="moment-overview-code" aria-hidden="true">{latestCode}</span>
     </section>
 
     <div className="moment-stream-heading">
-      <span><i aria-hidden="true" /> JULY / 2026</span>
+      <span><i aria-hidden="true" /> {streamCode}</span>
       <small>按时间倒序排列</small>
     </div>
-    <div className="moments">
-      {moments.map((moment, index) => {
-        const isLiked = liked.includes(moment.id);
-        return <article key={moment.id} style={{ "--moment-order": index } as CSSProperties}>
-          <time className="moment-date" dateTime={moment.dateTime}>
-            <span>{moment.year}</span>
-            <b>{moment.day}</b>
-            <small>{moment.time}</small>
-          </time>
-          <i className="moment-node" aria-hidden="true"><span /></i>
-          <div className="moment-card">
-            <header>
-              <span className="moment-mood"><i aria-hidden="true">{moment.mark}</i>{moment.mood}</span>
-              <small>NO. {String(moments.length - index).padStart(2, "0")}</small>
-            </header>
-            <h2>{moment.title}</h2>
-            <p>{moment.text}</p>
-            {moment.hasMemory && <div className="moment-memory" role="img" aria-label="漫展战利品纪念影像">
-              <div className="moment-memory-copy"><span>COMIC MARKET</span><b>MEMORY / 07.14</b><small>WEEKEND ARCHIVE · 2026</small></div>
-              <div className="moment-memory-mark" aria-hidden="true"><i /><b>CM</b><i /></div>
-            </div>}
-            <footer className="moment-actions">
-              <span><i aria-hidden="true" /> LIFE LOG</span>
-              <button className={isLiked ? "liked" : ""} aria-label={`${isLiked ? "取消赞" : "点赞"}：${moment.title}`} aria-pressed={isLiked} onClick={() => toggleLike(moment.id)}>
-                <i aria-hidden="true">{isLiked ? "♥" : "♡"}</i>
-                <span>{moment.likes + (isLiked ? 1 : 0)}</span>
-              </button>
-            </footer>
-          </div>
-        </article>;
-      })}
-      <div className="moment-tail" aria-hidden="true"><i /> TO BE CONTINUED</div>
-    </div>
+    {loading ? <div className="moment-status" aria-live="polite"><b>LOADING</b><p>正在接收时间轴信号…</p></div>
+      : loadError ? <div className="moment-status error" role="alert"><b>OFFLINE</b><p>{loadError}</p></div>
+        : !moments.length ? <div className="moment-status"><b>EMPTY</b><p>还没有说说，第一条日常正在路上。</p></div>
+          : <div className="moments">
+            {moments.map((moment, index) => {
+              const date = new Date(moment.created_at);
+              const day = `${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getDate()).padStart(2, "0")}`;
+              const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+              return <article key={moment.id} style={{ "--moment-order": index } as CSSProperties}>
+                <time className="moment-date" dateTime={moment.created_at}>
+                  <span>{date.getFullYear()}</span>
+                  <b>{day}</b>
+                  <small>{time}</small>
+                </time>
+                <i className="moment-node" aria-hidden="true"><span /></i>
+                <div className="moment-card">
+                  <header>
+                    <span className="moment-mood"><i aria-hidden="true">✦</i>碎碎念</span>
+                    <small>NO. {String(total - index).padStart(2, "0")}</small>
+                  </header>
+                  {moment.content && <p className="moment-content">{moment.content}</p>}
+                  {moment.images.length > 0 && <div className={cx("moment-gallery", `count-${Math.min(moment.images.length, 4)}`)}>
+                    {moment.images.map((image, imageIndex) => <Image key={image.asset_id} src={image.url} width={960} height={720} sizes="(max-width: 700px) 90vw, 620px" alt={image.alt_text || `说说配图 ${imageIndex + 1}`} unoptimized />)}
+                  </div>}
+                  <footer className="moment-actions">
+                    <span><i aria-hidden="true" /> LIFE LOG</span>
+                    <button disabled={!visitor || liking.includes(moment.id)} className={moment.liked_by_me ? "liked" : ""} aria-label={moment.liked_by_me ? "取消点赞" : "点赞"} aria-pressed={moment.liked_by_me} onClick={() => void toggleLike(moment)}>
+                      <i aria-hidden="true">{moment.liked_by_me ? "♥" : "♡"}</i>
+                      <span>{moment.like_count}</span>
+                    </button>
+                  </footer>
+                </div>
+              </article>;
+            })}
+            {moments.length < total && <button className="moment-load-more" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "正在接收…" : `继续读取 · 还有 ${total - moments.length} 条`}</button>}
+            <div className="moment-tail" aria-hidden="true"><i /> TO BE CONTINUED</div>
+          </div>}
   </main>;
 }
 
@@ -1954,7 +2059,7 @@ function AdminLayout({ pathname, theme, toggleTheme, notify, admin }: { pathname
   const current = adminNav.find(([href]) => pathname === href)?.[2] || (pathname.includes("articles") ? "文章编辑器" : "仪表盘");
   let content: React.ReactNode;
   if (pathname === "/admin") content = <Dashboard notify={notify} />;
-  else if (pathname === "/admin/articles") content = <ArticleManager notify={notify} />;
+  else if (pathname === "/admin/articles") content = <ContentManager notify={notify} />;
   else if (pathname.includes("/admin/articles/")) content = <ArticleEditor pathname={pathname} theme={theme} notify={notify} />;
   else if (pathname === "/admin/comments") content = <ReviewManager notify={notify} />;
   else if (pathname === "/admin/assets") content = <AssetManager notify={notify} />;
@@ -2241,7 +2346,32 @@ function Dashboard({ notify }: { notify: Notify }) {
   </>;
 }
 
-function ArticleManager({ notify }: { notify: Notify }) {
+function ContentManager({ notify }: { notify: Notify }) {
+  const [contentType, setContentType] = useState<"articles" | "moments">("articles");
+  const [momentCreateSignal, setMomentCreateSignal] = useState(0);
+  return <>
+    <AdminTitle
+      title="文章管理"
+      sub={contentType === "articles" ? "BLOG ARTICLES" : "MOMENTS · 碎碎念"}
+      action={contentType === "articles"
+        ? <Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>
+        : <button type="button" className="admin-primary" onClick={() => setMomentCreateSignal((value) => value + 1)}>＋ 发布说说</button>}
+    />
+    <div className="content-type-switch" role="tablist" aria-label="内容类型">
+      <button type="button" role="tab" aria-selected={contentType === "articles"} className={contentType === "articles" ? "active" : ""} onClick={() => { setContentType("articles"); setMomentCreateSignal(0); }}>
+        <i aria-hidden="true">▤</i><span><b>博客文章</b><small>长文、分类与标签</small></span>
+      </button>
+      <button type="button" role="tab" aria-selected={contentType === "moments"} className={contentType === "moments" ? "active" : ""} onClick={() => { setContentType("moments"); setMomentCreateSignal(0); }}>
+        <i aria-hidden="true">✦</i><span><b>说说</b><small>碎碎念 · 联动前台时间轴</small></span>
+      </button>
+    </div>
+    {contentType === "articles"
+      ? <BlogArticleManager notify={notify} />
+      : <MomentManager key={`moments-${momentCreateSignal}`} notify={notify} openInitially={momentCreateSignal > 0} />}
+  </>;
+}
+
+function BlogArticleManager({ notify }: { notify: Notify }) {
   const [filter, setFilter] = useState("全部");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -2386,8 +2516,7 @@ function ArticleManager({ notify }: { notify: Notify }) {
   }, [closePreview, previewTarget]);
   const pageCount = Math.max(1, Math.ceil(total / perPage));
   return <>
-    <AdminTitle title="文章管理" sub={`ARTICLES · ${total} 条结果`} action={<Link href="/admin/articles/new" className="admin-primary">＋ 新建文章</Link>} />
-    <div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => { setFilter(x); setPage(1); }}>{x}</button>)}</div><input aria-label="搜索文章标题" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="搜索标题…" /></div>
+    <div className="admin-toolbar"><div>{["全部", "已发布", "草稿", "置顶"].map((x) => <button key={x} className={filter === x ? "active" : ""} onClick={() => { setFilter(x); setPage(1); }}>{x}</button>)}</div><span className="admin-result-count">{total} 篇文章</span><input aria-label="搜索文章标题" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="搜索标题…" /></div>
     {selected.length > 0 && <div className="admin-toolbar"><span>已选择 {selected.length} 篇</span><button onClick={() => void batch("publish")}>发布</button><button onClick={() => void batch("unpublish")}>撤回</button><button onClick={() => void batch("pin")}>置顶</button><button onClick={() => void batch("delete")}>删除</button></div>}
     <div className="admin-table">
       <div className="table-head"><span>选择</span><span>标题</span><span>分类</span><span>状态</span><span>数据</span><span>日期</span><span>操作</span></div>
@@ -2422,6 +2551,205 @@ function ArticleManager({ notify }: { notify: Notify }) {
         </div>
       </section>
     </div>, document.body)}
+  </>;
+}
+
+type MomentDraft = {
+  id: number | null;
+  content: string;
+  asset_ids: number[];
+  created_at: string;
+};
+
+function localDateTimeValue(value: string | Date = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function newMomentDraft(): MomentDraft {
+  return { id: null, content: "", asset_ids: [], created_at: localDateTimeValue() };
+}
+
+function MomentManager({ notify, openInitially }: { notify: Notify; openInitially: boolean }) {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [rows, setRows] = useState<Moment[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [draft, setDraft] = useState<MomentDraft | null>(() => openInitially ? newMomentDraft() : null);
+  const [deleteTarget, setDeleteTarget] = useState<Moment | null>(null);
+  const [assets, setAssets] = useState<AdminAsset[]>([]);
+  const [assetsLoading, setAssetsLoading] = useState(true);
+  const loadSequenceRef = useRef(0);
+  const perPage = 20;
+
+  const load = useCallback(async () => {
+    const sequence = ++loadSequenceRef.current;
+    setLoading(true);
+    const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
+    if (query.trim()) params.set("search", query.trim());
+    try {
+      const response = await fetch(`/api/v1/admin/moments?${params}`, { credentials: "include" });
+      if (!response.ok) throw new Error(await responseMessage(response, "说说列表加载失败"));
+      const payload = await response.json() as MomentListPayload;
+      if (sequence !== loadSequenceRef.current) return;
+      setRows(payload.items);
+      setTotal(payload.total);
+      const lastPage = Math.max(1, Math.ceil(payload.total / perPage));
+      if (page > lastPage) setPage(lastPage);
+    } catch (error) {
+      if (sequence === loadSequenceRef.current) notify(error instanceof Error ? error.message : "说说列表加载失败", "danger");
+    } finally {
+      if (sequence === loadSequenceRef.current) setLoading(false);
+    }
+  }, [notify, page, query]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 180);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/v1/admin/assets?media_type=image&per_page=100", { credentials: "include", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseMessage(response, "图片素材加载失败"));
+        return response.json() as Promise<{ items: AdminAsset[] }>;
+      })
+      .then((payload) => setAssets(payload.items))
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) notify(error instanceof Error ? error.message : "图片素材加载失败", "danger");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setAssetsLoading(false);
+      });
+    return () => controller.abort();
+  }, [notify]);
+
+  useEffect(() => {
+    if (!draft && !deleteTarget) return;
+    const previousOverflow = document.body.style.overflow;
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || saving || deleting) return;
+      setDraft(null);
+      setDeleteTarget(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", close);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", close);
+    };
+  }, [deleteTarget, deleting, draft, saving]);
+
+  const edit = (moment: Moment) => setDraft({
+    id: moment.id,
+    content: moment.content,
+    asset_ids: moment.images.map((image) => image.asset_id),
+    created_at: localDateTimeValue(moment.created_at),
+  });
+
+  const toggleAsset = (assetId: number) => {
+    if (!draft) return;
+    if (draft.asset_ids.includes(assetId)) {
+      setDraft({ ...draft, asset_ids: draft.asset_ids.filter((id) => id !== assetId) });
+      return;
+    }
+    if (draft.asset_ids.length >= 9) {
+      notify("每条说说最多选择 9 张图片", "danger");
+      return;
+    }
+    setDraft({ ...draft, asset_ids: [...draft.asset_ids, assetId] });
+  };
+
+  const save = async () => {
+    if (!draft || saving) return;
+    if (!draft.content.trim() && !draft.asset_ids.length) {
+      notify("说说内容和图片不能同时为空", "danger");
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await fetch(draft.id ? `/api/v1/admin/moments/${draft.id}` : "/api/v1/admin/moments", {
+        method: draft.id ? "PUT" : "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          content: draft.content,
+          asset_ids: draft.asset_ids,
+          created_at: new Date(draft.created_at).toISOString(),
+        }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, draft.id ? "说说更新失败" : "说说发布失败"));
+      notify(draft.id ? "说说已更新，前台时间轴已同步" : "说说已发布到前台时间轴", "success");
+      setDraft(null);
+      setPage(1);
+      void load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "说说保存失败", "danger");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    try {
+      const response = await fetch(`/api/v1/admin/moments/${deleteTarget.id}`, { method: "DELETE", credentials: "include" });
+      if (!response.ok) throw new Error(await responseMessage(response, "说说删除失败"));
+      notify("说说已删除，前台时间轴已同步", "success");
+      setDeleteTarget(null);
+      void load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "说说删除失败", "danger");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
+  return <>
+    <div className="admin-toolbar moment-admin-toolbar">
+      <div><button type="button" className="active">全部说说</button><span className="admin-result-count">{total} 条动态 · 发布后自动进入前台时间轴</span></div>
+      <input aria-label="搜索说说内容" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="搜索说说内容…" />
+    </div>
+    <div className="admin-table moment-admin-table">
+      <div className="table-head moment-table-grid"><span>内容</span><span>图片</span><span>点赞</span><span>发布时间</span><span>操作</span></div>
+      {loading && <div className="empty-panel">正在加载说说…</div>}
+      {!loading && rows.map((moment) => <div className="table-row moment-table-grid" key={moment.id}>
+        <b title={moment.content}>{moment.content || "（仅图片）"}</b>
+        <span className="moment-admin-thumbs">{moment.images.slice(0, 3).map((image) => <Image key={image.asset_id} src={image.url} width={42} height={42} unoptimized alt="" />)}{moment.images.length > 3 && <i>+{moment.images.length - 3}</i>}{!moment.images.length && <small>无图片</small>}</span>
+        <small>{moment.like_count} 赞</small>
+        <small>{new Date(moment.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
+        <span className="row-actions"><button type="button" onClick={() => edit(moment)}>编辑</button><button type="button" onClick={() => setDeleteTarget(moment)}>删除</button></span>
+      </div>)}
+      {!loading && !rows.length && <div className="empty-panel">还没有符合条件的说说。</div>}
+    </div>
+    {pageCount > 1 && <div className="pagination admin-article-pagination" aria-label="后台说说分页"><button disabled={page === 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="上一页">◀</button><span>第 {page} / {pageCount} 页</span><button disabled={page === pageCount || loading} onClick={() => setPage((value) => Math.min(pageCount, value + 1))} aria-label="下一页">▶</button></div>}
+    {draft && <div className="moment-editor-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !saving && setDraft(null)}>
+      <section role="dialog" aria-modal="true" aria-labelledby="moment-editor-title">
+        <header><div><span>MOMENTS / TIMELINE</span><h2 id="moment-editor-title">{draft.id ? "编辑说说" : "发布说说"}</h2></div><button type="button" aria-label="关闭说说编辑器" disabled={saving} onClick={() => setDraft(null)}>×</button></header>
+        <div className="moment-editor-body">
+          <label className="moment-editor-content"><span>碎碎念 <small>{draft.content.length}/5000</small></span><textarea autoFocus maxLength={5000} value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="记录此刻的想法，也可以只发图片…" /></label>
+          <label className="moment-editor-time"><span>时间轴时间</span><input type="datetime-local" value={draft.created_at} onChange={(event) => setDraft({ ...draft, created_at: event.target.value })} /></label>
+          <section className="moment-editor-assets">
+            <div><span>配图素材</span><small>已选 {draft.asset_ids.length} / 9 · 点击图片选择并排序</small></div>
+            {assetsLoading ? <div className="empty-panel">正在加载图片素材…</div>
+              : assets.length ? <div className="moment-editor-asset-grid">{assets.map((asset) => {
+                const selectedIndex = draft.asset_ids.indexOf(asset.id);
+                return <button type="button" key={asset.id} className={selectedIndex >= 0 ? "selected" : ""} onClick={() => toggleAsset(asset.id)}><Image src={asset.file.url} width={180} height={120} unoptimized alt={asset.name} /><span>{selectedIndex >= 0 ? selectedIndex + 1 : "+"}</span><b>{asset.name}</b></button>;
+              })}</div>
+                : <div className="moment-editor-no-assets"><p>素材库中还没有图片。</p><Link href="/admin/assets">去素材库上传 →</Link></div>}
+          </section>
+        </div>
+        <footer><small>保存后会立即同步到博客前台的“时间轴”。</small><div><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button><button type="button" className="admin-primary" disabled={saving || (!draft.content.trim() && !draft.asset_ids.length)} onClick={() => void save()}>{saving ? "正在保存…" : draft.id ? "保存并同步" : "发布到时间轴"}</button></div></footer>
+      </section>
+    </div>}
+    {deleteTarget && <div className="admin-account-dialog article-delete-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setDeleteTarget(null)}><section className="article-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="moment-delete-title"><header><div><span>MOMENTS / DELETE</span><h2 id="moment-delete-title">确认删除说说</h2></div><button type="button" aria-label="关闭删除确认" disabled={deleting} onClick={() => setDeleteTarget(null)}>×</button></header><p>这条说说会同时从前台时间轴移除，已有点赞记录也会删除。此操作不能撤销。</p><footer><button type="button" disabled={deleting} onClick={() => setDeleteTarget(null)}>取消</button><button className="danger" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "正在删除…" : "确认删除"}</button></footer></section></div>}
   </>;
 }
 

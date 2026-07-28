@@ -877,6 +877,96 @@ async fn article_crud_publish_conflict_and_tag_sync_use_postgres() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
+async fn moments_crud_public_timeline_and_likes_use_postgres() {
+    let database = TestDatabase::create().await;
+    let app = test_app(database.pool.clone());
+    let created_at = Utc::now();
+
+    let (status, created) = json_request(
+        &app,
+        Method::POST,
+        "/api/v1/admin/moments",
+        Some(json!({
+            "content": "第一条数据库说说",
+            "asset_ids": [],
+            "created_at": created_at
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let moment_id = created["id"].as_i64().expect("moment id");
+    assert_eq!(created["content"], "第一条数据库说说");
+    assert_eq!(created["images"], json!([]));
+
+    let (status, public_list) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/moments?page=1&per_page=10&visitor_id=integration-visitor",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(public_list["total"], 1);
+    assert_eq!(public_list["items"][0]["id"], moment_id);
+    assert_eq!(public_list["items"][0]["liked_by_me"], false);
+
+    let (status, liked) = json_request(
+        &app,
+        Method::POST,
+        &format!("/api/v1/moments/{moment_id}/like"),
+        Some(json!({ "visitor_id": "integration-visitor" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(liked["liked"], true);
+    assert_eq!(liked["like_count"], 1);
+
+    let (status, updated) = json_request(
+        &app,
+        Method::PUT,
+        &format!("/api/v1/admin/moments/{moment_id}"),
+        Some(json!({
+            "content": "编辑后的数据库说说",
+            "asset_ids": [],
+            "created_at": created_at
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["content"], "编辑后的数据库说说");
+    assert_eq!(updated["like_count"], 1);
+
+    let (status, admin_list) = json_request(
+        &app,
+        Method::GET,
+        "/api/v1/admin/moments?page=1&per_page=10&search=%E7%BC%96%E8%BE%91",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(admin_list["total"], 1);
+
+    let (status, _) = json_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/admin/moments/{moment_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let attempts_remain: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM moment_like_attempts WHERE moment_id=$1)")
+            .bind(moment_id)
+            .fetch_one(&database.pool)
+            .await
+            .expect("check like attempt cascade");
+    assert!(!attempts_remain);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing at PostgreSQL"]
 async fn bangumi_mirror_is_public_paginated_and_filterable() {
     let database = TestDatabase::create().await;
     sqlx::query(

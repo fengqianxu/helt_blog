@@ -7,6 +7,7 @@ mod friends;
 pub mod games;
 mod health;
 mod llm;
+mod moments;
 mod playlists;
 mod raiments;
 mod site;
@@ -42,6 +43,7 @@ pub fn router(request_timeout_secs: u64, asset_request_timeout_secs: u64) -> Rou
         .merge(friends::router())
         .merge(games::router())
         .merge(llm::router())
+        .merge(moments::router())
         .merge(playlists::router())
         .merge(raiments::router())
         .merge(site::router())

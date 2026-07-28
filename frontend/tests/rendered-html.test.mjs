@@ -116,9 +116,14 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(styles, /@media \(max-width:\s*768px\)[\s\S]*?\.archive-side\s*\{[^}]*position:\s*static[^}]*order:\s*-1/);
   assert.match(shell, /className="moment-overview" aria-label="时间轴概览"/);
   assert.match(shell, /className="moment-stream-heading"/);
-  assert.match(shell, /<time className="moment-date" dateTime=\{moment\.dateTime\}>/);
-  assert.match(shell, /aria-pressed=\{isLiked\}/);
-  assert.match(shell, /className="moment-memory" role="img"/);
+  assert.match(shell, /\/api\/v1\/moments\?/);
+  assert.match(shell, /\/api\/v1\/moments\/\$\{moment\.id\}\/like/);
+  assert.match(shell, /\/api\/v1\/admin\/moments/);
+  assert.match(shell, /<time className="moment-date" dateTime=\{moment\.created_at\}>/);
+  assert.match(shell, /aria-pressed=\{moment\.liked_by_me\}/);
+  assert.match(shell, /className=\{cx\("moment-gallery"/);
+  assert.match(shell, /className="content-type-switch"/);
+  assert.doesNotMatch(shell, /const moments = \[/);
   assert.doesNotMatch(shell, /className="photo-placeholder"/);
   assert.match(styles, /\.moment-overview\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\) auto/);
   assert.match(styles, /\.moment-card:hover\s*\{[^}]*transform:\s*translateY\(-3px\)/);
