@@ -14,7 +14,7 @@ use sqlx::{FromRow, Postgres, Transaction};
 use tracing::error;
 
 use crate::{
-    auth,
+    auth, client,
     error::{ErrorBody, ErrorEnvelope},
     routes::contract::HttpMethod,
     state::AppState,
@@ -246,8 +246,8 @@ fn normalized_search(search: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), MomentError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), MomentError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(MomentError::Unauthorized)
@@ -441,6 +441,7 @@ async fn fetch_moment(pool: &sqlx::PgPool, id: i64) -> Result<Option<MomentItem>
 
 async fn public_list(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<PublicListQuery>,
 ) -> Result<Json<Value>, MomentError> {
     let (page, offset) = page_values(query.page, query.per_page)?;
@@ -448,7 +449,8 @@ async fn public_list(
         .visitor_id
         .as_deref()
         .map(normalized_visitor_id)
-        .transpose()?;
+        .transpose()?
+        .map(|_| client::fingerprint(&headers, state.auth_jwt_secret(), "moment-like"));
     let rows = sqlx::query_as::<_, MomentRow>(
         "SELECT m.id, m.content, m.like_count, m.created_at, m.updated_at,
                 EXISTS(
@@ -478,13 +480,15 @@ async fn public_list(
 
 async fn toggle_like(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
     Json(request): Json<LikeRequest>,
 ) -> Result<Json<Value>, MomentError> {
     if id <= 0 {
         return Err(MomentError::validation("说说 id 必须为正整数"));
     }
-    let visitor_id = normalized_visitor_id(&request.visitor_id)?;
+    normalized_visitor_id(&request.visitor_id)?;
+    let visitor_id = client::fingerprint(&headers, state.auth_jwt_secret(), "moment-like");
     let mut transaction = state.pool().begin().await?;
     let exists = sqlx::query_scalar::<_, i64>("SELECT id FROM moments WHERE id = $1 FOR UPDATE")
         .bind(id)
@@ -496,9 +500,8 @@ async fn toggle_like(
 
     sqlx::query(
         "DELETE FROM moment_like_attempts
-         WHERE visitor_id = $1 AND created_at < now() - interval '1 minute'",
+         WHERE created_at < now() - interval '1 day'",
     )
-    .bind(&visitor_id)
     .execute(&mut *transaction)
     .await?;
     let recent_attempts: i64 = sqlx::query_scalar(
@@ -553,7 +556,7 @@ async fn admin_list(
     headers: HeaderMap,
     Query(query): Query<AdminListQuery>,
 ) -> Result<Json<Value>, MomentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let (page, offset) = page_values(query.page, query.per_page)?;
     let search = normalized_search(query.search.as_deref());
     let rows = sqlx::query_as::<_, MomentRow>(
@@ -589,7 +592,7 @@ async fn admin_create(
     headers: HeaderMap,
     Json(request): Json<SaveMomentRequest>,
 ) -> Result<(StatusCode, Json<MomentItem>), MomentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     validate_assets(state.pool(), &request.asset_ids).await?;
     validate_tags(state.pool(), &request.tag_ids).await?;
     let content = normalized_content(&request.content, &request.asset_ids)?;
@@ -618,7 +621,7 @@ async fn admin_update(
     Path(id): Path<i64>,
     Json(request): Json<SaveMomentRequest>,
 ) -> Result<Json<MomentItem>, MomentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if id <= 0 {
         return Err(MomentError::validation("说说 id 必须为正整数"));
     }
@@ -653,7 +656,7 @@ async fn admin_delete(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, MomentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if id <= 0 {
         return Err(MomentError::validation("说说 id 必须为正整数"));
     }

@@ -1,11 +1,11 @@
 use std::{
     collections::HashSet,
-    io::{Cursor, Write},
+    io::{self, Cursor, Write},
 };
 
 use axum::{
     Json, Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, warn};
 use uuid::Uuid;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
@@ -152,7 +154,7 @@ async fn list_assets(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>, AssetError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let page = query.page.max(1);
     let per_page = query.per_page.clamp(1, 100);
     let offset = (page - 1)
@@ -209,7 +211,7 @@ async fn asset_detail(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AssetError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let asset = fetch_asset(&state, id).await?;
     let mut references = sqlx::query_as::<_, ReferenceRow>(
         "SELECT source_type, source_id, source_label, admin_path
@@ -235,7 +237,7 @@ async fn upload_asset(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<Value>), AssetError> {
-    let admin_id = require_admin(&state, &headers)?;
+    let admin_id = require_admin(&state, &headers).await?;
     let upload = read_upload(multipart).await?;
     let name = normalized_asset_name(upload.name.as_deref(), &upload.filename)?;
     let stored = store_upload(&state, admin_id, upload, None).await?;
@@ -266,7 +268,7 @@ async fn rename_asset(
     Path(id): Path<i64>,
     Json(body): Json<RenameRequest>,
 ) -> Result<Json<Value>, AssetError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let name = body.name.trim();
     if name.is_empty() || name.chars().count() > 255 {
         return Err(AssetError::validation(
@@ -293,7 +295,7 @@ async fn replace_asset(
     Path(id): Path<i64>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<Value>), AssetError> {
-    let admin_id = require_admin(&state, &headers)?;
+    let admin_id = require_admin(&state, &headers).await?;
     let current = fetch_asset(&state, id).await?;
     let upload = read_upload(multipart).await?;
     let stored = store_upload(&state, admin_id, upload, Some(&current.media_type)).await?;
@@ -339,7 +341,7 @@ async fn delete_asset(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AssetError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     match delete_one(&state, id).await? {
         DeleteResult::Deleted => Ok(StatusCode::NO_CONTENT),
         DeleteResult::Blocked => Err(AssetError::Conflict("素材仍被业务引用，不能删除".into())),
@@ -352,7 +354,7 @@ async fn batch_delete(
     headers: HeaderMap,
     Json(body): Json<BatchRequest>,
 ) -> Result<Json<BatchDeleteResponse>, AssetError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     validate_batch(&body.asset_ids)?;
     let mut result = BatchDeleteResponse {
         deleted: vec![],
@@ -374,7 +376,7 @@ async fn batch_download(
     headers: HeaderMap,
     Json(body): Json<BatchRequest>,
 ) -> Result<Response, AssetError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     validate_batch(&body.asset_ids)?;
     let rows = sqlx::query_as::<_, DownloadRow>(
         "SELECT a.id, a.name, u.object_key, u.size_bytes
@@ -389,21 +391,26 @@ async fn batch_download(
     if total > MAX_BATCH_DOWNLOAD_BYTES {
         return Err(AssetError::validation("批量下载展开后不能超过 512 MB"));
     }
-    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    for (index, row) in rows.into_iter().enumerate() {
-        let data = state
-            .object_storage()
-            .get_public_object(state.storage_http_client(), &row.object_key)
-            .await
-            .map_err(AssetError::Storage)?;
-        let filename = safe_archive_name(&row.name, row.id, index);
-        archive
-            .start_file(filename, options)
-            .map_err(AssetError::Zip)?;
-        archive.write_all(&data).map_err(AssetError::Io)?;
-    }
-    let bytes = archive.finish().map_err(AssetError::Zip)?.into_inner();
+    let (command_sender, command_receiver) = mpsc::channel(8);
+    let (output_sender, output_receiver) = mpsc::channel(8);
+    let worker_error_sender = output_sender.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(worker_error) = write_zip_stream(command_receiver, output_sender) {
+            let _ = worker_error_sender.blocking_send(Err(io::Error::other(worker_error)));
+        }
+    });
+
+    tokio::spawn(async move {
+        if let Err(stream_error) =
+            stream_assets_into_zip(&state, rows, command_sender.clone()).await
+        {
+            warn!(error = %stream_error, "streaming asset archive failed");
+            let _ = command_sender
+                .send(ZipCommand::Abort(stream_error.to_string()))
+                .await;
+        }
+    });
+
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/zip")
@@ -411,8 +418,125 @@ async fn batch_download(
             header::CONTENT_DISPOSITION,
             "attachment; filename=\"assets.zip\"",
         )
-        .body(Body::from(bytes))
+        .body(Body::from_stream(ReceiverStream::new(output_receiver)))
         .map_err(|error| AssetError::Internal(error.to_string()))
+}
+
+enum ZipCommand {
+    StartFile(String),
+    Data(Bytes),
+    Finish,
+    Abort(String),
+}
+
+struct ChannelWriter {
+    sender: mpsc::Sender<Result<Bytes, io::Error>>,
+    buffer: Vec<u8>,
+}
+
+impl ChannelWriter {
+    fn new(sender: mpsc::Sender<Result<Bytes, io::Error>>) -> Self {
+        Self {
+            sender,
+            buffer: Vec::with_capacity(64 * 1024),
+        }
+    }
+
+    fn flush_buffer(&mut self) -> io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let chunk = Bytes::from(std::mem::take(&mut self.buffer));
+        self.buffer = Vec::with_capacity(64 * 1024);
+        self.sender
+            .blocking_send(Ok(chunk))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "download disconnected"))
+    }
+}
+
+impl Write for ChannelWriter {
+    fn write(&mut self, mut input: &[u8]) -> io::Result<usize> {
+        let input_len = input.len();
+        while !input.is_empty() {
+            let available = 64 * 1024 - self.buffer.len();
+            let take = available.min(input.len());
+            self.buffer.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.buffer.len() == 64 * 1024 {
+                self.flush_buffer()?;
+            }
+        }
+        Ok(input_len)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flush_buffer()
+    }
+}
+
+fn write_zip_stream(
+    mut commands: mpsc::Receiver<ZipCommand>,
+    sender: mpsc::Sender<Result<Bytes, io::Error>>,
+) -> Result<(), String> {
+    let mut archive = ZipWriter::new_stream(ChannelWriter::new(sender));
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    loop {
+        match commands.blocking_recv() {
+            Some(ZipCommand::StartFile(filename)) => archive
+                .start_file(filename, options)
+                .map_err(|error| error.to_string())?,
+            Some(ZipCommand::Data(chunk)) => archive
+                .write_all(&chunk)
+                .map_err(|error| error.to_string())?,
+            Some(ZipCommand::Finish) => break,
+            Some(ZipCommand::Abort(message)) => return Err(message),
+            None => return Err("asset download producer stopped unexpectedly".to_owned()),
+        }
+    }
+    let stream = archive.finish().map_err(|error| error.to_string())?;
+    let mut writer = stream.into_inner();
+    writer.flush().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn stream_assets_into_zip(
+    state: &AppState,
+    rows: Vec<DownloadRow>,
+    sender: mpsc::Sender<ZipCommand>,
+) -> anyhow::Result<()> {
+    let mut archive_bytes = 0_i64;
+    for (index, row) in rows.into_iter().enumerate() {
+        sender
+            .send(ZipCommand::StartFile(safe_archive_name(
+                &row.name, row.id, index,
+            )))
+            .await
+            .map_err(|_| anyhow::anyhow!("ZIP writer stopped"))?;
+        let mut response = state
+            .object_storage()
+            .open_public_object(state.storage_http_client(), &row.object_key)
+            .await?;
+        let mut object_bytes = 0_i64;
+        while let Some(chunk) = response.chunk().await? {
+            object_bytes = object_bytes.saturating_add(chunk.len() as i64);
+            archive_bytes = archive_bytes.saturating_add(chunk.len() as i64);
+            if object_bytes > row.size_bytes || archive_bytes > MAX_BATCH_DOWNLOAD_BYTES {
+                anyhow::bail!("MinIO object size exceeded the validated archive budget");
+            }
+            sender
+                .send(ZipCommand::Data(chunk))
+                .await
+                .map_err(|_| anyhow::anyhow!("ZIP writer stopped"))?;
+        }
+        if object_bytes != row.size_bytes {
+            anyhow::bail!("MinIO object size did not match the upload ledger");
+        }
+    }
+    sender
+        .send(ZipCommand::Finish)
+        .await
+        .map_err(|_| anyhow::anyhow!("ZIP writer stopped"))?;
+    Ok(())
 }
 
 #[derive(Debug, FromRow)]
@@ -662,8 +786,10 @@ async fn delete_one(state: &AppState, id: i64) -> Result<DeleteResult, AssetErro
     Ok(DeleteResult::Deleted)
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i64, AssetError> {
-    auth::authenticated_admin_id(state, headers).ok_or(AssetError::Unauthorized)
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<i64, AssetError> {
+    auth::authenticated_admin_id(state, headers)
+        .await
+        .ok_or(AssetError::Unauthorized)
 }
 
 fn normalized_filter(
@@ -859,8 +985,6 @@ enum AssetError {
     Conflict(String),
     Database(sqlx::Error),
     Storage(anyhow::Error),
-    Zip(zip::result::ZipError),
-    Io(std::io::Error),
     Internal(String),
 }
 
@@ -901,22 +1025,6 @@ impl IntoResponse for AssetError {
             }
             Self::Storage(error) => {
                 error!(%error, "asset storage operation failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error",
-                    "素材操作失败".to_owned(),
-                )
-            }
-            Self::Zip(error) => {
-                error!(%error, "asset archive operation failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error",
-                    "素材操作失败".to_owned(),
-                )
-            }
-            Self::Io(error) => {
-                error!(%error, "asset archive I/O failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",

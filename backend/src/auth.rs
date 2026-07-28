@@ -32,6 +32,7 @@ use tracing::{error, info, warn};
 use webauthn_rs::prelude::{CredentialID, RegisterPublicKeyCredential, Uuid};
 
 use crate::{
+    client,
     error::{ErrorBody, ErrorEnvelope},
     routes::{bangumi, contract::HttpMethod, games},
     state::AppState,
@@ -153,6 +154,7 @@ struct LoginUser {
     username: String,
     password_hash: String,
     totp_secret: Option<String>,
+    session_version: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -362,6 +364,9 @@ async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProf
 struct AccessClaims {
     sub: i64,
     username: String,
+    sid: Uuid,
+    ver: i64,
+    jti: Uuid,
     iss: String,
     iat: usize,
     exp: usize,
@@ -436,13 +441,14 @@ async fn login(
         return Err(ApiError::Validation("请输入有效密码"));
     }
 
-    let rate_key = auth_rate_key(&headers, username);
-    if state.auth_rate_limited(&rate_key) {
+    let rate_keys = auth_rate_keys(&headers, username);
+    if rate_keys.iter().any(|key| state.auth_rate_limited(key)) {
         return Err(ApiError::RateLimited);
     }
 
     let user = sqlx::query_as::<_, LoginUser>(
-        "SELECT id, username, password_hash, totp_secret FROM admin_users WHERE username = $1",
+        "SELECT id, username, password_hash, totp_secret, session_version
+         FROM admin_users WHERE username = $1",
     )
     .bind(username)
     .fetch_optional(state.pool())
@@ -456,7 +462,9 @@ async fn login(
     let stored_hash = user
         .as_ref()
         .map(|candidate| candidate.password_hash.clone());
+    let hash_permit = state.try_auth_hash_permit().ok_or(ApiError::RateLimited)?;
     let password_valid = tokio::task::spawn_blocking(move || {
+        let _permit = hash_permit;
         verify_password_or_run_dummy(stored_hash.as_deref(), &supplied_password)
     })
     .await
@@ -476,26 +484,55 @@ async fn login(
         });
 
     let Some(user) = user.filter(|_| password_valid && totp_valid) else {
-        state.record_auth_failure(&rate_key);
+        for key in &rate_keys {
+            state.record_auth_failure(key);
+        }
         return Err(ApiError::Unauthorized);
     };
 
-    state.clear_auth_failures(&rate_key);
-    let access_token = create_access_token(&state, &user)?;
+    for key in &rate_keys {
+        state.clear_auth_failures(key);
+    }
+    let session_id = Uuid::now_v7();
+    let session_ttl = if request.remember {
+        REFRESH_TTL_SECONDS
+    } else {
+        ACCESS_TTL_SECONDS
+    };
+    let session_expires_at = Utc::now() + Duration::seconds(session_ttl);
+    let mut transaction = state.pool().begin().await.map_err(|err| {
+        error!(error = %err, "login session transaction could not start");
+        ApiError::Internal
+    })?;
+    sqlx::query(
+        "INSERT INTO auth_sessions (id, user_id, session_version, expires_at)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(session_id)
+    .bind(user.id)
+    .bind(user.session_version)
+    .bind(session_expires_at)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "access session persistence failed");
+        ApiError::Internal
+    })?;
     let mut response_headers = HeaderMap::new();
-    append_cookie(&mut response_headers, access_cookie(&state, &access_token))?;
 
     if request.remember {
         let refresh_token = random_token();
         let refresh_hash = hash_token(&refresh_token);
         let expires_at = Utc::now() + Duration::seconds(REFRESH_TTL_SECONDS);
         sqlx::query(
-            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at, session_id)
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(user.id)
         .bind(refresh_hash)
         .bind(expires_at)
-        .execute(state.pool())
+        .bind(session_id)
+        .execute(&mut *transaction)
         .await
         .map_err(|err| {
             error!(error = %err, "refresh token persistence failed");
@@ -508,6 +545,12 @@ async fn login(
     } else {
         append_cookie(&mut response_headers, clear_cookie(&state, REFRESH_COOKIE))?;
     }
+    transaction.commit().await.map_err(|err| {
+        error!(error = %err, "login session transaction could not commit");
+        ApiError::Internal
+    })?;
+    let access_token = create_access_token(&state, &user, session_id)?;
+    append_cookie(&mut response_headers, access_cookie(&state, &access_token))?;
 
     let admin = load_admin_identity(&state, user.id, &user.username).await?;
     info!(username = %user.username, "administrator signed in");
@@ -528,12 +571,17 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         error!(error = %err, "refresh transaction could not start");
         ApiError::Internal
     })?;
-    let row = sqlx::query_as::<_, (i64, i64, String)>(
-        "SELECT rt.id, au.id, au.username
+    let row = sqlx::query_as::<_, (i64, i64, String, Uuid, i64)>(
+        "SELECT rt.id, au.id, au.username, session.id, au.session_version
          FROM refresh_tokens rt
          JOIN admin_users au ON au.id = rt.user_id
-         WHERE rt.token_hash = $1 AND rt.expires_at > now()
-         FOR UPDATE",
+         JOIN auth_sessions session ON session.id = rt.session_id
+         WHERE rt.token_hash = $1
+           AND rt.expires_at > now()
+           AND session.revoked_at IS NULL
+           AND session.expires_at > now()
+           AND session.session_version = au.session_version
+         FOR UPDATE OF rt, session",
     )
     .bind(&old_hash)
     .fetch_optional(&mut *transaction)
@@ -543,7 +591,7 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         ApiError::Internal
     })?;
 
-    let Some((refresh_id, user_id, username)) = row else {
+    let Some((refresh_id, user_id, username, session_id, session_version)) = row else {
         let _ = transaction.rollback().await;
         return Err(ApiError::Unauthorized);
     };
@@ -558,14 +606,28 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         })?;
 
     let next_refresh = random_token();
-    sqlx::query("INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
-        .bind(user_id)
-        .bind(hash_token(&next_refresh))
-        .bind(Utc::now() + Duration::seconds(REFRESH_TTL_SECONDS))
+    let next_expiry = Utc::now() + Duration::seconds(REFRESH_TTL_SECONDS);
+    sqlx::query(
+        "INSERT INTO refresh_tokens (user_id, token_hash, expires_at, session_id)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(user_id)
+    .bind(hash_token(&next_refresh))
+    .bind(next_expiry)
+    .bind(session_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "rotated refresh token could not be persisted");
+        ApiError::Internal
+    })?;
+    sqlx::query("UPDATE auth_sessions SET expires_at = $1 WHERE id = $2")
+        .bind(next_expiry)
+        .bind(session_id)
         .execute(&mut *transaction)
         .await
         .map_err(|err| {
-            error!(error = %err, "rotated refresh token could not be persisted");
+            error!(error = %err, "access session expiry could not be extended");
             ApiError::Internal
         })?;
 
@@ -579,8 +641,9 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         username: username.clone(),
         password_hash: String::new(),
         totp_secret: None,
+        session_version,
     };
-    let access_token = create_access_token(&state, &user)?;
+    let access_token = create_access_token(&state, &user, session_id)?;
     let mut response_headers = HeaderMap::new();
     append_cookie(&mut response_headers, access_cookie(&state, &access_token))?;
     append_cookie(&mut response_headers, refresh_cookie(&state, &next_refresh))?;
@@ -595,16 +658,39 @@ async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    authenticate(&state, &headers)?;
-    if let Some(refresh_token) = read_cookie(&headers, REFRESH_COOKIE) {
-        sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = $1")
-            .bind(hash_token(&refresh_token))
-            .execute(state.pool())
-            .await
-            .map_err(|err| {
-                error!(error = %err, "refresh token revocation failed");
-                ApiError::Internal
-            })?;
+    let mut session_ids = HashSet::new();
+    if let Some(access_token) = read_cookie(&headers, ACCESS_COOKIE)
+        && let Ok(claims) =
+            decode_access_token_allow_expired(state.auth_jwt_secret(), &access_token)
+    {
+        session_ids.insert(claims.sid);
+    }
+    if let Some(refresh_token) = read_cookie(&headers, REFRESH_COOKIE)
+        && let Some(session_id) = sqlx::query_scalar::<_, Uuid>(
+            "DELETE FROM refresh_tokens WHERE token_hash = $1 RETURNING session_id",
+        )
+        .bind(hash_token(&refresh_token))
+        .fetch_optional(state.pool())
+        .await
+        .map_err(|err| {
+            error!(error = %err, "refresh token revocation failed");
+            ApiError::Internal
+        })?
+    {
+        session_ids.insert(session_id);
+    }
+    if !session_ids.is_empty() {
+        sqlx::query(
+            "UPDATE auth_sessions SET revoked_at = COALESCE(revoked_at, now())
+             WHERE id = ANY($1)",
+        )
+        .bind(session_ids.into_iter().collect::<Vec<_>>())
+        .execute(state.pool())
+        .await
+        .map_err(|err| {
+            error!(error = %err, "access session revocation failed");
+            ApiError::Internal
+        })?;
     }
 
     let mut response_headers = HeaderMap::new();
@@ -614,7 +700,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     Ok(Json(load_admin_identity(&state, claims.sub, &claims.username).await?).into_response())
 }
 
@@ -623,7 +709,7 @@ async fn update_profile(
     headers: HeaderMap,
     Json(request): Json<UpdateProfileRequest>,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     let email = normalized_email(&request.email)?;
     let bilibili_uid = normalized_bilibili_uid(&request.bilibili_uid)?;
     let about = request.about.map(normalized_about_profile).transpose()?;
@@ -960,7 +1046,7 @@ async fn upload_avatar(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     let media = validate_avatar_upload(&headers, &body)?;
     ensure_admin_exists(&state, claims.sub, &claims.username).await?;
     let object_id = Uuid::now_v7();
@@ -1013,7 +1099,7 @@ async fn remove_avatar(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     let mut transaction = state.pool().begin().await.map_err(|err| {
         error!(error = %err, "avatar removal transaction could not start");
         ApiError::Internal
@@ -1082,7 +1168,7 @@ async fn change_password(
     headers: HeaderMap,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     validate_password_change(&request)?;
 
     let stored_hash = sqlx::query_scalar::<_, String>(
@@ -1123,15 +1209,21 @@ async fn change_password(
         error!(error = %err, "password change transaction could not start");
         ApiError::Internal
     })?;
-    sqlx::query("UPDATE admin_users SET password_hash = $1 WHERE id = $2")
-        .bind(password_hash)
-        .bind(claims.sub)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|err| {
-            error!(error = %err, "administrator password could not be updated");
-            ApiError::Internal
-        })?;
+    sqlx::query(
+        "UPDATE admin_users
+         SET password_hash = $1,
+             session_version = session_version + CASE WHEN $3 THEN 1 ELSE 0 END
+         WHERE id = $2",
+    )
+    .bind(password_hash)
+    .bind(claims.sub)
+    .bind(request.revoke_other_sessions)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|err| {
+        error!(error = %err, "administrator password could not be updated");
+        ApiError::Internal
+    })?;
     if request.revoke_other_sessions {
         sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
             .bind(claims.sub)
@@ -1141,16 +1233,39 @@ async fn change_password(
                 error!(error = %err, "administrator refresh tokens could not be revoked");
                 ApiError::Internal
             })?;
-    } else if let Some(current_refresh) = read_cookie(&headers, REFRESH_COOKIE) {
-        sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1 AND token_hash = $2")
+        sqlx::query(
+            "UPDATE auth_sessions SET revoked_at = COALESCE(revoked_at, now())
+             WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(claims.sub)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "administrator access sessions could not be revoked");
+            ApiError::Internal
+        })?;
+    } else {
+        sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1 AND session_id = $2")
             .bind(claims.sub)
-            .bind(hash_token(&current_refresh))
+            .bind(claims.sid)
             .execute(&mut *transaction)
             .await
             .map_err(|err| {
                 error!(error = %err, "current administrator refresh token could not be revoked");
                 ApiError::Internal
             })?;
+        sqlx::query(
+            "UPDATE auth_sessions SET revoked_at = COALESCE(revoked_at, now())
+             WHERE id = $1 AND user_id = $2",
+        )
+        .bind(claims.sid)
+        .bind(claims.sub)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "current access session could not be revoked");
+            ApiError::Internal
+        })?;
     }
     transaction.commit().await.map_err(|err| {
         error!(error = %err, "password change transaction could not commit");
@@ -1168,7 +1283,7 @@ async fn list_passkeys(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     let items = sqlx::query_as::<_, PasskeyItem>(
         "SELECT id, label, created_at
          FROM passkeys
@@ -1190,7 +1305,7 @@ async fn passkey_registration_options(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     let username = sqlx::query_scalar::<_, String>(
         "SELECT username FROM admin_users WHERE id = $1 AND username = $2",
     )
@@ -1236,7 +1351,7 @@ async fn register_passkey(
     headers: HeaderMap,
     Json(request): Json<RegisterPasskeyRequest>,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     let label = normalized_passkey_label(request.label.as_deref())?;
     let registration = state
         .take_passkey_registration(claims.sub)
@@ -1286,7 +1401,7 @@ async fn delete_passkey(
     headers: HeaderMap,
     Path(passkey_id): Path<i64>,
 ) -> Result<Response, ApiError> {
-    let claims = authenticate(&state, &headers)?;
+    let claims = authenticate(&state, &headers).await?;
     if passkey_id <= 0 {
         return Err(ApiError::Validation("通行密钥编号无效"));
     }
@@ -1348,29 +1463,70 @@ async fn forgot_password(
         .into_response())
 }
 
-fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<AccessClaims, ApiError> {
+async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<AccessClaims, ApiError> {
     let token = read_cookie(headers, ACCESS_COOKIE).ok_or(ApiError::Unauthorized)?;
     let claims =
         decode_access_token(state.auth_jwt_secret(), &token).map_err(|_| ApiError::Unauthorized)?;
-    if claims.sub <= 0 || claims.username.trim().is_empty() {
+    if !valid_access_identity(&claims) {
+        return Err(ApiError::Unauthorized);
+    }
+    let active = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM auth_sessions session
+             JOIN admin_users admin ON admin.id = session.user_id
+             WHERE session.id = $1
+               AND session.user_id = $2
+               AND session.session_version = $3
+               AND admin.session_version = $3
+               AND admin.username = $4
+               AND session.revoked_at IS NULL
+               AND session.expires_at > now()
+         )",
+    )
+    .bind(claims.sid)
+    .bind(claims.sub)
+    .bind(claims.ver)
+    .bind(&claims.username)
+    .fetch_one(state.pool())
+    .await
+    .map_err(|err| {
+        error!(error = %err, "access session validation failed");
+        ApiError::Internal
+    })?;
+    if !active {
         return Err(ApiError::Unauthorized);
     }
     Ok(claims)
 }
 
-pub(crate) fn has_valid_admin_session(state: &AppState, headers: &HeaderMap) -> bool {
-    authenticate(state, headers).is_ok()
+fn valid_access_identity(claims: &AccessClaims) -> bool {
+    claims.sub > 0 && !claims.username.trim().is_empty() && claims.ver > 0
 }
 
-pub(crate) fn authenticated_admin_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
-    authenticate(state, headers).ok().map(|claims| claims.sub)
+pub(crate) async fn has_valid_admin_session(state: &AppState, headers: &HeaderMap) -> bool {
+    authenticate(state, headers).await.is_ok()
 }
 
-fn create_access_token(state: &AppState, user: &LoginUser) -> Result<String, ApiError> {
+pub(crate) async fn authenticated_admin_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
+    authenticate(state, headers)
+        .await
+        .ok()
+        .map(|claims| claims.sub)
+}
+
+fn create_access_token(
+    state: &AppState,
+    user: &LoginUser,
+    session_id: Uuid,
+) -> Result<String, ApiError> {
     let now = Utc::now().timestamp();
     let claims = AccessClaims {
         sub: user.id,
         username: user.username.clone(),
+        sid: session_id,
+        ver: user.session_version,
+        jti: Uuid::now_v7(),
         iss: JWT_ISSUER.to_owned(),
         iat: now as usize,
         exp: (now + ACCESS_TTL_SECONDS) as usize,
@@ -1384,6 +1540,21 @@ fn create_access_token(state: &AppState, user: &LoginUser) -> Result<String, Api
         error!(error = %err, "access token creation failed");
         ApiError::Internal
     })
+}
+
+fn decode_access_token_allow_expired(
+    secret: &str,
+    token: &str,
+) -> Result<AccessClaims, jsonwebtoken::errors::Error> {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_issuer(&[JWT_ISSUER]);
+    validation.validate_exp = false;
+    decode::<AccessClaims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map(|data| data.claims)
 }
 
 fn decode_access_token(
@@ -2019,25 +2190,15 @@ async fn persist_avatar_asset(
     })
 }
 
-fn auth_rate_key(headers: &HeaderMap, username: &str) -> String {
-    format!("{}:{}", client_address(headers), username.to_lowercase())
+fn auth_rate_keys(headers: &HeaderMap, username: &str) -> [String; 2] {
+    [
+        format!("ip:{}", client_address(headers)),
+        format!("username:{}", username.to_lowercase()),
+    ]
 }
 
-fn client_address(headers: &HeaderMap) -> &str {
-    headers
-        .get("x-real-ip")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            headers
-                .get("x-forwarded-for")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(',').next())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        })
-        .unwrap_or("unknown")
+fn client_address(headers: &HeaderMap) -> String {
+    client::address(headers)
 }
 
 fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -2084,76 +2245,16 @@ fn append_cookie(headers: &mut HeaderMap, cookie: String) -> Result<(), ApiError
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCESS_COOKIE, AboutProfile, AccessClaims, ChangePasswordRequest, JWT_ISSUER, SocialLink,
-        about_profile_from_value, authenticate, decode_access_token, decode_base32,
-        default_update_sync, hash_token, normalized_about_profile, normalized_bilibili_uid,
-        normalized_email, normalized_steam_id64, normalized_steam_update,
-        normalized_steam_web_api_key, profile_uptime_days, validate_avatar_upload,
+        AboutProfile, AccessClaims, ChangePasswordRequest, JWT_ISSUER, SocialLink,
+        about_profile_from_value, decode_access_token, decode_base32, default_update_sync,
+        hash_token, normalized_about_profile, normalized_bilibili_uid, normalized_email,
+        normalized_steam_id64, normalized_steam_update, normalized_steam_web_api_key,
+        profile_uptime_days, valid_access_identity, validate_avatar_upload,
     };
     use axum::http::{HeaderMap, HeaderValue, header::CONTENT_TYPE};
     use chrono::NaiveDate;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-    use sqlx::postgres::PgPoolOptions;
-
-    use crate::{config::Config, state::AppState};
-
-    fn test_state() -> AppState {
-        let config = Config {
-            environment: "test".to_owned(),
-            host: "127.0.0.1".parse().unwrap(),
-            port: 3000,
-            database_url: "postgres://test:test@localhost/test".to_owned(),
-            db_max_connections: 1,
-            db_min_connections: 0,
-            run_migrations: false,
-            minio_endpoint: "http://localhost:9000".to_owned(),
-            minio_access_key: "test".to_owned(),
-            minio_secret_key: "test".to_owned(),
-            minio_public_bucket: "blog-public".to_owned(),
-            minio_private_bucket: "blog-private".to_owned(),
-            admin_username: "test".to_owned(),
-            admin_initial_password: Some("test".to_owned()),
-            auth_jwt_secret: "test-secret-at-least-32-bytes-long".to_owned(),
-            artalk_internal_url: None,
-            artalk_site_name: "helt.".to_owned(),
-            artalk_admin_name: "test".to_owned(),
-            artalk_admin_email: "test@example.com".to_owned(),
-            artalk_admin_password: "test".to_owned(),
-            meting_api_url: None,
-            llm_encryption_key_version: 1,
-            llm_encryption_secret: "test-llm-encryption-secret-at-least-32-bytes".to_owned(),
-            llm_encryption_previous_key_version: None,
-            llm_encryption_previous_secret: None,
-            llm_private_host_allowlist: Vec::new(),
-            public_origin: "http://localhost".to_owned(),
-            cors_allowed_origins: vec!["http://localhost:5173".to_owned()],
-            request_timeout_secs: 5,
-            asset_request_timeout_secs: 300,
-            upstream_request_timeout_secs: 15,
-        };
-        AppState::new(
-            PgPoolOptions::new()
-                .connect_lazy(&config.database_url)
-                .unwrap(),
-            &config,
-        )
-        .unwrap()
-    }
-
-    fn access_cookie(claims: AccessClaims) -> HeaderMap {
-        let token = encode(
-            &Header::new(Algorithm::HS256),
-            &claims,
-            &EncodingKey::from_secret(b"test-secret-at-least-32-bytes-long"),
-        )
-        .unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::COOKIE,
-            HeaderValue::from_str(&format!("{ACCESS_COOKIE}={token}")).unwrap(),
-        );
-        headers
-    }
+    use uuid::Uuid;
 
     #[test]
     fn base32_decoder_accepts_standard_totp_secrets() {
@@ -2176,6 +2277,9 @@ mod tests {
         let claims = AccessClaims {
             sub: 1,
             username: "helt".to_owned(),
+            sid: Uuid::nil(),
+            ver: 1,
+            jti: Uuid::nil(),
             iss: JWT_ISSUER.to_owned(),
             iat: 1,
             exp: usize::MAX / 2,
@@ -2190,22 +2294,27 @@ mod tests {
         assert!(decode_access_token("wrong-secret", &token).is_err());
     }
 
-    #[tokio::test]
-    async fn single_administrator_authentication_rejects_malformed_identity_claims() {
-        let state = test_state();
+    #[test]
+    fn single_administrator_authentication_rejects_malformed_identity_claims() {
         let valid = AccessClaims {
             sub: 1,
             username: "helt".to_owned(),
+            sid: Uuid::nil(),
+            ver: 1,
+            jti: Uuid::nil(),
             iss: JWT_ISSUER.to_owned(),
             iat: 1,
             exp: usize::MAX / 2,
         };
-        assert!(authenticate(&state, &access_cookie(valid)).is_ok());
+        assert!(valid_access_identity(&valid));
 
         for claims in [
             AccessClaims {
                 sub: 0,
                 username: "helt".to_owned(),
+                sid: Uuid::nil(),
+                ver: 1,
+                jti: Uuid::nil(),
                 iss: JWT_ISSUER.to_owned(),
                 iat: 1,
                 exp: usize::MAX / 2,
@@ -2213,12 +2322,15 @@ mod tests {
             AccessClaims {
                 sub: 1,
                 username: " ".to_owned(),
+                sid: Uuid::nil(),
+                ver: 1,
+                jti: Uuid::nil(),
                 iss: JWT_ISSUER.to_owned(),
                 iat: 1,
                 exp: usize::MAX / 2,
             },
         ] {
-            assert!(authenticate(&state, &access_cookie(claims)).is_err());
+            assert!(!valid_access_identity(&claims));
         }
     }
 

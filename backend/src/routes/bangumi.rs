@@ -243,7 +243,9 @@ async fn start_sync(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<Value>), BangumiError> {
-    auth::authenticated_admin_id(&state, &headers).ok_or(BangumiError::Unauthorized)?;
+    auth::authenticated_admin_id(&state, &headers)
+        .await
+        .ok_or(BangumiError::Unauthorized)?;
     if configured_uid(&state).await?.is_none() {
         return Err(BangumiError::Validation("请先在个人资料中填写 B 站 UID"));
     }
@@ -432,6 +434,13 @@ async fn sync_configured(state: &AppState) -> Result<()> {
                 .bind(cover_key)
                 .execute(&mut *transaction)
                 .await?;
+        }
+        if let Some(previous_key) = existing
+            .get(&item.media_id)
+            .and_then(|row| row.cover_key.as_deref())
+            .filter(|previous_key| Some(*previous_key) != item.cover_key.as_deref())
+        {
+            storage_gc::enqueue(&mut transaction, previous_key, "bangumi_cover_replaced").await?;
         }
     }
 
@@ -688,7 +697,7 @@ async fn cache_cover(state: &AppState, media_id: i64, source: &str) -> Result<St
     }
     let content_type = raster_image_content_type(&bytes)
         .context("Bilibili cover was not a supported raster image")?;
-    let object_key = format!("bangumi/covers/{media_id}");
+    let object_key = format!("bangumi/covers/{media_id}/{}", Uuid::now_v7());
     state
         .object_storage()
         .put_public_object(
@@ -699,6 +708,31 @@ async fn cache_cover(state: &AppState, media_id: i64, source: &str) -> Result<St
         )
         .await
         .context("Bilibili cover could not be stored")?;
+    if let Err(staging_error) = sqlx::query(
+        "INSERT INTO storage_gc_jobs (object_key, reason, next_attempt_at)
+         VALUES ($1, 'bangumi_cover_uncommitted', now() + interval '1 hour')
+         ON CONFLICT (object_key) DO UPDATE
+         SET reason = EXCLUDED.reason,
+             next_attempt_at = EXCLUDED.next_attempt_at,
+             locked_at = NULL",
+    )
+    .bind(&object_key)
+    .execute(state.pool())
+    .await
+    {
+        if let Err(cleanup_error) = state
+            .object_storage()
+            .delete_public_object(state.storage_http_client(), &object_key)
+            .await
+        {
+            warn!(
+                object_key,
+                error = %cleanup_error,
+                "untracked staged Bilibili cover could not be removed"
+            );
+        }
+        return Err(staging_error).context("Bilibili cover cleanup could not be staged");
+    }
     Ok(object_key)
 }
 

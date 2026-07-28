@@ -66,11 +66,10 @@ https://blog.example.com/health/ready
 ```
 
 Coolify 配置不发布任何宿主机端口，并使用入口 `edge` 网络，以及 `web`、
-`api`、`database` 和 `storage` 四个隔离的内部网络。持久化数据保存在 `postgres_data`、
-`minio_data`、`artalk_data` 和 `meting_data` 命名卷中。`minio-init` 是正常执行后退出的一次性任务，已从
-Coolify 总体健康检查中排除。
-
-> `exclude_from_hc` 是 Coolify 的 Compose 扩展字段，因此不要用原生 `docker compose` 运行 `docker-compose.coolify.yml`；原生部署请使用默认的 `docker-compose.yml`。
+`api`、`database` 和 `storage` 四个隔离的内部网络。只有需要访问第三方服务的
+`backend`、`artalk` 和 `meting` 接入非内部 `egress` 网络。持久化数据保存在
+`postgres_data`、`minio_data`、`artalk_data` 和 `meting_data` 命名卷中；`minio-init`
+是正常执行后退出的一次性任务。
 
 ## Docker Engine / Docker Compose
 
@@ -112,6 +111,60 @@ docker compose down
 ```
 
 `docker compose down` 会保留命名卷。生产环境不要执行 `docker compose down -v`，该命令会删除数据库与对象文件。
+
+## Artalk 数据保留升级
+
+历史迁移 `0027`、`0028` 已经发布，不能改写，但其中的清理语句会删除 Artalk
+评论、投票、通知、页面和访客身份数据。当前后端在运行迁移前会检查这两条迁移：
+只要迁移尚未登记且任一目标表有数据，后端就拒绝启动，不会清空数据。全新 Compose
+安装会先启动并迁移 backend，再启动 Artalk，从而消除并行建表的时序不确定性。
+
+从可能尚未执行 `0027`、`0028` 的旧版本升级时，先在旧版本仍运行期间执行以下步骤。
+不要通过设置 `RUN_MIGRATIONS=false` 绕过保护。
+
+```bash
+mkdir -p backups
+docker compose exec -T postgres sh -lc \
+  'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /tmp/helt-before-0027-0028.dump'
+docker compose cp postgres:/tmp/helt-before-0027-0028.dump \
+  ./backups/helt-before-0027-0028.dump
+
+# 确认宿主机文件存在且非空后，再创建数据库内快照并把两条清理迁移登记为已处理。
+test -s ./backups/helt-before-0027-0028.dump
+docker compose exec -T postgres sh -lc \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < scripts/preserve-artalk-migrations-0027-0028.sql
+
+docker compose up -d --build
+docker compose logs backend
+```
+
+PowerShell 中用 `Test-Path` 和 `(Get-Item <文件>).Length` 检查备份；运行 SQL 时使用：
+
+```powershell
+Get-Content -Raw scripts/preserve-artalk-migrations-0027-0028.sql |
+  docker compose exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+脚本在一个事务内完成三件事：要求迁移 `0026` 已成功、把七张目标表复制到
+`artalk_preservation_0027_0028` schema、按原文件 SHA-384 校验和登记 `0027` 和
+`0028`。它不会修改 Artalk 原表。验证评论、登录、审核、文章评论数均正常后，可以
+另行归档并删除数据库内快照；在此之前保留快照和宿主机 dump。
+
+如果升级验证失败，先停止所有读写数据库的应用服务，再恢复完整 dump：
+
+```bash
+docker compose stop gateway frontend backend artalk
+docker compose cp ./backups/helt-before-0027-0028.dump \
+  postgres:/tmp/helt-before-0027-0028.dump
+docker compose exec -T postgres sh -lc \
+  'pg_restore --clean --if-exists --exit-on-error --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/helt-before-0027-0028.dump'
+docker compose up -d
+```
+
+Coolify 升级采用同一顺序：先通过 PostgreSQL 服务终端导出并下载 dump，再执行仓库中
+的保留脚本，最后 Redeploy。若旧版本已执行删除且没有迁移前备份，数据库本身无法
+推导被删内容，只能从更早的 PostgreSQL/Coolify 备份恢复。
 
 仅修改 `.env` 后也应运行 `docker compose up -d`，让 Compose 重建配置发生变化的
 容器。修改 PostgreSQL 的数据库名、用户名或密码不会自动更新已有数据卷中的账户。

@@ -42,11 +42,13 @@ services:
       HOST: 0.0.0.0
       PORT: 3000
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Copy .env.example to .env and set PUBLIC_ORIGIN}
+      INTERNAL_API_ORIGIN: http://backend:3000
       TZ: Asia/Shanghai
     expose:
       - "3000"
     networks:
       - web
+      - api
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 10s
@@ -257,6 +259,10 @@ services:
       - artalk_data:/data
     depends_on:
       postgres:
+        condition: service_healthy
+      # Keep a fresh install deterministic: the backend records the retired
+      # Artalk reset migrations before Artalk creates its own tables.
+      backend:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--output-document=-", "http://127.0.0.1:23366/api/v2/conf"]

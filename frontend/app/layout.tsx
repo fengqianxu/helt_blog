@@ -34,8 +34,9 @@ export function generateMetadata(): Metadata {
 
   return {
     metadataBase,
-    title,
+    title: { default: title, template: `%s | helt.` },
     description,
+    alternates: { canonical: "/", types: { "application/rss+xml": "/rss.xml" } },
     icons: { icon: "/saber-day.png" },
     openGraph: { title, description, type: "website", images: [{ url: "/og.png", width: 1200, height: 630, alt: "helt. 日夜双主题博客" }] },
     twitter: { card: "summary_large_image", title, description, images: ["/og.png"] },

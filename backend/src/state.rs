@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use sqlx::PgPool;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use webauthn_rs::prelude::{PasskeyRegistration, Url, Webauthn, WebauthnBuilder};
 
 use crate::{
@@ -20,6 +21,7 @@ use crate::{
 
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 const MAX_AUTH_FAILURE_KEYS: usize = 4_096;
+const MAX_CONCURRENT_PASSWORD_HASHES: usize = 4;
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -40,6 +42,7 @@ struct Inner {
     pub llm_http_client: LlmHttpClient,
     pub secure_cookies: bool,
     pub auth_failures: Mutex<HashMap<String, Vec<Instant>>>,
+    pub auth_hash_slots: Arc<Semaphore>,
     pub webauthn: Webauthn,
     pub passkey_registrations: Mutex<HashMap<i64, (Instant, PasskeyRegistration)>>,
     pub bangumi_syncing: AtomicBool,
@@ -109,6 +112,7 @@ impl AppState {
             llm_http_client,
             secure_cookies: config.public_origin.starts_with("https://"),
             auth_failures: Mutex::new(HashMap::new()),
+            auth_hash_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_HASHES)),
             webauthn,
             passkey_registrations: Mutex::new(HashMap::new()),
             bangumi_syncing: AtomicBool::new(false),
@@ -230,6 +234,10 @@ impl AppState {
         failures
             .get(key)
             .is_some_and(|attempts| attempts.len() >= 5)
+    }
+
+    pub fn try_auth_hash_permit(&self) -> Option<OwnedSemaphorePermit> {
+        self.0.auth_hash_slots.clone().try_acquire_owned().ok()
     }
 
     pub fn record_auth_failure(&self, key: &str) {

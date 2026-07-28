@@ -244,7 +244,7 @@ pub static ENDPOINT_CONTRACTS: &[EndpointContract] = &[
         Post,
         "/api/v1/admin/auth/logout",
         "/api/v1/admin/auth/logout",
-        AdminJwt,
+        Anonymous,
         NO_CONTENT,
         "退出后台会话",
         "无请求体；携带 access cookie，可选携带 refresh cookie",
@@ -1596,7 +1596,7 @@ async fn protected_not_implemented(
     method: Method,
     OriginalUri(uri): OriginalUri,
 ) -> impl IntoResponse {
-    if !crate::auth::has_valid_admin_session(&state, &headers) {
+    if !crate::auth::has_valid_admin_session(&state, &headers).await {
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorEnvelope {
@@ -1802,7 +1802,7 @@ mod tests {
         }
 
         assert_eq!(
-            fingerprint, 14_935_570_710_247_163_006,
+            fingerprint, 10_173_716_430_203_540_722,
             "update only after reviewing the full catalog"
         );
     }
@@ -1847,6 +1847,7 @@ mod tests {
             "/api/v1/admin/auth/passkey/login/options",
             "/api/v1/admin/auth/passkey/login/verify",
             "/api/v1/admin/auth/forgot-password",
+            "/api/v1/admin/auth/logout",
         ]);
 
         for contract in ENDPOINT_CONTRACTS {

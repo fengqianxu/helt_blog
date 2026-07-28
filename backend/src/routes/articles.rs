@@ -15,8 +15,8 @@ use tracing::error;
 use uuid::Uuid;
 
 use crate::{
-    artalk::{ArtalkError, article_page_key},
-    auth,
+    artalk::article_page_key,
+    artalk_outbox, auth,
     error::{ErrorBody, ErrorEnvelope},
     routes::contract::HttpMethod,
     state::AppState,
@@ -89,8 +89,6 @@ enum ArticleError {
     Conflict(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
-    #[error(transparent)]
-    Artalk(#[from] ArtalkError),
 }
 
 impl ArticleError {
@@ -115,33 +113,25 @@ impl IntoResponse for ArticleError {
             ),
             Self::Conflict(message) => (StatusCode::CONFLICT, "conflict", message),
             Self::Database(error) => {
-                if let Some(db) = error.as_database_error() {
-                    if db.code().as_deref() == Some("23505") {
-                        return (
-                            StatusCode::CONFLICT,
-                            Json(ErrorEnvelope {
-                                error: ErrorBody {
-                                    code: "conflict",
-                                    message: "名称或 slug 已存在".to_owned(),
-                                },
-                            }),
-                        )
-                            .into_response();
-                    }
+                if let Some(db) = error.as_database_error()
+                    && db.code().as_deref() == Some("23505")
+                {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(ErrorEnvelope {
+                            error: ErrorBody {
+                                code: "conflict",
+                                message: "名称或 slug 已存在".to_owned(),
+                            },
+                        }),
+                    )
+                        .into_response();
                 }
                 error!(%error, "article database operation failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",
                     "文章操作失败".to_owned(),
-                )
-            }
-            Self::Artalk(error) => {
-                error!(%error, "article synchronization with Artalk failed");
-                (
-                    StatusCode::BAD_GATEWAY,
-                    "artalk_unavailable",
-                    "评论服务同步失败，文章操作未完成".to_owned(),
                 )
             }
         };
@@ -651,7 +641,7 @@ async fn admin_list(
     headers: HeaderMap,
     Query(query): Query<AdminListQuery>,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if let Some(status) = query.status.as_deref() {
         validate_status(status)?;
     }
@@ -690,7 +680,7 @@ async fn admin_create(
     headers: HeaderMap,
     Json(request): Json<CreateArticleRequest>,
 ) -> Result<(StatusCode, Json<Value>), ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let title = normalize_title(request.title.as_deref())?;
     let temporary_slug = format!("draft-{}", Uuid::now_v7());
     let mut tx = state.pool().begin().await?;
@@ -725,7 +715,7 @@ async fn admin_detail(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let article = fetch_article_by_id(state.pool(), id, true)
         .await?
         .ok_or_else(|| ArticleError::NotFound("文章不存在".to_owned()))?;
@@ -786,7 +776,7 @@ async fn admin_update(
     Path(id): Path<i64>,
     Json(request): Json<UpdateArticleRequest>,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let existing = fetch_article_by_id(state.pool(), id, true)
         .await?
         .ok_or_else(|| ArticleError::NotFound("文章不存在".to_owned()))?;
@@ -863,10 +853,13 @@ async fn admin_update(
     }
     sync_article_relations(&mut tx, id, &tag_ids, &content_asset_ids).await?;
     if allow_comment != existing.allow_comment {
-        state
-            .artalk()
-            .set_page_commenting(&article_page_key(&existing.slug), &title, allow_comment)
-            .await?;
+        artalk_outbox::enqueue_set_commenting(
+            &mut tx,
+            &article_page_key(&existing.slug),
+            &title,
+            allow_comment,
+        )
+        .await?;
     }
     tx.commit().await?;
     let updated = fetch_article_by_id(state.pool(), id, true)
@@ -887,7 +880,7 @@ async fn admin_delete(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let mut tx = state.pool().begin().await?;
     let slug = sqlx::query_scalar::<_, String>("SELECT slug FROM articles WHERE id=$1 FOR UPDATE")
         .bind(id)
@@ -900,7 +893,7 @@ async fn admin_delete(
         .await?;
     debug_assert_eq!(result.rows_affected(), 1);
     let page_key = article_page_key(&slug);
-    state.artalk().delete_pages([page_key.as_str()]).await?;
+    artalk_outbox::enqueue_delete_page(&mut tx, &page_key).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -916,7 +909,7 @@ async fn admin_batch(
     headers: HeaderMap,
     Json(request): Json<BatchArticleRequest>,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let ids = unique_ids(&request.article_ids)?;
     if !matches!(
         request.action.as_str(),
@@ -927,7 +920,6 @@ async fn admin_batch(
     let mut tx = state.pool().begin().await?;
     let mut affected = 0_i64;
     let mut failed_ids = Vec::new();
-    let mut deleted_page_keys = Vec::new();
     for id in ids {
         let article = sqlx::query_as::<_, (String, String, String, Option<i64>, String)>(
             "SELECT status, title, content_md, category_id, slug FROM articles WHERE id=$1",
@@ -971,7 +963,7 @@ async fn admin_batch(
                     .await?
             }
             "delete" => {
-                deleted_page_keys.push(article_page_key(&slug));
+                artalk_outbox::enqueue_delete_page(&mut tx, &article_page_key(&slug)).await?;
                 sqlx::query("DELETE FROM articles WHERE id=$1")
                     .bind(id)
                     .execute(&mut *tx)
@@ -985,10 +977,6 @@ async fn admin_batch(
             affected += result.rows_affected() as i64;
         }
     }
-    state
-        .artalk()
-        .delete_pages(deleted_page_keys.iter().map(String::as_str))
-        .await?;
     tx.commit().await?;
     Ok(Json(
         serde_json::json!({ "affected": affected, "failed_ids": failed_ids }),
@@ -1019,8 +1007,8 @@ async fn cover_asset_id(pool: &sqlx::PgPool, id: i64) -> Result<Option<i64>, Art
     )
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ArticleError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ArticleError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(ArticleError::Unauthorized)
@@ -1218,7 +1206,7 @@ async fn admin_categories(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let items = sqlx::query_as::<_, ValueCategory>(
         "SELECT c.id, c.name, c.slug, c.color, c.sort_order,
                 COUNT(a.id) FILTER (WHERE a.status='published') AS published_count,
@@ -1247,7 +1235,7 @@ async fn admin_create_category(
     headers: HeaderMap,
     Json(request): Json<CategoryRequest>,
 ) -> Result<(StatusCode, Json<Value>), ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let name = required_text(request.name, "分类名称")?;
     let slug = normalize_slug(request.slug.as_deref().unwrap_or(&name))?;
     let color = normalize_color(request.color.as_deref().unwrap_or(""))?;
@@ -1273,7 +1261,7 @@ async fn admin_update_category(
     Path(id): Path<i64>,
     Json(request): Json<CategoryRequest>,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if request.name.is_none()
         && request.slug.is_none()
         && request.color.is_none()
@@ -1309,7 +1297,7 @@ async fn admin_delete_category(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let used = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM articles WHERE category_id=$1")
         .bind(id)
         .fetch_one(state.pool())
@@ -1331,7 +1319,7 @@ async fn admin_tags(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let items = sqlx::query_as::<_, ValueTag>(
         "SELECT t.id,t.name,
          COUNT(a.id) FILTER (WHERE a.status='published') AS published_count,
@@ -1358,7 +1346,7 @@ async fn admin_create_tag(
     headers: HeaderMap,
     Json(request): Json<TagRequest>,
 ) -> Result<(StatusCode, Json<Value>), ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let name = required_text(Some(request.name), "标签名称")?;
     let item = sqlx::query_as::<_, ValueTag>(
         "INSERT INTO tags(name) VALUES($1) RETURNING id,name,0::BIGINT AS published_count,0::BIGINT AS draft_count",
@@ -1375,7 +1363,7 @@ async fn admin_update_tag(
     Path(id): Path<i64>,
     Json(request): Json<TagRequest>,
 ) -> Result<Json<Value>, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let name = required_text(Some(request.name), "标签名称")?;
     let item = sqlx::query_as::<_, ValueTag>(
         "UPDATE tags SET name=$1 WHERE id=$2 RETURNING id,name,
@@ -1391,7 +1379,7 @@ async fn admin_delete_tag(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ArticleError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let result = sqlx::query("DELETE FROM tags WHERE id=$1")
         .bind(id)
         .execute(state.pool())

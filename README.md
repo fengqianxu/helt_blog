@@ -110,8 +110,9 @@ docker compose ps
 ```
 
 首次构建需要下载基础镜像和依赖，耗时通常比后续启动长。`postgres` 和
-`minio` 健康后，`minio-init` 会创建桶并写入默认封面、语音和头像，随后后端执行 SQL 迁移；前后端健康后
-`gateway` 才会启动。`minio-init` 显示 `Exited (0)` 是正常状态。
+`minio` 健康后，`minio-init` 会创建桶并写入默认封面、语音和头像，随后后端执行 SQL
+迁移；后端健康后 Artalk 才会启动，以确保全新数据库不会与 Artalk 建表并行。前后端
+和 Artalk 健康后 `gateway` 才会启动。`minio-init` 显示 `Exited (0)` 是正常状态。
 
 所有长期运行服务都应显示 `Up ... (healthy)`。启动完成后访问：
 
@@ -197,6 +198,11 @@ Artalk；迁移 `0014_artalk_comment_source.sql` 会删除该旧表及旧评论�
 Artalk 与博客共用 PostgreSQL 实例，但使用 `artalk_` 表前缀避免业务表冲突；评论
 图片和 Artalk 运行数据保存在独立的 `artalk_data` 卷。前端与服务端均固定为
 2.10.0，升级时请同步调整 npm 包和容器镜像版本。
+
+从可能尚未执行历史迁移 `0027`、`0028` 的版本升级前，必须按
+[DEPLOY.md 的“Artalk 数据保留升级”](DEPLOY.md#artalk-数据保留升级)先导出完整
+PostgreSQL 备份并运行保留脚本。后端迁移保护会在检测到现有 Artalk 数据时拒绝执行
+这两条清理迁移，不会以可用性换取静默数据丢失。
 
 ## 日常使用
 

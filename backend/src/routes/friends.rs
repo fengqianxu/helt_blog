@@ -11,12 +11,11 @@ use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
 use tracing::error;
 
 use crate::{
-    auth,
+    auth, client,
     error::{ErrorBody, ErrorEnvelope},
     routes::contract::HttpMethod,
     state::AppState,
@@ -285,9 +284,13 @@ async fn public_apply(
     let avatar_url = optional_url(&request.avatar_url, "头像地址")?;
     let contact_email = normalized_email(&request.contact_email)?;
     let description = bounded_text(&request.description, "站点介绍", MAX_DESCRIPTION_CHARS)?;
-    let submission_ip_hash = request_fingerprint(&headers);
+    let submission_ip_hash = request_fingerprint(&state, &headers);
 
     let mut transaction = state.pool().begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('friend-rate:' || $1))")
+        .bind(&submission_ip_hash)
+        .execute(&mut *transaction)
+        .await?;
     let recent_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
          FROM friends
@@ -344,7 +347,7 @@ async fn admin_list(
     headers: HeaderMap,
     Query(query): Query<AdminListQuery>,
 ) -> Result<Json<Value>, FriendError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let (page, offset) = page_values(query.page, query.per_page)?;
     let status = normalized_status_filter(query.status.as_deref())?;
     let search = query.search.unwrap_or_default().trim().to_owned();
@@ -424,7 +427,7 @@ async fn admin_update(
     Path(id): Path<i64>,
     Json(request): Json<FriendUpdate>,
 ) -> Result<Json<Value>, FriendError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if id <= 0 {
         return Err(FriendError::validation("友链编号无效"));
     }
@@ -543,7 +546,7 @@ async fn admin_delete(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, FriendError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if id <= 0 {
         return Err(FriendError::validation("友链编号无效"));
     }
@@ -570,7 +573,7 @@ async fn admin_reorder(
     headers: HeaderMap,
     Json(request): Json<FriendOrder>,
 ) -> Result<Json<Value>, FriendError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if request.order.iter().any(|id| *id <= 0)
         || request.order.iter().copied().collect::<HashSet<_>>().len() != request.order.len()
     {
@@ -700,8 +703,8 @@ fn admin_friend_json(state: &AppState, row: FriendRow) -> Value {
     })
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), FriendError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), FriendError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(FriendError::Unauthorized)
@@ -788,29 +791,13 @@ fn normalized_email(value: &str) -> Result<String, FriendError> {
     }
 }
 
-fn request_fingerprint(headers: &HeaderMap) -> String {
-    let client = headers
-        .get("x-real-ip")
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| {
-            headers
-                .get("x-forwarded-for")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(',').next())
-                .map(str::trim)
-        })
-        .filter(|value| !value.is_empty())
-        .unwrap_or("unknown");
-    format!("{:x}", Sha256::digest(client.as_bytes()))
+fn request_fingerprint(state: &AppState, headers: &HeaderMap) -> String {
+    client::fingerprint(headers, state.auth_jwt_secret(), "friend-submission")
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue};
-
-    use super::{
-        normalized_email, normalized_status, normalized_url, page_values, request_fingerprint,
-    };
+    use super::{normalized_email, normalized_status, normalized_url, page_values};
 
     #[test]
     fn pagination_rejects_offsets_that_cannot_fit_in_i64() {
@@ -829,16 +816,5 @@ mod tests {
         );
         assert!(normalized_email("not-an-email").is_err());
         assert!(normalized_status("deleted").is_err());
-    }
-
-    #[test]
-    fn visitor_fingerprint_prefers_gateway_client_address() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-real-ip", HeaderValue::from_static("203.0.113.7"));
-        let first = request_fingerprint(&headers);
-        headers.insert("x-real-ip", HeaderValue::from_static("203.0.113.8"));
-        let second = request_fingerprint(&headers);
-        assert_eq!(first.len(), 64);
-        assert_ne!(first, second);
     }
 }

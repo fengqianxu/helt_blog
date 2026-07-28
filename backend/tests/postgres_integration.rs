@@ -27,6 +27,8 @@ use uuid::Uuid;
 const JWT_SECRET: &str = "postgres-integration-jwt-secret-32-bytes";
 const CURRENT_LLM_SECRET: &str = "postgres-integration-current-llm-key";
 const PREVIOUS_LLM_SECRET: &str = "postgres-integration-previous-llm-key";
+const AUTH_SESSION_ID: &str = "018f5f9d-53e8-7c4b-9d6a-4f29fdc12e31";
+const AUTH_TOKEN_ID: &str = "018f5f9d-53e8-7c4b-9d6a-4f29fdc12e32";
 
 struct TestDatabase {
     admin_pool: PgPool,
@@ -59,6 +61,21 @@ impl TestDatabase {
             .await
             .expect("connect to isolated schema");
         db::migrate(&pool).await.expect("apply migrations");
+        sqlx::query(
+            "INSERT INTO admin_users (id, username, password_hash)
+             VALUES (1, 'integration-admin', 'integration-test-hash')",
+        )
+        .execute(&pool)
+        .await
+        .expect("create integration administrator");
+        sqlx::query(
+            "INSERT INTO auth_sessions (id, user_id, session_version, expires_at)
+             VALUES ($1, 1, 1, now() + interval '1 day')",
+        )
+        .bind(Uuid::parse_str(AUTH_SESSION_ID).expect("valid session UUID"))
+        .execute(&pool)
+        .await
+        .expect("create integration access session");
 
         Self {
             admin_pool,
@@ -123,6 +140,9 @@ fn test_app(pool: PgPool) -> Router {
 struct TestClaims {
     sub: i64,
     username: String,
+    sid: Uuid,
+    ver: i64,
+    jti: Uuid,
     iss: String,
     iat: usize,
     exp: usize,
@@ -133,6 +153,9 @@ fn admin_cookie() -> String {
     let claims = TestClaims {
         sub: 1,
         username: "integration-admin".to_owned(),
+        sid: Uuid::parse_str(AUTH_SESSION_ID).expect("valid session UUID"),
+        ver: 1,
+        jti: Uuid::parse_str(AUTH_TOKEN_ID).expect("valid token UUID"),
         iss: "helt-blog".to_owned(),
         iat: now,
         exp: now + 3_600,

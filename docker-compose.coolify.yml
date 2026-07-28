@@ -35,11 +35,13 @@ services:
       HOST: 0.0.0.0
       PORT: 3000
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the public URL, for example https://blog.example.com}
+      INTERNAL_API_ORIGIN: http://backend:3000
       TZ: Asia/Shanghai
     expose:
       - "3000"
     networks:
       - web
+      - api
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 10s
@@ -145,11 +147,14 @@ services:
       - api
       - database
       - storage
+      - egress
     depends_on:
       postgres:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      meting:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/usr/local/bin/blog-backend", "healthcheck"]
       interval: 10s
@@ -161,6 +166,37 @@ services:
       - /tmp:size=64m,mode=1777
     cap_drop:
       - ALL
+
+  # Private Meting-compatible resolver for NetEase/QQ playlists. It needs
+  # outbound access but is never exposed through the public gateway.
+  meting:
+    image: ghcr.io/mikus-loli/meting-api:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      PORT: 3000
+      DATA_DIR: /app/data
+      TZ: Asia/Shanghai
+    expose:
+      - "3000"
+    networks:
+      - api
+      - egress
+    volumes:
+      - meting_data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+
   artalk:
     image: artalk/artalk-go:2.10.0
     restart: unless-stopped
@@ -193,10 +229,16 @@ services:
     networks:
       - api
       - database
+      - egress
     volumes:
       - artalk_data:/data
     depends_on:
       postgres:
+        condition: service_healthy
+      # On an empty database the backend records the two retired Artalk reset
+      # migrations before Artalk creates its schema. Existing installations are
+      # protected by the backend migration guard and the documented upgrade flow.
+      backend:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--output-document=-", "http://127.0.0.1:23366/api/v2/conf"]
@@ -210,6 +252,7 @@ volumes:
   postgres_data:
   minio_data:
   artalk_data:
+  meting_data:
 
 networks:
   edge:
@@ -221,3 +264,4 @@ networks:
     internal: true
   storage:
     internal: true
+  egress:

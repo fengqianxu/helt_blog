@@ -419,7 +419,7 @@ async fn admin_list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, RaimentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let rows = fetch_raiments(&state, false).await?;
     let items = rows
         .into_iter()
@@ -432,7 +432,7 @@ async fn admin_get_schedule(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<RaimentSchedule>, RaimentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     Ok(Json(load_schedule(&state).await?))
 }
 
@@ -441,7 +441,7 @@ async fn admin_update_schedule(
     headers: HeaderMap,
     Json(mut request): Json<UpdateScheduleRequest>,
 ) -> Result<Json<RaimentSchedule>, RaimentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if request.revision < 1 {
         return Err(RaimentError::validation("revision 必须为正整数"));
     }
@@ -519,7 +519,7 @@ async fn admin_create(
     headers: HeaderMap,
     Json(request): Json<CreateRaimentRequest>,
 ) -> Result<(StatusCode, Json<AdminRaiment>), RaimentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let color_scheme = validate_create(&request)?;
     let id = format!("raiment-{}", Uuid::now_v7().simple());
     let theme = serde_json::to_value(&request.theme)
@@ -596,7 +596,7 @@ async fn admin_update(
     Path(id): Path<String>,
     Json(request): Json<UpdateRaimentRequest>,
 ) -> Result<Json<AdminRaiment>, RaimentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let color_scheme = validate_update(&request)?;
     let theme = serde_json::to_value(&request.theme)
         .map_err(|error| RaimentError::CorruptData(error.to_string()))?;
@@ -720,7 +720,7 @@ async fn admin_delete(
     Path(id): Path<String>,
     Json(request): Json<DeleteRaimentRequest>,
 ) -> Result<StatusCode, RaimentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if request.revision < 1 {
         return Err(RaimentError::validation("revision 必须为正整数"));
     }
@@ -781,8 +781,8 @@ async fn admin_delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), RaimentError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), RaimentError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(RaimentError::Unauthorized)

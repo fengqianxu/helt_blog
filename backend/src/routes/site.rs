@@ -12,7 +12,7 @@ use sqlx::{FromRow, Postgres, Transaction};
 use tracing::error;
 
 use crate::{
-    auth,
+    auth, client,
     error::{ErrorBody, ErrorEnvelope},
     routes::contract::HttpMethod,
     state::AppState,
@@ -196,7 +196,7 @@ async fn admin_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<SitePayload>, SiteError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     Ok(Json(load_payload(&state).await?))
 }
 
@@ -205,7 +205,7 @@ async fn update_settings(
     headers: HeaderMap,
     Json(request): Json<UpdateSiteRequest>,
 ) -> Result<Json<SitePayload>, SiteError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     persist_settings(&state, request).await?;
     Ok(Json(load_payload(&state).await?))
 }
@@ -215,7 +215,7 @@ async fn patch_setting(
     headers: HeaderMap,
     Json(patch): Json<PatchSettingRequest>,
 ) -> Result<Json<SitePayload>, SiteError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let current = load_site_row(&state).await?;
     let mut request = editable_request(&current.settings);
     request.updated_at = patch.updated_at.or(Some(current.updated_at));
@@ -228,7 +228,7 @@ async fn admin_overview(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<AdminOverview>, SiteError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let counts = sqlx::query_as::<_, AdminOverviewRow>(
         "SELECT
             COALESCE((SELECT pv FROM daily_stats WHERE day = CURRENT_DATE), 0)::bigint AS today_pv,
@@ -257,7 +257,7 @@ async fn admin_pv_uv(
     headers: HeaderMap,
     Query(query): Query<StatsQuery>,
 ) -> Result<Json<DailyStatsPayload>, SiteError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if !(1..=90).contains(&query.days) {
         return Err(SiteError::validation("days 必须在 1 到 90 之间"));
     }
@@ -281,9 +281,11 @@ async fn admin_pv_uv(
 
 async fn record_visit(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<VisitRequest>,
 ) -> Result<StatusCode, SiteError> {
-    let visitor_id = normalized_required(&request.visitor_id, "visitor_id", 128)?;
+    normalized_required(&request.visitor_id, "visitor_id", 128)?;
+    let visitor_id = client::fingerprint(&headers, state.auth_jwt_secret(), "daily-visitor");
     let path = request.path.trim();
     if path.is_empty() || path.chars().count() > 2048 || !path.starts_with('/') {
         return Err(SiteError::validation(
@@ -302,6 +304,30 @@ async fn record_visit(
     }
 
     let mut transaction = state.pool().begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('site-visit:' || $1))")
+        .bind(&visitor_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "DELETE FROM site_visit_attempts
+         WHERE created_at < now() - interval '1 day'",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    let attempts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM site_visit_attempts
+         WHERE visitor_fingerprint = $1 AND created_at >= now() - interval '1 minute'",
+    )
+    .bind(&visitor_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if attempts >= 60 {
+        return Err(SiteError::RateLimited);
+    }
+    sqlx::query("INSERT INTO site_visit_attempts (visitor_fingerprint) VALUES ($1)")
+        .bind(&visitor_id)
+        .execute(&mut *transaction)
+        .await?;
     let day: NaiveDate = sqlx::query_scalar("SELECT CURRENT_DATE")
         .fetch_one(&mut *transaction)
         .await?;
@@ -772,8 +798,8 @@ fn json_bool(value: Value, path: &str) -> Result<bool, SiteError> {
         .ok_or_else(|| SiteError::validation(format!("{path} 必须是布尔值")))
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), SiteError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), SiteError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(SiteError::Unauthorized)
@@ -788,6 +814,8 @@ enum SiteError {
     Validation(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("访问上报过于频繁")]
+    RateLimited,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error("{0}")]
@@ -812,6 +840,11 @@ impl IntoResponse for SiteError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "validation_error",
                 message,
+            ),
+            Self::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "访问上报过于频繁，请稍后再试".to_owned(),
             ),
             Self::Conflict(message) => (StatusCode::CONFLICT, "conflict", message),
             Self::Database(error) => {

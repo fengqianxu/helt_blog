@@ -83,6 +83,19 @@ impl ObjectStorage {
     }
 
     pub async fn get_public_object(&self, client: &Client, object_key: &str) -> Result<Vec<u8>> {
+        let response = self.open_public_object(client, object_key).await?;
+        Ok(response
+            .bytes()
+            .await
+            .context("MinIO object body could not be read")?
+            .to_vec())
+    }
+
+    pub async fn open_public_object(
+        &self,
+        client: &Client,
+        object_key: &str,
+    ) -> Result<reqwest::Response> {
         let request = self.signed_request(
             client,
             Method::GET,
@@ -98,11 +111,7 @@ impl ObjectStorage {
         if !response.status().is_success() {
             bail!("MinIO rejected object download with {}", response.status());
         }
-        Ok(response
-            .bytes()
-            .await
-            .context("MinIO object body could not be read")?
-            .to_vec())
+        Ok(response)
     }
 
     fn signed_request(

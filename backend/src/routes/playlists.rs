@@ -301,7 +301,7 @@ async fn admin_list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     admin_payload(&state).await.map(Json)
 }
 
@@ -429,7 +429,7 @@ async fn admin_list_tracks(
     Path(id): Path<i64>,
     Query(query): Query<TrackListQuery>,
 ) -> Result<Json<Value>, PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let (page, per_page, offset) = track_page_values(query)?;
     let playlist = fetch_playlist(&state, id).await?;
     let (items, total, status, status_message) = if playlist.source_kind == "local" {
@@ -697,7 +697,7 @@ async fn admin_create(
     headers: HeaderMap,
     Json(request): Json<CreatePlaylistRequest>,
 ) -> Result<(StatusCode, Json<Value>), PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let source_kind = request.source_kind.trim().to_ascii_lowercase();
     validate_source(&source_kind)?;
     let description = normalize_text("歌单说明", &request.description, 500, true)?;
@@ -777,7 +777,7 @@ async fn admin_update(
     Path(id): Path<i64>,
     Json(request): Json<UpdatePlaylistRequest>,
 ) -> Result<Json<Value>, PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let name = normalize_text("歌单名称", &request.name, 120, false)?;
     let description = normalize_text("歌单说明", &request.description, 500, true)?;
     let mut transaction = state.pool().begin().await?;
@@ -815,7 +815,7 @@ async fn admin_delete(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let mut transaction = state.pool().begin().await?;
     lock_site_settings(&mut transaction).await?;
     let exists = sqlx::query_scalar::<_, i64>("SELECT id FROM playlists WHERE id = $1 FOR UPDATE")
@@ -848,7 +848,7 @@ async fn admin_add_track(
     Path(id): Path<i64>,
     Json(request): Json<AddTrackRequest>,
 ) -> Result<(StatusCode, Json<Value>), PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if request.asset_id <= 0 || request.duration_s < 0 {
         return Err(PlaylistError::validation("素材 ID 和时长必须为非负整数"));
     }
@@ -914,7 +914,7 @@ async fn admin_delete_track(
     headers: HeaderMap,
     Path((id, track_id)): Path<(i64, i64)>,
 ) -> Result<StatusCode, PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let deleted = sqlx::query("DELETE FROM playlist_tracks WHERE id = $1 AND playlist_id = $2")
         .bind(track_id)
         .bind(id)
@@ -932,7 +932,7 @@ async fn admin_update_order(
     headers: HeaderMap,
     Json(request): Json<OrderRequest>,
 ) -> Result<Json<Value>, PlaylistError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if request.order.len() > 100
         || request.order.iter().any(|id| *id <= 0)
         || request.order.iter().copied().collect::<HashSet<_>>().len() != request.order.len()
@@ -1053,8 +1053,8 @@ async fn playlist_is_scheduled(
     .await?)
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), PlaylistError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), PlaylistError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(PlaylistError::Unauthorized)

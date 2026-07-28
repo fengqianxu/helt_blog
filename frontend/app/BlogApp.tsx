@@ -8,18 +8,9 @@ import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { diffLines } from "diff";
 import "@uiw/react-md-editor/markdown-editor.css";
 import "@uiw/react-markdown-preview/markdown.css";
 
-import { AdminAccountCenter, AdminProfileAvatar } from "./admin/AdminAccountCenter";
-import { AdminLogin } from "./admin/AdminLogin";
-import { AssetManager } from "./admin/AssetManager";
-import { LlmSettings } from "./admin/LlmSettings";
-import { RaimentSettings } from "./admin/RaimentSettings";
-import { SiteSettings } from "./admin/SiteSettings";
-import { PlaylistSettings } from "./admin/PlaylistSettings";
-import { ReviewManager } from "./admin/ReviewManager";
 import { buildArticleToc, getActiveTocId } from "./article-toc.mjs";
 import {
   AdminIdentity,
@@ -270,7 +261,7 @@ const raimentFromSchedule = (catalog: RaimentCatalog): string => {
 
 type ArticleCategory = { id: number; name: string; slug: string; color: string; article_count?: number | null };
 type ArticleTag = { id: number; name: string; article_count?: number | null };
-type Post = {
+export type Post = {
   id: number;
   slug: string;
   title: string;
@@ -310,7 +301,7 @@ type Moment = {
   liked_by_me: boolean;
 };
 type MomentListPayload = { page: number; per_page: number; total: number; items: Moment[] };
-type ArticleDetailPayload = {
+export type ArticleDetailPayload = {
   article: Post;
   previous: Post | null;
   next: Post | null;
@@ -351,9 +342,18 @@ const navItems = [
 const MediaPage = dynamic(() => import("./media/MediaPage"), {
   loading: () => <main className="page-wrap page-enter"><div className="media-empty"><b>SYNC</b><p>正在加载追番与游戏页面…</p></div></main>,
 });
+const AdminAccountCenter = dynamic(() => import("./admin/AdminAccountCenter").then((module) => module.AdminAccountCenter));
+const AdminProfileAvatar = dynamic(() => import("./admin/AdminAccountCenter").then((module) => module.AdminProfileAvatar));
+const AdminLogin = dynamic(() => import("./admin/AdminLogin").then((module) => module.AdminLogin));
+const AssetManager = dynamic(() => import("./admin/AssetManager").then((module) => module.AssetManager));
+const LlmSettings = dynamic(() => import("./admin/LlmSettings").then((module) => module.LlmSettings));
+const RaimentSettings = dynamic(() => import("./admin/RaimentSettings").then((module) => module.RaimentSettings));
+const SiteSettings = dynamic(() => import("./admin/SiteSettings").then((module) => module.SiteSettings));
+const PlaylistSettings = dynamic(() => import("./admin/PlaylistSettings").then((module) => module.PlaylistSettings));
+const ReviewManager = dynamic(() => import("./admin/ReviewManager").then((module) => module.ReviewManager));
 const MDEditor = dynamic(() => import("@uiw/react-md-editor/nohighlight"), { ssr: false });
 
-export function BlogApp() {
+export function BlogApp({ initialArticle = null }: { initialArticle?: ArticleDetailPayload | null }) {
   const pathname = usePathname() || "/";
   const [site, setSite] = useState<SitePayload>(DEFAULT_SITE);
   const [siteFeaturesReady, setSiteFeaturesReady] = useState(false);
@@ -571,7 +571,7 @@ export function BlogApp() {
   if (pathname === "/") page = <HomePage toggleTheme={toggleTheme} notify={notify} onSearch={() => setSearchOpen(true)} siteFeaturesReady={siteFeaturesReady} />;
   else if (pathname.startsWith("/posts/")) {
     const slug = pathname.split("/").filter(Boolean)[1];
-    page = <ArticlePage slug={slug} theme={theme} notify={notify} siteFeaturesReady={siteFeaturesReady} />;
+    page = <ArticlePage slug={slug} theme={theme} notify={notify} siteFeaturesReady={siteFeaturesReady} initialPayload={initialArticle} />;
   }
   else if (pathname === "/archives") page = <ArchivesPage />;
   else if (pathname === "/moments") page = <MomentsPage notify={notify} />;
@@ -1283,17 +1283,24 @@ function PostCard({ post }: { post: Post }) {
 
 function PageHeading({ title, subtitle }: { title: string; subtitle: string }) { return <div className="page-heading"><h1>{title}</h1><span>{subtitle}</span></div>; }
 
-function ArticlePage({ slug, theme, notify, siteFeaturesReady }: { slug: string; theme: Theme; notify: Notify; siteFeaturesReady: boolean }) {
+function ArticlePage({ slug, theme, notify, siteFeaturesReady, initialPayload }: { slug: string; theme: Theme; notify: Notify; siteFeaturesReady: boolean; initialPayload: ArticleDetailPayload | null }) {
   const site = useSite();
   const [progress, setProgress] = useState(0);
   const [liked, setLiked] = useState(false);
-  const [payload, setPayload] = useState<ArticleDetailPayload | null>(null);
-  const [error, setError] = useState("");
+  const initialForSlug = initialPayload?.article.slug === slug ? initialPayload : null;
+  const [requestState, setRequestState] = useState<{
+    slug: string;
+    payload: ArticleDetailPayload | null;
+    error: string;
+  }>({ slug, payload: null, error: "" });
+  const payload = initialForSlug ?? (requestState.slug === slug ? requestState.payload : null);
+  const error = initialForSlug ? "" : (requestState.slug === slug ? requestState.error : "");
   const [tocItems, setTocItems] = useState<TocItem[]>([]);
   const [activeTocId, setActiveTocId] = useState("article-content");
   const articleContentRef = useRef<HTMLDivElement | null>(null);
   const tocListRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
+    if (initialPayload?.article.slug === slug) return;
     const controller = new AbortController();
     fetch(`/api/v1/articles/${encodeURIComponent(slug)}`, { signal: controller.signal })
       .then(async (response) => {
@@ -1301,16 +1308,19 @@ function ArticlePage({ slug, theme, notify, siteFeaturesReady }: { slug: string;
         return response.json() as Promise<ArticleDetailPayload>;
       })
       .then((value) => {
-        setPayload(value);
-        setError("");
+        setRequestState({ slug, payload: value, error: "" });
       })
       .catch((reason) => {
         if (!(reason instanceof DOMException && reason.name === "AbortError")) {
-          setError(reason instanceof Error ? reason.message : "文章加载失败");
+          setRequestState({
+            slug,
+            payload: null,
+            error: reason instanceof Error ? reason.message : "文章加载失败",
+          });
         }
       });
     return () => controller.abort();
-  }, [slug]);
+  }, [initialPayload, slug]);
   useEffect(() => {
     const update = () => {
       const max = document.documentElement.scrollHeight - window.innerHeight;
@@ -2873,7 +2883,8 @@ function diffPartLines(value: string) {
   return lines;
 }
 
-function buildEditorMergeRows(before: string, after: string): EditorMergeRow[] {
+async function buildEditorMergeRows(before: string, after: string): Promise<EditorMergeRow[]> {
+  const { diffLines } = await import("diff");
   const parts = diffLines(before, after);
   const rows: EditorMergeRow[] = [];
   let beforeLine = 1;
@@ -3154,7 +3165,7 @@ function ArticleEditor({ pathname, theme, notify }: { pathname: string; theme: T
       const payload = await response.json() as { target: "summary" | "content"; text: string };
       if (payload.target !== apiTarget || !payload.text?.trim()) throw new Error(`模型没有返回可用${targetLabel}`);
       if (payload.text === source) throw new Error(`模型返回的${targetLabel}与原文相同`);
-      const rows = buildEditorMergeRows(source, payload.text);
+      const rows = await buildEditorMergeRows(source, payload.text);
       setPolishCandidate({ target: aiTarget, before: source, after: payload.text, rows });
       setPolishChoices(defaultMergeChoices(rows));
       notify(`${targetLabel}候选稿已生成，请对比后决定是否替换`, "success");

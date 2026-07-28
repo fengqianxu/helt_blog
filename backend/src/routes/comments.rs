@@ -108,7 +108,7 @@ async fn admin_list(
     headers: HeaderMap,
     Query(query): Query<CommentListQuery>,
 ) -> Result<Json<ArtalkCommentPage>, CommentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if query.page == 0 {
         return Err(CommentError::validation("page 必须大于 0"));
     }
@@ -142,7 +142,7 @@ async fn admin_update(
     Path(id): Path<u64>,
     Json(request): Json<CommentUpdate>,
 ) -> Result<Json<ArtalkComment>, CommentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if id == 0 {
         return Err(CommentError::validation("评论编号无效"));
     }
@@ -164,7 +164,7 @@ async fn admin_delete(
     headers: HeaderMap,
     Path(id): Path<u64>,
 ) -> Result<StatusCode, CommentError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     if id == 0 {
         return Err(CommentError::validation("评论编号无效"));
     }
@@ -172,8 +172,8 @@ async fn admin_delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), CommentError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), CommentError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(CommentError::Unauthorized)

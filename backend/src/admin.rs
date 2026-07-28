@@ -49,17 +49,42 @@ pub async fn ensure_initial_admin(pool: &PgPool, config: &Config) -> Result<()> 
 
 pub async fn reset_password(pool: &PgPool, config: &Config) -> Result<()> {
     let (password, password_hash) = password_and_hash(config.admin_initial_password.clone())?;
-    let updated = sqlx::query("UPDATE admin_users SET password_hash = $1 WHERE username = $2")
-        .bind(password_hash)
-        .bind(&config.admin_username)
-        .execute(pool)
+    let mut transaction = pool
+        .begin()
         .await
-        .context("failed to reset administrator password")?
-        .rows_affected();
+        .context("failed to start administrator password reset")?;
+    let user_id = sqlx::query_scalar::<_, i64>(
+        "UPDATE admin_users
+         SET password_hash = $1, session_version = session_version + 1
+         WHERE username = $2
+         RETURNING id",
+    )
+    .bind(password_hash)
+    .bind(&config.admin_username)
+    .fetch_optional(&mut *transaction)
+    .await
+    .context("failed to reset administrator password")?;
 
-    if updated == 0 {
+    let Some(user_id) = user_id else {
         anyhow::bail!("administrator {:?} does not exist", config.admin_username);
-    }
+    };
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .context("failed to revoke administrator refresh tokens")?;
+    sqlx::query(
+        "UPDATE auth_sessions SET revoked_at = COALESCE(revoked_at, now())
+         WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .context("failed to revoke administrator access sessions")?;
+    transaction
+        .commit()
+        .await
+        .context("failed to commit administrator password reset")?;
 
     warn!(
         username = %config.admin_username,

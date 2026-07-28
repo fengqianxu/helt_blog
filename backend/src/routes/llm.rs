@@ -325,7 +325,7 @@ async fn get_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<LlmSettingsResponse>, LlmError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let row = load_settings(&state).await?;
     Ok(Json(to_response(&state, row).await?))
 }
@@ -335,7 +335,7 @@ async fn create_connection(
     headers: HeaderMap,
     Json(mut request): Json<CreateConnectionRequest>,
 ) -> Result<Json<LlmSettingsResponse>, LlmError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     request.display_name = request.display_name.trim().to_owned();
     request.base_url = normalize_base_url(&request.base_url)?;
     validate_base_url_policy(&state, &request.base_url)?;
@@ -410,7 +410,7 @@ async fn update_settings(
     headers: HeaderMap,
     Json(mut request): Json<UpdateSettingsRequest>,
 ) -> Result<Json<LlmSettingsResponse>, LlmError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     normalize_and_validate(&mut request)?;
     if let Some(connections) = request.connections.as_ref() {
         for connection in connections {
@@ -621,7 +621,7 @@ async fn test_connection(
     headers: HeaderMap,
     Json(request): Json<TestConnectionRequest>,
 ) -> Result<Json<TestConnectionResponse>, LlmError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let connections = load_connections(&state).await?;
     let row = request
         .connection_id
@@ -667,7 +667,7 @@ async fn polish_article(
     headers: HeaderMap,
     Json(mut request): Json<PolishArticleRequest>,
 ) -> Result<Json<PolishArticleResponse>, LlmError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     request.model = request.model.trim().to_owned();
     request.prompt = request.prompt.trim().to_owned();
     request.title = request.title.trim().to_owned();
@@ -716,7 +716,7 @@ async fn list_models(
     headers: HeaderMap,
     Json(request): Json<ListModelsRequest>,
 ) -> Result<Json<ListModelsResponse>, LlmError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let saved = if let Some(connection_id) = request.connection_id {
         load_connections(&state)
             .await?
@@ -756,10 +756,10 @@ async fn list_models(
         None
     };
     let api_key = supplied_key.or(decrypted_key.as_deref());
-    if let Some(api_key) = api_key {
-        if api_key.chars().count() > MAX_API_KEY_CHARS {
-            return Err(LlmError::validation("API Key 不能超过 4096 个字符"));
-        }
+    if let Some(api_key) = api_key
+        && api_key.chars().count() > MAX_API_KEY_CHARS
+    {
+        return Err(LlmError::validation("API Key 不能超过 4096 个字符"));
     }
 
     let items = request_model_options(&state, &base_url, api_key).await?;
@@ -890,8 +890,8 @@ async fn request_polished_text(
     Ok(text)
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), LlmError> {
-    if auth::has_valid_admin_session(state, headers) {
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), LlmError> {
+    if auth::has_valid_admin_session(state, headers).await {
         Ok(())
     } else {
         Err(LlmError::Unauthorized)
@@ -1032,10 +1032,10 @@ fn normalize_and_validate(request: &mut UpdateSettingsRequest) -> Result<(), Llm
                     "模型不能超过 {MAX_MODEL_CHARS} 个字符"
                 )));
             }
-            if let Some(api_key) = connection.api_key.as_deref() {
-                if api_key.chars().count() > MAX_API_KEY_CHARS {
-                    return Err(LlmError::validation("API Key 不能超过 4096 个字符"));
-                }
+            if let Some(api_key) = connection.api_key.as_deref()
+                && api_key.chars().count() > MAX_API_KEY_CHARS
+            {
+                return Err(LlmError::validation("API Key 不能超过 4096 个字符"));
             }
             if !(0.0..=2.0).contains(&connection.temperature) {
                 return Err(LlmError::validation("Temperature 必须在 0 到 2 之间"));

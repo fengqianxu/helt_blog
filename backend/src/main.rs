@@ -2,7 +2,7 @@ use std::{net::SocketAddr, process::ExitCode, time::Duration};
 
 use anyhow::{Context, Result};
 use blog_backend::{
-    admin, build_app,
+    admin, artalk_outbox, build_app,
     config::Config,
     db,
     llm_crypto::{LlmKeyring, migrate_legacy_steam_web_api_key, rotate_llm_encryption_keys},
@@ -80,6 +80,7 @@ async fn main() -> Result<ExitCode> {
 
     let state = AppState::new(pool, &config).context("failed to build application state")?;
     tokio::spawn(storage_gc::run(state.clone()));
+    tokio::spawn(artalk_outbox::run(state.clone()));
     tokio::spawn(blog_backend::routes::bangumi::run_scheduler(state.clone()));
     tokio::spawn(blog_backend::routes::games::run_scheduler(state.clone()));
     let app = build_app(state, &config).context("failed to build router")?;

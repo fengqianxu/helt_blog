@@ -6,15 +6,27 @@ import { expectedTocItems, multiHeadingArticle } from "./fixtures/multi-heading-
 
 const root = new URL("../", import.meta.url);
 
-async function render(path = "/") {
+async function render(path = "/", apiFetch = null) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(
-    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  const originalFetch = globalThis.fetch;
+  if (apiFetch) {
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      if (url.origin === "http://backend:3000") return apiFetch(url, init);
+      return originalFetch(input, init);
+    };
+  }
+  try {
+    return await worker.fetch(
+      new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
+      { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+      { waitUntil() {}, passThroughOnException() {} },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 function headingsFromMarkdown(markdown) {
@@ -473,16 +485,48 @@ test("server-renders the admin login shell and real authentication form", async 
   assert.doesNotMatch(html, /value="excalibur"/);
 });
 
-test("renders the article loading boundary and delegates slug resolution to the API", async () => {
-  const articleResponse = await render("/posts/spring-anime-2026");
+test("server-renders articles with route metadata and returns a real 404", async () => {
+  const apiFetch = async (url) => {
+    if (url.pathname.endsWith("/not-a-real-post")) {
+      return Response.json({ error: "not found" }, { status: 404 });
+    }
+    return Response.json({
+      article: {
+        id: 42,
+        slug: "spring-anime-2026",
+        title: "Spring Anime 2026",
+        summary: "A server-rendered article summary.",
+        content_md: "## Server content\n\nThe server knew this article.",
+        status: "published",
+        is_pinned: false,
+        allow_comment: true,
+        kanban_ref: false,
+        word_count: 5,
+        read_minutes: 1,
+        view_count: 8,
+        published_at: "2026-04-01T00:00:00Z",
+        created_at: "2026-04-01T00:00:00Z",
+        updated_at: "2026-04-02T00:00:00Z",
+        category: null,
+        cover_url: null,
+        tags: [],
+      },
+      previous: null,
+      next: null,
+      related: [],
+      allow_comment: true,
+    });
+  };
+
+  const articleResponse = await render("/posts/spring-anime-2026", apiFetch);
   assert.equal(articleResponse.status, 200);
   const articleHtml = await articleResponse.text();
-  assert.match(articleHtml, /正在读取文章/);
+  assert.match(articleHtml, /<title>Spring Anime 2026 \| helt\.<\/title>/i);
+  assert.match(articleHtml, /The server knew this article/);
+  assert.doesNotMatch(articleHtml, /正在读取文章/);
 
-  const missingResponse = await render("/posts/not-a-real-post");
-  assert.equal(missingResponse.status, 200);
-  const missingHtml = await missingResponse.text();
-  assert.match(missingHtml, /正在读取文章/);
+  const missingResponse = await render("/posts/not-a-real-post", apiFetch);
+  assert.equal(missingResponse.status, 404);
 });
 
 test("wires every account-security request to a credentialed front-end flow", async () => {
