@@ -1045,10 +1045,14 @@ function SiteBrand({ href = "/", suffix }: { href?: string; suffix?: React.React
 
 function TopNav({ pathname, toggleTheme, menuOpen, setMenuOpen, setSearchOpen, floating = false, elevated = false }: { pathname: string; toggleTheme: () => void; menuOpen: boolean; setMenuOpen: (v: boolean) => void; searchOpen: boolean; setSearchOpen: (v: boolean) => void; floating?: boolean; elevated?: boolean }) {
   return (
-    <header className={cx("top-nav", floating && "home-touchbar", elevated && "is-elevated")}>
+    <header className={cx("top-nav", floating && "home-touchbar", elevated && "is-elevated", menuOpen && "menu-open")}>
       <SiteBrand />
       <nav id="primary-navigation" aria-label="主导航" className={cx("main-nav", menuOpen && "open")}>
-        {navItems.map(([href, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""}>{label}</Link>)}
+        {navItems.map(([href, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={pathname === href ? "active" : ""} onClick={() => setMenuOpen(false)}>{label}</Link>)}
+        <div className="mobile-nav-actions">
+          <button onClick={() => { setMenuOpen(false); setSearchOpen(true); }} aria-label="搜索文章">⌕ <span>搜索文章</span></button>
+          <ThemeSwitch onClick={toggleTheme} />
+        </div>
       </nav>
       <div className="nav-actions">
         <button className="search-button" onClick={() => setSearchOpen(true)} aria-label="搜索文章">⌕ <span>搜索文章…</span></button>
@@ -1245,13 +1249,19 @@ function HomePage({ toggleTheme, notify, onSearch, siteFeaturesReady }: { toggle
       </section>}
       <section id="articles" className={cx("home-content", !site.features.splash && "without-splash")}>
         {site.features.stats && <Stats />}
-        <div className="section-intro reveal"><div><span>RECENT WRITING</span><h2>最近写下的东西</h2></div></div>
+        <div className="section-intro reveal">
+          <div><span>RECENT WRITING</span><h2>最近写下的东西</h2></div>
+          <div className="section-intro-note">
+            <p>{site.basic.tagline || "技术札记、生活切片与持续折腾的现场。"}</p>
+            <span><b>{total.toLocaleString()}</b> PUBLIC NOTES</span>
+          </div>
+        </div>
         <div className="post-list">
           <div className="post-page" key={page}>
             {loading && <div className="empty-panel">正在读取文章…</div>}
             {!loading && error && <div className="empty-panel">{error}</div>}
             {!loading && !error && !visiblePosts.length && <div className="empty-panel">暂时还没有已发布文章。</div>}
-            {!loading && !error && visiblePosts.map((post) => <PostCard key={post.id} post={post} />)}
+            {!loading && !error && visiblePosts.map((post, index) => <PostCard key={post.id} post={post} index={index} />)}
           </div>
           <div className="pagination" aria-label="文章分页"><button onClick={() => changePage(page - 1)} disabled={page === 1} aria-label="上一页">◀</button>{Array.from({ length: pageCount }, (_, i) => i + 1).map((item) => <button key={item} className={page === item ? "current" : ""} onClick={() => changePage(item)} aria-current={page === item ? "page" : undefined}>{item}</button>)}<button onClick={() => changePage(page + 1)} disabled={page === pageCount} aria-label="下一页">▶</button></div>
         </div>
@@ -1270,10 +1280,12 @@ function Stats() {
   ].map(([n, l]) => <div key={l}><b>{n}</b><span>{l}</span></div>)}</div>;
 }
 
-function PostCard({ post }: { post: Post }) {
+function PostCard({ post, index = 0 }: { post: Post; index?: number }) {
   const site = useSite();
+  const categoryColor = post.category?.color || "var(--accent)";
   return (
-    <Link href={`/posts/${post.slug}`} className={cx("post-card", post.is_pinned && "pinned")}>
+    <Link href={`/posts/${post.slug}`} className={cx("post-card", index === 0 && "featured", post.is_pinned && "pinned")} style={{ "--post-category": categoryColor } as CSSProperties}>
+      <span className="post-index" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
       {post.is_pinned && <span className="pin">置顶 PINNED</span>}
       <div className="post-main"><div className="post-meta"><span className="tag">{categoryName(post)}</span><span>{articleDate(post)}</span></div><h2>{post.title}</h2><p>{post.summary}</p><div className="post-stats"><span>{articleTime(post)}</span><span>{articleWords(post)}</span>{site.features.comments && <span>评论 <span className="artalk-comment-count" data-page-key={articleCommentKey(post.slug)}>0</span></span>}</div></div>
       {post.cover_url && <Image src={post.cover_url} width={512} height={288} sizes="240px" alt={`${post.title} 封面`} unoptimized />}
