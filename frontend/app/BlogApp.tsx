@@ -1079,6 +1079,7 @@ function HomePage({ toggleTheme, notify, onSearch, siteFeaturesReady }: { toggle
   const [voiceDuration, setVoiceDuration] = useState(0);
   const [dialoguePosition, setDialoguePosition] = useState({ raimentId: "", index: 0 });
   const voiceRef = useRef<HTMLAudioElement | null>(null);
+  const initialVoicePlaybackAttempted = useRef(false);
   const pageCount = Math.max(1, Math.ceil(total / 4));
   useEffect(() => {
     const controller = new AbortController();
@@ -1141,19 +1142,11 @@ function HomePage({ toggleTheme, notify, onSearch, siteFeaturesReady }: { toggle
     audio.preload = "auto";
     voiceRef.current?.pause();
     voiceRef.current = audio;
-    let active = true;
-    const retryAfterInteraction = () => {
-      if (active && audio.paused) void audio.play().catch(() => undefined);
-    };
-    const removeUnlockListeners = () => {
-      window.removeEventListener("pointerdown", retryAfterInteraction);
-      window.removeEventListener("click", retryAfterInteraction);
-      window.removeEventListener("keydown", retryAfterInteraction);
-    };
+    const shouldAutoPlay = !initialVoicePlaybackAttempted.current;
+    initialVoicePlaybackAttempted.current = true;
     audio.ontimeupdate = () => setVoiceSeconds(Math.floor(audio.currentTime || 0));
     audio.onloadedmetadata = () => setVoiceDuration(Math.floor(audio.duration || 0));
     audio.onplay = () => {
-      removeUnlockListeners();
       setVoiceSource(source);
       setVoicePlaying(true);
       setVoiceSeconds(Math.floor(audio.currentTime || 0));
@@ -1163,13 +1156,8 @@ function HomePage({ toggleTheme, notify, onSearch, siteFeaturesReady }: { toggle
       setVoicePlaying(false);
       setVoiceSeconds(0);
     };
-    window.addEventListener("pointerdown", retryAfterInteraction, { once: true });
-    window.addEventListener("click", retryAfterInteraction, { once: true });
-    window.addEventListener("keydown", retryAfterInteraction, { once: true });
-    void audio.play().catch(() => undefined);
+    if (shouldAutoPlay) void audio.play().catch(() => undefined);
     return () => {
-      active = false;
-      removeUnlockListeners();
       audio.pause();
       audio.src = "";
       if (voiceRef.current === audio) voiceRef.current = null;

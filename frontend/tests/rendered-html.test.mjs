@@ -391,6 +391,10 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(raiments, /封面左下角对白/);
   assert.match(raiments, /addDialogue/);
   assert.match(shell, /window\.setInterval\(nextDialogue, 6000\)/);
+  assert.match(shell, /const initialVoicePlaybackAttempted = useRef\(false\)/);
+  assert.match(shell, /const shouldAutoPlay = !initialVoicePlaybackAttempted\.current/);
+  assert.match(shell, /if \(shouldAutoPlay\) void audio\.play\(\)\.catch/);
+  assert.doesNotMatch(shell, /retryAfterInteraction|removeUnlockListeners/);
   assert.match(shell, /void audio\.play\(\)\.catch/);
   assert.match(shell, /onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/);
   assert.match(shell, /onClick=\{\(event\) => \{ event\.stopPropagation\(\); nextDialogue\(\); \}\}/);
