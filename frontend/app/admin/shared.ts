@@ -64,6 +64,8 @@ export const DEFAULT_PROFILE_AVATAR_URL = "/storage/avatars/default/admin-avatar
 export type SocialLink = {
   label: string;
   url: string;
+  icon_asset_id: number | null;
+  icon_url?: string | null;
 };
 
 export type AboutProfile = {

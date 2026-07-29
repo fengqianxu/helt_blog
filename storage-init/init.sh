@@ -27,3 +27,7 @@ copy_if_missing /seed/voice/login/alter-saber.mp3 voice/login/alter-saber.mp3
 copy_if_missing /seed/voice/login/blue-saber-success.mp3 voice/login/blue-saber-success.mp3
 copy_if_missing /seed/voice/login/blue-saber.mp3 voice/login/blue-saber.mp3
 copy_if_missing /seed/avatars/default/admin-avatar.webp avatars/default/admin-avatar.webp
+copy_if_missing /seed/icons/social/bilibili.svg icons/social/bilibili.svg
+copy_if_missing /seed/icons/social/steam.svg icons/social/steam.svg
+copy_if_missing /seed/icons/social/github.svg icons/social/github.svg
+copy_if_missing /seed/icons/social/email.svg icons/social/email.svg

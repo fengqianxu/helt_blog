@@ -1846,7 +1846,7 @@ function AboutPage({ notify }: { notify: Notify }) {
         <span><b>{profile.stats.uptime_days.toLocaleString()}</b>天相伴</span>
       </div>
       {(profile.about.socials.length > 0 || profile.email) && <div className="profile-links">
-        {profile.about.socials.map((social) => <a key={`${social.label}-${social.url}`} href={social.url} target="_blank" rel="me noreferrer" title={social.label}><i aria-hidden="true">{socialMark(social.label)}</i><span>{social.label}</span><b aria-hidden="true">↗</b></a>)}
+        {profile.about.socials.map((social) => <a key={`${social.label}-${social.url}`} href={social.url} target="_blank" rel="me noreferrer" title={social.label}><i className={social.icon_url ? "has-image" : ""} aria-hidden="true">{social.icon_url ? <Image src={social.icon_url} width={28} height={28} unoptimized alt="" /> : socialMark(social.label)}</i><span>{social.label}</span><b aria-hidden="true">↗</b></a>)}
         {profile.email && <button type="button" onClick={copyEmail}><i aria-hidden="true">✉</i><span>复制联系邮箱</span><b aria-hidden="true">＋</b></button>}
       </div>}
     </aside>

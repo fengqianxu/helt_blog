@@ -108,6 +108,7 @@ fn reference_type_label(source_type: &str) -> &'static str {
         "bangumi_cover" => "追番封面",
         "friend_avatar" => "友链头像",
         "site_branding" => "站点品牌",
+        "system_social_icon" | "profile_social_icon" => "社交图标",
         _ => "其他引用",
     }
 }

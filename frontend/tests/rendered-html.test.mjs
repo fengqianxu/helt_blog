@@ -409,6 +409,10 @@ test("keeps project assets and API-backed front-end routes in place", async () =
   assert.match(account, /个人介绍（支持 Markdown）/);
   assert.match(account, /updateAbout\("skills"/);
   assert.match(account, /updateAbout\("socials"/);
+  assert.match(account, /icon_asset_id/);
+  assert.match(account, /从图片素材中选择图标/);
+  assert.match(shell, /social\.icon_url/);
+  assert.match(styles, /\.admin-social-icon-picker/);
   assert.doesNotMatch(app, /头像从素材库引用，替换素材版本后会自动同步/);
   assert.match(app, /\/api\/v1\/profile/);
   assert.match(shell, /profile\.stats\.article_count/);

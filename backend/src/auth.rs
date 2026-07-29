@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -242,12 +242,16 @@ impl Default for AboutProfile {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct SocialLink {
     #[serde(default)]
     label: String,
     #[serde(default)]
     url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon_asset_id: Option<i64>,
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    icon_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -344,7 +348,8 @@ async fn public_profile(State(state): State<AppState>) -> Result<Json<PublicProf
     .ok_or(ApiError::Internal)?;
 
     let username = profile.username;
-    let about = about_profile_from_value(profile.about);
+    let mut about = about_profile_from_value(profile.about);
+    hydrate_social_icon_urls(&state, &mut about).await?;
     Ok(Json(PublicProfile {
         username,
         email: profile.email,
@@ -723,6 +728,34 @@ async fn update_profile(
         error!(error = %err, "profile update transaction could not start");
         ApiError::Internal
     })?;
+    if let Some(about) = &about {
+        let icon_asset_ids = about
+            .socials
+            .iter()
+            .filter_map(|social| social.icon_asset_id)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !icon_asset_ids.is_empty() {
+            let valid_icon_count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*)
+                 FROM assets
+                 WHERE id = ANY($1)
+                   AND status = 'active'
+                   AND media_type = 'image'",
+            )
+            .bind(&icon_asset_ids)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "social icon assets could not be validated");
+                ApiError::Internal
+            })?;
+            if valid_icon_count != icon_asset_ids.len() as i64 {
+                return Err(ApiError::Validation("社交图标必须引用素材库中有效的图片"));
+            }
+        }
+    }
     let previous = sqlx::query_as::<_, StoredProfileSyncSettings>(
         "SELECT
              COALESCE(settings #>> '{bangumi_sync,uid}', '') AS bilibili_uid,
@@ -858,6 +891,37 @@ async fn update_profile(
     }
 
     if let Some(about) = about {
+        sqlx::query("DELETE FROM asset_references WHERE source_type = 'profile_social_icon'")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "previous social icon references could not be removed");
+                ApiError::Internal
+            })?;
+        for (index, social) in about.socials.iter().enumerate() {
+            let Some(icon_asset_id) = social.icon_asset_id else {
+                continue;
+            };
+            sqlx::query(
+                "INSERT INTO asset_references (
+                     asset_id, source_type, source_key, source_label, admin_path
+                 )
+                 VALUES ($1, 'profile_social_icon', $2, $3, '/admin/profile')
+                 ON CONFLICT (source_type, source_key) DO UPDATE
+                 SET asset_id = EXCLUDED.asset_id,
+                     source_label = EXCLUDED.source_label,
+                     admin_path = EXCLUDED.admin_path",
+            )
+            .bind(icon_asset_id)
+            .bind(format!("site:about:social:{index}"))
+            .bind(format!("{} 图标", social.label))
+            .execute(&mut *transaction)
+            .await
+            .map_err(|err| {
+                error!(error = %err, "social icon reference could not be created");
+                ApiError::Internal
+            })?;
+        }
         let about = serde_json::to_value(about).map_err(|err| {
             error!(error = %err, "public profile could not be serialized");
             ApiError::Internal
@@ -1753,7 +1817,11 @@ async fn load_admin_identity(
             String::new()
         },
         steam_id64: profile.steam_id64,
-        about: about_profile_from_value(profile.about),
+        about: {
+            let mut about = about_profile_from_value(profile.about);
+            hydrate_social_icon_urls(state, &mut about).await?;
+            about
+        },
     })
 }
 
@@ -1787,6 +1855,46 @@ fn about_profile_from_value(value: Value) -> AboutProfile {
     }
     about.version = 1;
     about
+}
+
+async fn hydrate_social_icon_urls(
+    state: &AppState,
+    about: &mut AboutProfile,
+) -> Result<(), ApiError> {
+    let asset_ids = about
+        .socials
+        .iter()
+        .filter_map(|social| social.icon_asset_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if asset_ids.is_empty() {
+        return Ok(());
+    }
+    let icons = sqlx::query_as::<_, (i64, String)>(
+        "SELECT asset.id, upload.object_key
+         FROM assets asset
+         JOIN uploads upload ON upload.id = asset.upload_id
+         WHERE asset.id = ANY($1)
+           AND asset.status = 'active'
+           AND asset.media_type = 'image'",
+    )
+    .bind(&asset_ids)
+    .fetch_all(state.pool())
+    .await
+    .map_err(|err| {
+        error!(error = %err, "social icon URLs could not be loaded");
+        ApiError::Internal
+    })?
+    .into_iter()
+    .map(|(asset_id, object_key)| (asset_id, state.object_storage().public_url(&object_key)))
+    .collect::<HashMap<_, _>>();
+    for social in &mut about.socials {
+        social.icon_url = social
+            .icon_asset_id
+            .and_then(|asset_id| icons.get(&asset_id).cloned());
+    }
+    Ok(())
 }
 
 fn normalized_about_profile(mut about: AboutProfile) -> Result<AboutProfile, ApiError> {
@@ -1864,9 +1972,14 @@ fn normalized_about_profile(mut about: AboutProfile) -> Result<AboutProfile, Api
             if !seen_socials.insert(label.to_lowercase()) {
                 return Err(ApiError::Validation("社交平台名称不能重复"));
             }
+            if social.icon_asset_id.is_some_and(|asset_id| asset_id <= 0) {
+                return Err(ApiError::Validation("社交图标素材无效"));
+            }
             Ok(SocialLink {
                 label,
                 url: raw_url,
+                icon_asset_id: social.icon_asset_id,
+                icon_url: None,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -2393,6 +2506,8 @@ mod tests {
             socials: vec![SocialLink {
                 label: " GitHub ".to_owned(),
                 url: "https://github.com/example".to_owned(),
+                icon_asset_id: Some(42),
+                ..SocialLink::default()
             }],
             ..AboutProfile::default()
         })
@@ -2400,11 +2515,14 @@ mod tests {
         assert_eq!(valid.display_name, "Helt");
         assert_eq!(valid.skills, vec!["Rust"]);
         assert_eq!(valid.socials[0].label, "GitHub");
+        assert_eq!(valid.socials[0].icon_asset_id, Some(42));
+        assert!(valid.socials[0].icon_url.is_none());
 
         let invalid = AboutProfile {
             socials: vec![SocialLink {
                 label: "Local".to_owned(),
                 url: "file:///etc/passwd".to_owned(),
+                ..SocialLink::default()
             }],
             ..AboutProfile::default()
         };

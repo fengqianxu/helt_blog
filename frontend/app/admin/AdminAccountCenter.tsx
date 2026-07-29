@@ -14,6 +14,17 @@ import {
 } from "./shared";
 
 type PasskeyItem = { id: number; label: string; created_at: string };
+const SOCIAL_ICON_ASSET_NAMES: Record<string, string> = {
+  bilibili: "Bilibili 社交图标",
+  "b站": "Bilibili 社交图标",
+  哔哩哔哩: "Bilibili 社交图标",
+  steam: "Steam 社交图标",
+  github: "GitHub 社交图标",
+  email: "Email 社交图标",
+  "e-mail": "Email 社交图标",
+  邮箱: "Email 社交图标",
+  邮件: "Email 社交图标",
+};
 type PasskeyCreationOptionsJSON = {
   publicKey: Omit<PublicKeyCredentialCreationOptions, "challenge" | "user" | "excludeCredentials"> & {
     challenge: string;
@@ -113,6 +124,7 @@ export function AdminAccountCenter({
   const [avatarAssets, setAvatarAssets] = useState<AdminAsset[]>([]);
   const [avatarAssetsLoading, setAvatarAssetsLoading] = useState(false);
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const [socialIconPicker, setSocialIconPicker] = useState<number | null>(null);
   const [cropAsset, setCropAsset] = useState<AdminAsset | null>(null);
   const [avatarCrop, setAvatarCrop] = useState({
     x: admin.avatar_crop_x || 0,
@@ -139,6 +151,7 @@ export function AdminAccountCenter({
     }
     setDialog(null);
     setCropAsset(null);
+    setSocialIconPicker(null);
     setCurrentPassword("");
     setNewPassword("");
     setConfirmPassword("");
@@ -219,6 +232,7 @@ export function AdminAccountCenter({
         zoom: admin.avatar_crop_zoom || 1,
       });
       setAvatarPickerOpen(false);
+      setSocialIconPicker(null);
     }
     if (next === "passkey") setPasskeysLoading(true);
     setDialog(next);
@@ -233,7 +247,31 @@ export function AdminAccountCenter({
   };
 
   const updateSocial = (index: number, key: "label" | "url", value: string) => {
-    updateAbout("socials", profileAbout.socials.map((social, candidate) => candidate === index ? { ...social, [key]: value } : social));
+    setProfileAbout((current) => ({
+      ...current,
+      socials: current.socials.map((social, candidate) => {
+        if (candidate !== index) return social;
+        if (key !== "label" || social.icon_asset_id) return { ...social, [key]: value };
+        const assetName = SOCIAL_ICON_ASSET_NAMES[value.trim().toLowerCase()];
+        const suggestedIcon = avatarAssets.find((asset) => asset.name === assetName);
+        return {
+          ...social,
+          [key]: value,
+          icon_asset_id: suggestedIcon?.id ?? null,
+          icon_url: suggestedIcon?.file.url ?? null,
+        };
+      }),
+    }));
+  };
+
+  const updateSocialIcon = (index: number, asset: AdminAsset | null) => {
+    setProfileAbout((current) => ({
+      ...current,
+      socials: current.socials.map((social, candidate) => candidate === index
+        ? { ...social, icon_asset_id: asset?.id ?? null, icon_url: asset?.file.url ?? null }
+        : social),
+    }));
+    setSocialIconPicker(null);
   };
 
   const saveProfile = async (event: FormEvent<HTMLFormElement>) => {
@@ -273,7 +311,11 @@ export function AdminAccountCenter({
       site_note: profileAbout.site_note.trim(),
       skills: profileAbout.skills.map((skill) => skill.trim()).filter(Boolean),
       socials: profileAbout.socials
-        .map((social) => ({ label: social.label.trim(), url: social.url.trim() }))
+        .map((social) => ({
+          label: social.label.trim(),
+          url: social.url.trim(),
+          icon_asset_id: social.icon_asset_id ?? null,
+        }))
         .filter((social) => social.label && social.url),
     };
     setBusy("profile");
@@ -472,9 +514,28 @@ export function AdminAccountCenter({
                 </div>
               </section>
               <section className="admin-profile-collection">
-                <header><div><b>社交链接</b><small>SOCIAL LINKS · 最多 8 个</small></div><button type="button" disabled={profileAbout.socials.length >= 8} onClick={() => updateAbout("socials", [...profileAbout.socials, { label: "", url: "" }])}>＋ 添加</button></header>
+                <header><div><b>社交链接</b><small>SOCIAL LINKS · 最多 8 个</small></div><button type="button" disabled={profileAbout.socials.length >= 8} onClick={() => updateAbout("socials", [...profileAbout.socials, { label: "", url: "", icon_asset_id: null }])}>＋ 添加</button></header>
                 <div className="admin-profile-social-list">
-                  {profileAbout.socials.map((social, index) => <div key={index}><input aria-label={`社交平台 ${index + 1}`} maxLength={30} value={social.label} onChange={(event) => updateSocial(index, "label", event.target.value)} placeholder="GitHub" /><input aria-label={`社交链接 ${index + 1}`} type="url" maxLength={2048} value={social.url} onChange={(event) => updateSocial(index, "url", event.target.value)} placeholder="https://github.com/…" /><button type="button" aria-label={`移除社交链接 ${social.label || index + 1}`} onClick={() => updateAbout("socials", profileAbout.socials.filter((_, candidate) => candidate !== index))}>×</button></div>)}
+                  {profileAbout.socials.map((social, index) => {
+                    const selectedAsset = avatarAssets.find((asset) => asset.id === social.icon_asset_id);
+                    const iconUrl = selectedAsset?.file.url || social.icon_url;
+                    return <div className="admin-profile-social-row" key={index}>
+                      <button className="admin-social-icon-trigger" type="button" aria-label={`更改 ${social.label || `社交链接 ${index + 1}`} 的图标`} aria-expanded={socialIconPicker === index} onClick={() => setSocialIconPicker((current) => current === index ? null : index)}>
+                        {iconUrl ? <Image src={iconUrl} width={30} height={30} unoptimized alt="" /> : <span aria-hidden="true">＋</span>}
+                      </button>
+                      <input aria-label={`社交平台 ${index + 1}`} maxLength={30} value={social.label} onChange={(event) => updateSocial(index, "label", event.target.value)} placeholder="GitHub" />
+                      <input aria-label={`社交链接 ${index + 1}`} type="url" maxLength={2048} value={social.url} onChange={(event) => updateSocial(index, "url", event.target.value)} placeholder="https://github.com/…" />
+                      <button className="admin-social-remove" type="button" aria-label={`移除社交链接 ${social.label || index + 1}`} onClick={() => updateAbout("socials", profileAbout.socials.filter((_, candidate) => candidate !== index))}>×</button>
+                      {socialIconPicker === index && <div className="admin-social-icon-picker" aria-label="从素材库选择社交图标">
+                        <header><span>从图片素材中选择图标</span><button type="button" onClick={() => updateSocialIcon(index, null)}>不使用图标</button></header>
+                        <div>
+                          {avatarAssets.map((asset) => <button className={social.icon_asset_id === asset.id ? "selected" : ""} type="button" key={asset.id} title={asset.name} aria-label={`使用 ${asset.name}`} onClick={() => updateSocialIcon(index, asset)}><Image src={asset.file.url} width={44} height={44} unoptimized alt="" /></button>)}
+                        </div>
+                        {avatarAssetsLoading && <p>正在读取图片素材…</p>}
+                        {!avatarAssetsLoading && !avatarAssets.length && <p>素材库暂无图片，请先到素材库新增图片。</p>}
+                      </div>}
+                    </div>;
+                  })}
                   {!profileAbout.socials.length && <p>添加后会以可访问的外部链接显示在资料卡上。</p>}
                 </div>
               </section>
