@@ -6,6 +6,11 @@ services:
     restart: unless-stopped
     expose:
       - "80"
+    labels:
+      # The gateway joins several private application networks. Pin Traefik to
+      # the Coolify-managed network shared by the proxy and this container so
+      # it cannot select an unreachable private address.
+      traefik.docker.network: ${COOLIFY_RESOURCE_UUID:?COOLIFY_RESOURCE_UUID must be set by Coolify}
     networks:
       - edge
       - web
@@ -160,7 +165,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 15s
+      start_period: 60s
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
