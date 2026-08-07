@@ -1,3 +1,6 @@
+# Coolify attaches every service to its resource-scoped network and connects
+# the platform proxy to that same network. Do not add custom networks here:
+# Traefik may otherwise select an address that the proxy cannot reach.
 services:
   gateway:
     build:
@@ -6,16 +9,6 @@ services:
     restart: unless-stopped
     expose:
       - "80"
-    labels:
-      # The gateway joins several private application networks. Pin Traefik to
-      # the Coolify-managed network shared by the proxy and this container so
-      # it cannot select an unreachable private address.
-      traefik.docker.network: ${COOLIFY_RESOURCE_UUID:?COOLIFY_RESOURCE_UUID must be set by Coolify}
-    networks:
-      - edge
-      - web
-      - api
-      - storage
     depends_on:
       frontend:
         condition: service_healthy
@@ -44,9 +37,6 @@ services:
       TZ: Asia/Shanghai
     expose:
       - "3000"
-    networks:
-      - web
-      - api
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 10s
@@ -66,8 +56,6 @@ services:
       PGTZ: Asia/Shanghai
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - database
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -84,8 +72,6 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - minio_data:/data
-    networks:
-      - storage
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/live"]
       interval: 10s
@@ -103,8 +89,6 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-helt_minio}
       MINIO_ROOT_PASSWORD: ${SERVICE_PASSWORD_64_MINIO}
-    networks:
-      - storage
   backend:
     build:
       context: ./backend
@@ -148,11 +132,6 @@ services:
       TZ: Asia/Shanghai
     expose:
       - "3000"
-    networks:
-      - api
-      - database
-      - storage
-      - egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,9 +163,6 @@ services:
       TZ: Asia/Shanghai
     expose:
       - "3000"
-    networks:
-      - api
-      - egress
     volumes:
       - meting_data:/app/data
     healthcheck:
@@ -231,10 +207,6 @@ services:
       ATK_IMG_UPLOAD_PUBLIC_PATH: /artalk/static/images/
     expose:
       - "23366"
-    networks:
-      - api
-      - database
-      - egress
     volumes:
       - artalk_data:/data
     depends_on:
@@ -258,15 +230,3 @@ volumes:
   minio_data:
   artalk_data:
   meting_data:
-
-networks:
-  edge:
-  web:
-    internal: true
-  api:
-    internal: true
-  database:
-    internal: true
-  storage:
-    internal: true
-  egress:
